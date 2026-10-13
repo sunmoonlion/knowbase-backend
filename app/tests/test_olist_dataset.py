@@ -57,7 +57,10 @@ SELF_DESCRIPTION = {
 
 # 每张表一条 SELECT，列的顺序与类型和真实 parquet 一样。
 # o1 已送达、o2 已取消、o3 已送达、o4 不可用且没有明细；
-# c1 与 c2 是同一个真实客户（u1）；r1 一个评价编号对两单。
+# c1 与 c2 是同一个真实客户（u110）；r1 一个评价编号对两单。
+# 抽样按 md5_number(customer_unique_id) % 20 = 0：u110、u134、u180 入样，u0 不入样。
+# u0 的 c5 下了 o5：o5 的明细、支付、评价，只被它用到的 p3、s2
+# 与两个邮编前缀，都应被裁掉。
 ROWS = {
     "olist_orders_dataset": """
         SELECT order_id, customer_id, order_status,
@@ -76,7 +79,10 @@ ROWS = {
            '2017-02-03 11:10:00', '2017-02-04 09:00:00',
            '2017-02-09 12:00:00', '2017-02-20 00:00:00'),
           ('o4', 'c4', 'unavailable', '2017-02-10 12:00:00',
-           NULL, NULL, NULL, '2017-03-01 00:00:00')
+           NULL, NULL, NULL, '2017-03-01 00:00:00'),
+          ('o5', 'c5', 'delivered', '2017-02-15 08:00:00',
+           '2017-02-15 08:05:00', '2017-02-16 09:00:00',
+           '2017-02-20 10:00:00', '2017-03-01 00:00:00')
         ) AS t(order_id, customer_id, order_status, a, b, c, d, e)
     """,
     "olist_order_items_dataset": """
@@ -87,7 +93,8 @@ ROWS = {
           ('o1', 1, 'p1', 's1', '2017-01-07 00:00:00', 10.0, 2.0),
           ('o1', 2, 'p2', 's1', '2017-01-07 00:00:00', 5.0, 1.0),
           ('o2', 1, 'p1', 's1', '2017-01-22 00:00:00', 7.0, 1.0),
-          ('o3', 1, 'p2', 's1', '2017-02-05 00:00:00', 20.0, 3.0)
+          ('o3', 1, 'p2', 's1', '2017-02-05 00:00:00', 20.0, 3.0),
+          ('o5', 1, 'p3', 's2', '2017-02-17 00:00:00', 99.0, 9.0)
         ) AS t(order_id, n, product_id, seller_id, s, p, f)
     """,
     "olist_order_payments_dataset": """
@@ -96,7 +103,8 @@ ROWS = {
         FROM (VALUES
           ('o1', 1, 'credit_card', 3, 18.0),
           ('o2', 1, 'voucher', 1, 8.0),
-          ('o3', 1, 'boleto', 1, 23.0)
+          ('o3', 1, 'boleto', 1, 23.0),
+          ('o5', 1, 'credit_card', 1, 108.0)
         ) AS t(order_id, n, payment_type, k, v)
     """,
     "olist_products_dataset": """
@@ -110,7 +118,8 @@ ROWS = {
                g::BIGINT AS product_width_cm
         FROM (VALUES
           ('p1', 'beleza_saude', 40, 300, 2, 500, 20, 10, 15),
-          ('p2', NULL, NULL, NULL, NULL, 800, 30, 20, 25)
+          ('p2', NULL, NULL, NULL, NULL, 800, 30, 20, 25),
+          ('p3', 'beleza_saude', 30, 200, 1, 300, 10, 10, 10)
         ) AS t(product_id, product_category_name, a, b, c, d, e, f, g)
     """,
     "olist_order_reviews_dataset": """
@@ -123,7 +132,9 @@ ROWS = {
           ('r1', 'o1', 5, NULL, 'otimo',
            '2017-01-11 00:00:00', '2017-01-12 08:00:00'),
           ('r1', 'o3', 4, NULL, NULL,
-           '2017-02-10 00:00:00', '2017-02-11 08:00:00')
+           '2017-02-10 00:00:00', '2017-02-11 08:00:00'),
+          ('r5', 'o5', 1, NULL, NULL,
+           '2017-02-21 00:00:00', '2017-02-22 08:00:00')
         ) AS t(review_id, order_id, n, title, message, a, b)
     """,
     "olist_customers_dataset": """
@@ -131,15 +142,18 @@ ROWS = {
                c AS customer_zip_code_prefix, d AS customer_city,
                e AS customer_state
         FROM (VALUES
-          ('c1', 'u1', '01003', 'sao paulo', 'SP'),
-          ('c2', 'u1', '01003', 'sao paulo', 'SP'),
-          ('c3', 'u2', '20040', 'rio de janeiro', 'RJ'),
-          ('c4', 'u3', '30110', 'belo horizonte', 'MG')
+          ('c1', 'u110', '01003', 'sao paulo', 'SP'),
+          ('c2', 'u110', '01003', 'sao paulo', 'SP'),
+          ('c3', 'u134', '20040', 'rio de janeiro', 'RJ'),
+          ('c4', 'u180', '30110', 'belo horizonte', 'MG'),
+          ('c5', 'u0', '88888', 'curitiba', 'PR')
         ) AS t(a, b, c, d, e)
     """,
     "olist_sellers_dataset": """
-        SELECT * FROM (VALUES ('s1', '13023', 'campinas', 'SP'))
-        AS t(seller_id, seller_zip_code_prefix, seller_city, seller_state)
+        SELECT * FROM (VALUES
+          ('s1', '13023', 'campinas', 'SP'),
+          ('s2', '99999', 'manaus', 'AM')
+        ) AS t(seller_id, seller_zip_code_prefix, seller_city, seller_state)
     """,
     "olist_geolocation_dataset": """
         SELECT z AS geolocation_zip_code_prefix,
@@ -147,7 +161,10 @@ ROWS = {
                c AS geolocation_city, s AS geolocation_state
         FROM (VALUES
           ('01003', -23.55, -46.63, 'sao paulo', 'SP'),
-          ('01003', -23.54, -46.64, 'são paulo', 'SP')
+          ('01003', -23.54, -46.64, 'são paulo', 'SP'),
+          ('13023', -22.9, -47.06, 'campinas', 'SP'),
+          ('88888', -25.43, -49.27, 'curitiba', 'PR'),
+          ('99999', -3.1, -60.02, 'manaus', 'AM')
         ) AS t(z, a, b, c, s)
     """,
     "product_category_name_translation": """
@@ -195,11 +212,13 @@ def test_the_declaration_matches_the_design():
     assert len(declaration["metrics"]) == 11
     assert {m["kind"] for m in declaration["metrics"]} == {"aggregate", "unavailable"}
     assert "CC BY-NC-SA 4.0" in declaration["title"]
+    assert declaration["sample"] == {"by": "customer_unique_id", "keep_one_in": 20}
     # 两张主键在 WrenAI 原定义里写错的表，这里是两列
     keys = {t["name"]: t.get("key") for t in declaration["tables"]}
     assert keys["order_items"] == ["order_id", "order_item_id"]
     assert keys["order_payments"] == ["order_id", "payment_sequential"]
     assert keys["order_reviews"] == ["review_id", "order_id"]
+    assert keys["geolocation"] == ["geolocation_zip_code_prefix"]
 
 
 def test_the_built_file_is_a_dataset_the_service_can_read(sample, tmp_path):
@@ -224,9 +243,43 @@ def test_the_built_file_is_a_dataset_the_service_can_read(sample, tmp_path):
     assert len(description.links) == 7
     items = description.key("order_items")
     assert items is not None and items.key_columns == ("order_id", "order_item_id")
-    assert description.key("geolocation") is None
+    geolocation = description.key("geolocation")
+    assert geolocation is not None
+    assert geolocation.key_columns == ("geolocation_zip_code_prefix",)
     price = description.table("order_items").column("price")  # type: ignore[union-attr]
     assert (price.display_name, price.unit) == ("售价", "雷亚尔")  # type: ignore[union-attr]
+
+
+def test_the_sample_keeps_whole_customers_and_nothing_else(sample, tmp_path):
+    cache, declaration = sample
+    out = tmp_path / "olist.sqlite"
+    build(declaration, cache, out)
+
+    def ids(db: sqlite3.Connection, sql: str) -> list:
+        return [r[0] for r in db.execute(sql)]
+
+    with connect(out) as db:
+        assert ids(db, "SELECT customer_id FROM customers") == ["c1", "c2", "c3", "c4"]
+        assert ids(db, "SELECT order_id FROM orders") == ["o1", "o2", "o3", "o4"]
+        assert ids(db, "SELECT DISTINCT order_id FROM order_items") == [
+            "o1",
+            "o2",
+            "o3",
+        ]
+        assert ids(db, "SELECT order_id FROM order_payments") == ["o1", "o2", "o3"]
+        assert ids(db, "SELECT order_id FROM order_reviews") == ["o1", "o3"]
+        assert ids(db, "SELECT product_id FROM products") == ["p1", "p2"]
+        assert ids(db, "SELECT seller_id FROM sellers") == ["s1"]
+        assert db.execute(
+            "SELECT COUNT(*) FROM product_category_translation"
+        ).fetchone() == (1,)
+        # 每个前缀一行；只留客户与卖家用到的；坐标取平均，城市同票取字母序在前的写法
+        assert db.execute(
+            "SELECT * FROM geolocation ORDER BY geolocation_zip_code_prefix"
+        ).fetchall() == [
+            ("01003", -23.545, -46.635, "sao paulo", "SP"),
+            ("13023", -22.9, -47.06, "campinas", "SP"),
+        ]
 
 
 def test_values_keep_their_shape(sample, tmp_path):

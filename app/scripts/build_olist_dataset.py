@@ -1,9 +1,10 @@
 """生成样例数据集 olist-ecommerce。
 
 设计：k8s 仓 tree-build/SDD/modules/0023-fin-forecast.md 第三节。
-读 datasets/olist/olist.yml 与九个 parquet，写出与 info 产出的数据集
-同形的 SQLite：业务表，加自述表 dataset_metadata、field_dictionary、
-metric_dictionary、table_links、table_keys。
+读 datasets/olist/olist.yml 与九个 parquet，按定义里的 sample 抽一个完整的
+小样例（按真实客户 1/20；入样客户的订单连同明细、支付、评价都在），写出与
+info 产出的数据集同形的 SQLite：业务表，加自述表 dataset_metadata、
+field_dictionary、metric_dictionary、table_links、table_keys。
 写完按知识服务自己的读法自检一遍，再让引擎规划一条查询；最后打印一行 JSON 供登记。
 
 许可证：Olist 巴西电商数据集是 CC BY-NC-SA 4.0，只作演示与评测，不得商用。
@@ -33,7 +34,7 @@ from typing import Any
 import duckdb
 import yaml
 
-BUILDER_VERSION = "1"
+BUILDER_VERSION = "2"
 DECLARATION = Path(__file__).resolve().parents[1] / "datasets" / "olist" / "olist.yml"
 CHUNK = 50_000
 DOWNLOAD_TIMEOUT = 300
@@ -108,40 +109,122 @@ def quoted(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
 
 
+def attach_sources(
+    duck: duckdb.DuckDBPyConnection,
+    declaration: dict[str, Any],
+    sources: dict[str, Path],
+) -> None:
+    """每张表的 parquet 建成视图 src_<表名>，列名与顺序必须与定义一致。"""
+    for table in declaration["tables"]:
+        escaped = str(sources[table["name"]]).replace("'", "''")
+        view = quoted("src_" + table["name"])
+        duck.execute(
+            f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{escaped}')"  # noqa: S608
+        )
+        actual = [str(r[0]) for r in duck.execute(f"DESCRIBE {view}").fetchall()]
+        declared = [str(c["name"]) for c in table["columns"]]
+        if actual != declared:
+            raise BuildError(
+                f"columns of {table['source']} differ from the declaration: "
+                f"{actual} != {declared}"
+            )
+
+
+# 抽样：按真实客户抽，入样客户的订单连同明细、支付、评价都留下；商品、卖家只留被用到的；
+# 地理表按邮编前缀汇总成一行，只留客户与卖家用到的前缀。每张表的结果都按主键排序。
+SAMPLE_SQL = (
+    """CREATE TABLE customers AS SELECT * FROM src_customers
+       WHERE md5_number(customer_unique_id) % {keep_one_in} = 0""",
+    """CREATE TABLE orders AS SELECT o.* FROM src_orders o
+       SEMI JOIN customers c ON c.customer_id = o.customer_id""",
+    """CREATE TABLE order_items AS SELECT i.* FROM src_order_items i
+       SEMI JOIN orders o ON o.order_id = i.order_id""",
+    """CREATE TABLE order_payments AS SELECT p.* FROM src_order_payments p
+       SEMI JOIN orders o ON o.order_id = p.order_id""",
+    """CREATE TABLE order_reviews AS SELECT r.* FROM src_order_reviews r
+       SEMI JOIN orders o ON o.order_id = r.order_id""",
+    """CREATE TABLE products AS SELECT p.* FROM src_products p
+       SEMI JOIN order_items i ON i.product_id = p.product_id""",
+    """CREATE TABLE sellers AS SELECT s.* FROM src_sellers s
+       SEMI JOIN order_items i ON i.seller_id = s.seller_id""",
+    """CREATE TABLE product_category_translation AS
+       SELECT * FROM src_product_category_translation""",
+    """CREATE TABLE geolocation AS
+       WITH used AS (
+         SELECT customer_zip_code_prefix AS prefix FROM customers
+         UNION SELECT seller_zip_code_prefix FROM sellers
+       ),
+       points AS (
+         SELECT g.* FROM src_geolocation g
+         SEMI JOIN used u ON u.prefix = g.geolocation_zip_code_prefix
+       ),
+       places AS (
+         SELECT geolocation_zip_code_prefix, geolocation_city, geolocation_state,
+                row_number() OVER (
+                  PARTITION BY geolocation_zip_code_prefix
+                  ORDER BY count(*) DESC, geolocation_city, geolocation_state
+                ) AS rank
+         FROM points GROUP BY 1, 2, 3
+       )
+       SELECT p.geolocation_zip_code_prefix,
+              round(avg(p.geolocation_lat), 6) AS geolocation_lat,
+              round(avg(p.geolocation_lng), 6) AS geolocation_lng,
+              any_value(c.geolocation_city) AS geolocation_city,
+              any_value(c.geolocation_state) AS geolocation_state
+       FROM points p
+       JOIN places c ON c.geolocation_zip_code_prefix = p.geolocation_zip_code_prefix
+                    AND c.rank = 1
+       GROUP BY 1""",
+)
+
+
+def sample_tables(duck: duckdb.DuckDBPyConnection, declaration: dict[str, Any]) -> None:
+    names = {t["name"] for t in declaration["tables"]}
+    expected = {
+        "customers",
+        "orders",
+        "order_items",
+        "order_payments",
+        "order_reviews",
+        "products",
+        "sellers",
+        "product_category_translation",
+        "geolocation",
+    }
+    if names != expected:
+        raise BuildError(f"the sample rules expect these tables: {sorted(expected)}")
+    keep_one_in = int(declaration["sample"]["keep_one_in"])
+    if keep_one_in < 1:
+        raise BuildError("sample.keep_one_in must be at least 1")
+    for statement in SAMPLE_SQL:
+        duck.execute(statement.format(keep_one_in=keep_one_in))
+
+
 def copy_table(
     duck: duckdb.DuckDBPyConnection,
     target: sqlite3.Connection,
     table: dict[str, Any],
-    source: Path,
 ) -> None:
-    escaped = str(source).replace("'", "''")
-    described = duck.execute(
-        f"DESCRIBE SELECT * FROM read_parquet('{escaped}')"  # noqa: S608 路径来自本地缓存
-    ).fetchall()
-    actual = [str(row[0]) for row in described]
-    declared = [str(c["name"]) for c in table["columns"]]
-    if actual != declared:
-        raise BuildError(
-            f"columns of {table['source']} differ from the declaration: "
-            f"{actual} != {declared}"
-        )
+    name = quoted(table["name"])
+    described = duck.execute(f"DESCRIBE {name}").fetchall()
     columns: list[str] = []
     selects: list[str] = []
-    for name, source_type in ((str(r[0]), str(r[1])) for r in described):
-        declared_type, is_time = sqlite_type(table["name"], name, source_type)
-        columns.append(f"{quoted(name)} {declared_type}")
+    for column, source_type in ((str(r[0]), str(r[1])) for r in described):
+        declared_type, is_time = sqlite_type(table["name"], column, source_type)
+        columns.append(f"{quoted(column)} {declared_type}")
         selects.append(
-            f"strftime({quoted(name)}, '%Y-%m-%d %H:%M:%S')"
+            f"strftime({quoted(column)}, '%Y-%m-%d %H:%M:%S')"
             if is_time
-            else quoted(name)
+            else quoted(column)
         )
-    target.execute(f"CREATE TABLE {quoted(table['name'])} ({', '.join(columns)})")
+    target.execute(f"CREATE TABLE {name} ({', '.join(columns)})")
     insert = (
-        f"INSERT INTO {quoted(table['name'])} VALUES "  # noqa: S608 表名来自定义文件
+        f"INSERT INTO {name} VALUES "  # noqa: S608 表名来自定义文件
         f"({', '.join('?' for _ in columns)})"
     )
+    order = ", ".join(quoted(c) for c in table.get("key") or [described[0][0]])
     cursor = duck.execute(
-        f"SELECT {', '.join(selects)} FROM read_parquet('{escaped}')"  # noqa: S608
+        f"SELECT {', '.join(selects)} FROM {name} ORDER BY {order}"  # noqa: S608
     )
     while rows := cursor.fetchmany(CHUNK):
         target.executemany(insert, rows)
@@ -274,10 +357,13 @@ def build(declaration_path: Path, cache: Path, out: Path) -> dict[str, Any]:
     partial = out.with_name(out.name + ".part")
     partial.unlink(missing_ok=True)
     duck = duckdb.connect(":memory:")
+    duck.execute("SET threads = 1")  # 汇总的浮点加法顺序固定，两次生成逐字节相同
     target = sqlite3.connect(partial)
     try:
+        attach_sources(duck, declaration, sources)
+        sample_tables(duck, declaration)
         for table in declaration["tables"]:
-            copy_table(duck, target, table, sources[table["name"]])
+            copy_table(duck, target, table)
         start, end = date_range(target, declaration)
         write_description(target, declaration, version, start, end)
         target.commit()

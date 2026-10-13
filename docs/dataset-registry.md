@@ -81,15 +81,15 @@ MCP 的三个查询工具用可选参数 `dataset` 选择；不带参数时仍�
 
 > 设计：k8s 库 `tree-build/SDD/modules/0023-fin-forecast.md` 第三节。2026-10-13。
 
-`olist-ecommerce`：巴西电商 Olist 的九张表（订单、明细、支付、评价、商品、客户、卖家、地理、品类译名），给专家「财务分析与预测」演示与评测用。
+`olist-ecommerce`：巴西电商 Olist 的九张表（订单、明细、支付、评价、商品、客户、卖家、地理、品类译名），按真实客户 **1/20 抽样**（约 4900 单，文件约 4 MB；所有者 2026-10-13 定），给专家「财务分析与预测」演示与评测用。入样客户的全部订单连同明细、支付、评价都在，商品、卖家只留被用到的，地理表按邮编前缀汇总成一行；数据内部完整，绝对数约为全量的 1/20。
 
 **许可证**：CC BY-NC-SA 4.0，只作演示与评测，不得商用。标题、`dataset_metadata` 的 `license` 与 `source` 两行都写着。
 
 | 处 | 是什么 |
 | --- | --- |
 | `app/datasets/olist/olist.yml` | 唯一定义：九个 parquet 的地址与 sha256、表名、主键、关系、字段字典（中文名、单位、WrenAI 英文说明）、口径、说明 |
-| `app/scripts/build_olist_dataset.py` | 读定义与 parquet，写出与本节上文同形的 SQLite，按知识服务自己的读法自检；打印一行登记要用的 JSON |
-| `app/tests/test_olist_dataset.py` | 用合成数据测生成、自述、版本与四个查询工具 |
+| `app/scripts/build_olist_dataset.py` | 读定义与全量 parquet，按定义里的 `sample` 抽样，写出与本节上文同形的 SQLite，按知识服务自己的读法自检；打印一行登记要用的 JSON。同一台机器上两次生成逐字节相同 |
+| `app/tests/test_olist_dataset.py` | 用合成数据测抽样、生成、自述、版本与四个查询工具 |
 
 生成（parquet 缺了会下载，sha256 不对就停；parquet 与生成出的文件都不进 git）：
 
