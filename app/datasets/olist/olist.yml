@@ -1,0 +1,401 @@
+# 样例数据集 olist-ecommerce 的唯一定义（设计：k8s 仓 tree-build/SDD/modules/0023-fin-forecast.md 第三节）。
+# 生成：scripts/build_olist_dataset.py 读这份文件与九个 parquet，写出知识服务认得的 SQLite 数据集。
+#
+# 许可证：Olist 巴西电商数据集是 CC BY-NC-SA 4.0（Olist 在 Kaggle 公开发布），只作演示与评测，不得商用。
+# 文件经 WrenAI 的样例地址取得；表与列的英文说明取自 WrenAI legacy/v1 分支
+# wren-ui/src/apollo/server/data/sample.ts 的 ecommerce 一段，中文名与单位是我们加的。
+# 改了这份文件，data_version 跟着变（它参与版本计算），重新生成后要重新登记。
+
+dataset_id: olist-ecommerce
+title: 巴西电商 Olist 样例（演示与评测用，CC BY-NC-SA 4.0）
+source_app: knowledge-sample
+base_url: https://assets.getwren.ai/sample_data/brazilian-ecommerce/
+# 数据集的起止日期取这一列的最早与最晚日期
+date_range: {table: orders, column: order_purchase_timestamp}
+
+tables:
+- name: orders
+  source: olist_orders_dataset
+  sha256: 6aec6d54909f1b0895a654202abebb17dc35b52d0c6062562bad7b75166fe8b0
+  description: This table contains detailed information about customer orders, including timestamps for various stages of the order process (approval, shipping, delivery), as well as the order status and customer identification. It helps track the lifecycle of an order from purchase to delivery.
+  key:
+  - order_id
+  labels:
+  - order_status
+  - order_purchase_timestamp
+  columns:
+  - name: order_id
+    display_name: 订单号
+    description: Unique identifier for the specific order
+  - name: customer_id
+    display_name: 客户编号（每单一个）
+    description: Unique identifier for the customer who placed the order.
+  - name: order_status
+    display_name: 订单状态
+    description: Current status of the order (e.g., delivered, shipped, canceled).
+  - name: order_purchase_timestamp
+    display_name: 下单时间
+    description: Date and time when the order was placed by the customer.
+  - name: order_approved_at
+    display_name: 付款审核通过时间
+    description: Date and time when the order was approved for processing.
+  - name: order_delivered_carrier_date
+    display_name: 交给承运商时间
+    description: Date when the order was handed over to the carrier or freight forwarder for delivery.
+  - name: order_delivered_customer_date
+    display_name: 送达客户时间
+    description: Date when the order was delivered to the customer.
+  - name: order_estimated_delivery_date
+    display_name: 预计送达日期
+    description: Expected delivery date based on the initial estimate.
+- name: order_items
+  source: olist_order_items_dataset
+  sha256: d3f75a00d0820e8da7205ae6fcebf4bcc7d50c4357f8641edd58f2f2392c264c
+  description: This table contains the information related to a specific order containing its shipping cost, products, cost, number of order items, and the seller.
+  key:
+  - order_id
+  - order_item_id
+  labels:
+  - product_id
+  - seller_id
+  columns:
+  - name: order_id
+    display_name: 订单号
+    description: Unique identifier for the order across the platform
+  - name: order_item_id
+    display_name: 单内序号
+    description: Unique identifier for each item within a specific order
+  - name: product_id
+    display_name: 商品编号
+    description: Unique identifier for the product sold in the order.
+  - name: seller_id
+    display_name: 卖家编号
+    description: Unique identifier of the seller who fulfilled the order item.
+  - name: shipping_limit_date
+    display_name: 卖家发货截止时间
+    description: Deadline for the order item to be shipped by the seller.
+  - name: price
+    display_name: 售价
+    unit: 雷亚尔
+    description: Price of the individual item within the order
+  - name: freight_value
+    display_name: 运费
+    unit: 雷亚尔
+    description: Cost of shipping associated with the specific order item
+- name: order_payments
+  source: olist_order_payments_dataset
+  sha256: 330adbbdb0dce4baac65dca09e655b71523aad3cb72c545ef362732b6a44cd6f
+  description: This table contains information about payment details for each order, including payment methods, amounts, installment plans, and payment sequences, helping to track how orders were paid and processed within the e-commerce platform.
+  key:
+  - order_id
+  - payment_sequential
+  labels:
+  - payment_type
+  columns:
+  - name: order_id
+    display_name: 订单号
+    description: Unique identifier for the order associated with the payment.
+  - name: payment_sequential
+    display_name: 支付序号
+    description: Sequence number for tracking multiple payments within the same order.
+  - name: payment_type
+    display_name: 支付方式
+    description: Method used for the payment, such as credit card, debit, or voucher.
+  - name: payment_installments
+    display_name: 分期期数
+    unit: 期
+    description: Number of installments the payment is divided into for the order.
+  - name: payment_value
+    display_name: 支付额
+    unit: 雷亚尔
+    description: Total amount paid in the specific transaction.
+- name: order_reviews
+  source: olist_order_reviews_dataset
+  sha256: 16b04987266b5a0a881be83a5687191525e8408b71abe2c0f7669e9bf5c36e88
+  description: This table contains customer reviews for each order, including feedback comments, ratings, and timestamps for when the review was submitted and responded to. It helps track customer satisfaction and review management on the e-commerce platform.
+  key:
+  - review_id
+  - order_id
+  labels:
+  - review_score
+  columns:
+  - name: review_id
+    display_name: 评价编号
+    description: Unique identifier for the specific review entry.
+  - name: order_id
+    display_name: 订单号
+    description: Unique identifier linking the review to the corresponding order.
+  - name: review_score
+    display_name: 评分
+    unit: 分
+    description: Numeric rating given by the customer, typically ranging from 1 (worst) to 5 (best).
+  - name: review_comment_title
+    display_name: 评价标题
+    description: Summary or title of the customer's review
+  - name: review_comment_message
+    display_name: 评价内容
+    description: Detailed feedback or comments provided by the customer regarding the order.
+  - name: review_creation_date
+    display_name: 评价提交时间
+    description: Date and time when the customer initially submitted the review.
+  - name: review_answer_timestamp
+    display_name: 评价回复时间
+    description: Date and time when the review was responded to by the seller
+- name: products
+  source: olist_products_dataset
+  sha256: 38dd21f3deecc50a4d29b82c1a70b640c8f52315fb7bd81c0af7b5db4c7ed832
+  description: This table provides detailed information about products, including their category, dimensions, weight, description length, and the number of photos. This helps in managing product details and enhancing the shopping experience on the e-commerce platform.
+  key:
+  - product_id
+  labels:
+  - product_category_name
+  columns:
+  - name: product_id
+    display_name: 商品编号
+    description: Unique identifier for the product
+  - name: product_category_name
+    display_name: 品类（葡萄牙文）
+    description: Name of the product category to which the item belongs.
+  - name: product_name_lenght
+    display_name: 商品名长度
+    unit: 字符
+    description: Length of the product name in characters
+  - name: product_description_lenght
+    display_name: 商品描述长度
+    unit: 字符
+    description: Length of the product description in characters.
+  - name: product_photos_qty
+    display_name: 商品图片数
+    unit: 张
+    description: Number of photos available for the product
+  - name: product_weight_g
+    display_name: 重量
+    unit: 克
+    description: Weight of the product in grams
+  - name: product_length_cm
+    display_name: 长
+    unit: 厘米
+    description: Length of the product in centimeters
+  - name: product_height_cm
+    display_name: 高
+    unit: 厘米
+    description: Height of the product in centimeters.
+  - name: product_width_cm
+    display_name: 宽
+    unit: 厘米
+    description: Width of the product in centimeters
+- name: customers
+  source: olist_customers_dataset
+  sha256: 2a52521a4d1d53451e4cfebbd7369fa589af09fc8758ef43df1c2de699eaee01
+  description: null
+  key:
+  - customer_id
+  labels:
+  - customer_unique_id
+  - customer_state
+  columns:
+  - name: customer_id
+    display_name: 客户编号（每单一个）
+  - name: customer_unique_id
+    display_name: 客户唯一编号
+    description: Unique id of the customer
+  - name: customer_zip_code_prefix
+    display_name: 客户邮编前五位
+    description: First 5 digits of customer zip code
+  - name: customer_city
+    display_name: 客户城市
+    description: Name of the city where the customer is located
+  - name: customer_state
+    display_name: 客户所在州
+    description: Name of the state where the customer is located
+- name: sellers
+  source: olist_sellers_dataset
+  sha256: cb26cab9c47e610dc170696f49781298257d1fa5e333a512d44bdf05db70a670
+  description: This table includes data about the sellers that fulfilled orders made. Use it to find the seller location and to identify which seller fulfilled each product.
+  key:
+  - seller_id
+  labels:
+  - seller_state
+  columns:
+  - name: seller_id
+    display_name: 卖家编号
+    description: Unique identifier for the seller on the platform
+  - name: seller_zip_code_prefix
+    display_name: 卖家邮编前五位
+    description: First 5 digits of seller zip code
+  - name: seller_city
+    display_name: 卖家城市
+    description: The Brazilian city where the seller is located
+  - name: seller_state
+    display_name: 卖家所在州
+    description: The Brazilian state where the seller is located
+- name: geolocation
+  source: olist_geolocation_dataset
+  sha256: 5cd727ebf0d600e8c3101558dfdaf4337029e3de08cea0cdfb4c7e01bbb3d286
+  description: This table contains detailed information about Brazilian zip codes and their corresponding latitude and longitude coordinates. It can be used to plot maps, calculate distances between sellers and customers, and perform geographic analysis.
+  columns:
+  - name: geolocation_zip_code_prefix
+    display_name: 邮编前五位
+    description: First 5 digits of zip code
+  - name: geolocation_lat
+    display_name: 纬度
+    unit: 度
+    description: The coordinations for the locations latitude
+  - name: geolocation_lng
+    display_name: 经度
+    unit: 度
+    description: The coordinations for the locations longitude
+  - name: geolocation_city
+    display_name: 城市
+    description: The city name of the geolocation
+  - name: geolocation_state
+    display_name: 州
+    description: The state of the geolocation
+- name: product_category_translation
+  source: product_category_name_translation
+  sha256: 9a982199b2f58b105e54bfeb231047b7d91b413f9f9c31e646cc333f4063e244
+  description: This table contains translations of product categories from Portuguese to English.
+  key:
+  - product_category_name
+  labels:
+  - product_category_name_english
+  columns:
+  - name: product_category_name
+    display_name: 品类（葡萄牙文）
+    description: Original name of the product category in Portuguese.
+  - name: product_category_name_english
+    display_name: 品类（英文）
+    description: Translated name of the product category in English.
+
+
+# 知识服务只支持一对一、多对一，而且两边字段同名。geolocation 与客户、卖家按邮编前缀是多对多，不建关系。
+links:
+- {name: order_customer, from: orders, to: customers, cardinality: many_to_one, columns: [customer_id]}
+- {name: item_order, from: order_items, to: orders, cardinality: many_to_one, columns: [order_id]}
+- {name: item_product, from: order_items, to: products, cardinality: many_to_one, columns: [product_id]}
+- {name: item_seller, from: order_items, to: sellers, cardinality: many_to_one, columns: [seller_id]}
+- {name: payment_order, from: order_payments, to: orders, cardinality: many_to_one, columns: [order_id]}
+- {name: review_order, from: order_reviews, to: orders, cardinality: many_to_one, columns: [order_id]}
+- {name: product_category, from: products, to: product_category_translation, cardinality: many_to_one, columns: [product_category_name]}
+
+# 口径。全部是按维度汇总的（kind: aggregate）或数据集里没有的（kind: unavailable），都不能按口径名查询（queryable 0），
+# 由专家按定义写 SQL。metric_name 也是结果列的规范名：算出来的列用它作别名。比率是 0 到 1 的小数。
+metrics:
+- metric_name: gmv
+  display_name: 成交额
+  unit: 雷亚尔
+  kind: aggregate
+  base_table: order_items
+  expression: SUM(order_items.price + order_items.freight_value)
+  row_filter: orders.order_status NOT IN ('canceled', 'unavailable')
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 售价加运费之和；剔除已取消（canceled）与不可用（unavailable）的订单；按下单所在期归期
+- metric_name: item_revenue
+  display_name: 商品收入（不含运费）
+  unit: 雷亚尔
+  kind: aggregate
+  base_table: order_items
+  expression: SUM(order_items.price)
+  row_filter: orders.order_status NOT IN ('canceled', 'unavailable')
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 售价之和，不含运费；剔除已取消与不可用的订单
+- metric_name: freight_revenue
+  display_name: 运费收入
+  unit: 雷亚尔
+  kind: aggregate
+  base_table: order_items
+  expression: SUM(order_items.freight_value)
+  row_filter: orders.order_status NOT IN ('canceled', 'unavailable')
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 运费之和；剔除已取消与不可用的订单
+- metric_name: payment_total
+  display_name: 支付额
+  unit: 雷亚尔
+  kind: aggregate
+  base_table: order_payments
+  expression: SUM(order_payments.payment_value)
+  row_filter: orders.order_status NOT IN ('canceled', 'unavailable')
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 各笔支付之和；剔除已取消与不可用的订单。与成交额几乎相等（约 99.6% 的订单逐单相等），但不是同一个口径
+- metric_name: order_count
+  display_name: 订单数
+  unit: 单
+  kind: aggregate
+  base_table: order_items
+  expression: COUNT(DISTINCT order_items.order_id)
+  row_filter: orders.order_status NOT IN ('canceled', 'unavailable')
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 有明细、未取消且不是不可用的订单数，与成交额同一范围（算客单价时分子分母一致）。直接数 orders 会多出没有明细的订单
+- metric_name: cancel_rate
+  display_name: 取消率
+  unit: 比率
+  kind: aggregate
+  base_table: orders
+  expression: AVG(CASE WHEN orders.order_status = 'canceled' THEN 1.0 ELSE 0.0 END)
+  row_filter: ''
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 当期下单中状态为已取消（canceled）的订单数除以当期全部下单数；分母含所有状态
+- metric_name: credit_card_installment_share
+  display_name: 信用卡分期占比
+  unit: 比率
+  kind: aggregate
+  base_table: order_payments
+  expression: COUNT(DISTINCT CASE WHEN order_payments.payment_installments > 1 THEN order_payments.order_id END) * 1.0 / COUNT(DISTINCT order_payments.order_id)
+  row_filter: order_payments.payment_type = 'credit_card'
+  time_basis: 不分期间时取全部；分期间时按下单时间归期
+  description: 有信用卡支付的订单中，任一笔信用卡支付分期期数大于 1 的订单所占比例；按订单去重，不按支付笔数
+- metric_name: active_customers
+  display_name: 下单客户数
+  unit: 人
+  kind: aggregate
+  base_table: orders
+  expression: COUNT(DISTINCT customers.customer_unique_id)
+  row_filter: ''
+  time_basis: 按下单时间 orders.order_purchase_timestamp 归期
+  description: 按客户唯一编号 customer_unique_id 去重的下单客户数。不要用 customer_id，它一单一个
+- metric_name: repeat_customer_share
+  display_name: 复购客户占比
+  unit: 比率
+  kind: aggregate
+  base_table: orders
+  expression: AVG(CASE WHEN n >= 2 THEN 1.0 ELSE 0.0 END)，n 为每个 customers.customer_unique_id 的订单数
+  row_filter: ''
+  time_basis: 全部时间、全部状态
+  description: 按客户唯一编号计，下过 2 单及以上的客户除以全部下单客户。按 customer_id 算会恒为 0
+- metric_name: cost_of_goods
+  display_name: 商品成本
+  unit: 雷亚尔
+  kind: unavailable
+  base_table: ''
+  expression: ''
+  row_filter: ''
+  time_basis: ''
+  description: 数据集不含成本
+  reason_if_not: 数据集不含成本、费用与利润
+- metric_name: gross_margin
+  display_name: 毛利率
+  unit: 比率
+  kind: unavailable
+  base_table: ''
+  expression: ''
+  row_filter: ''
+  time_basis: ''
+  description: 数据集不含成本，毛利与利润率都算不出来
+  reason_if_not: 数据集不含成本，毛利与利润率都算不出来；不要用运费或其他字段替代
+
+# 写进 dataset_metadata 的说明。data_snapshot_id、start_date、end_date、source_<表名> 由生成脚本补。
+metadata:
+  complete_start: '2017-01'
+  complete_end: '2018-08'
+  period_formats: 月 YYYY-MM（例 2018-08）；季度 YYYY-Qn（例 2018-Q2）；年 YYYY
+  currency: 巴西雷亚尔（BRL）
+  license: CC BY-NC-SA 4.0；只作演示与评测，不得商用
+  source: Olist 在 Kaggle 公开发布的巴西电商数据集（Brazilian E-Commerce Public Dataset by Olist），经 WrenAI 样例地址取得
+  note_truncation: 2016 年只有 9、10、12 月零星订单，11 月没有数据；2018-09 只有 16 单、2018-10 只有 4 单，是数据截断，不是业务下滑；2018 年第三季度不完整。连续完整的月份是 complete_start 到 complete_end
+  note_no_cost: 数据集不含成本、费用与利润，毛利与利润率算不出来
+  note_customer_id: customer_id 一单一个；客户数与复购用 customers.customer_unique_id
+  note_status: 收入类口径剔除已取消（canceled）与不可用（unavailable）的订单；取消率的分母含全部状态
+  note_geolocation: geolocation 一个邮编前缀有多行，不能直接与客户、卖家关联；要用先按前缀汇总
+  note_category: 有商品没有品类，有品类没有英文名；按品类汇总时把它们单列为未知
+  note_keys: order_items 由 order_id 加 order_item_id 确定一行；order_payments 由 order_id 加 payment_sequential；order_reviews 由 review_id 加 order_id
+  note_timestamps: 时间是文字，格式 YYYY-MM-DD HH:MM:SS；按月取 substr(列, 1, 7)

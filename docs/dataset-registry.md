@@ -76,3 +76,28 @@ MCP 的三个查询工具用可选参数 `dataset` 选择；不带参数时仍�
 与默认数据集同形：`dataset_metadata`（至少有 `data_snapshot_id`、`start_date`、`end_date`）、
 `metric_dictionary`，其余是业务表。`tests/fixtures/sh600009-financials.dataset.bin` 是 info 实采实建的
 600009 数据集原件（后缀不用 `.sqlite` 是因为仓库忽略该后缀），测试用它验证两边的约定对得上。
+
+## 样例数据集
+
+> 设计：k8s 库 `tree-build/SDD/modules/0023-fin-forecast.md` 第三节。2026-10-13。
+
+`olist-ecommerce`：巴西电商 Olist 的九张表（订单、明细、支付、评价、商品、客户、卖家、地理、品类译名），给专家「财务分析与预测」演示与评测用。
+
+**许可证**：CC BY-NC-SA 4.0，只作演示与评测，不得商用。标题、`dataset_metadata` 的 `license` 与 `source` 两行都写着。
+
+| 处 | 是什么 |
+| --- | --- |
+| `app/datasets/olist/olist.yml` | 唯一定义：九个 parquet 的地址与 sha256、表名、主键、关系、字段字典（中文名、单位、WrenAI 英文说明）、口径、说明 |
+| `app/scripts/build_olist_dataset.py` | 读定义与 parquet，写出与本节上文同形的 SQLite，按知识服务自己的读法自检；打印一行登记要用的 JSON |
+| `app/tests/test_olist_dataset.py` | 用合成数据测生成、自述、版本与四个查询工具 |
+
+生成（parquet 缺了会下载，sha256 不对就停；parquet 与生成出的文件都不进 git）：
+
+```bash
+cd app
+uv run python -m scripts.build_olist_dataset --cache <parquet 目录> --out <文件>.sqlite
+```
+
+- `data_version` 按输入算：定义文件与九个 parquet 的 sha256，加生成器版本。改了定义文件，版本跟着变，重新生成后要重新登记。
+- 口径全部是按维度汇总的，`queryable` 全为 0：`metric_definitions` 给定义，专家按定义用 `run_sql` 算；`query_metric` 不适用。
+- 登记照上文「登记接口」：对象放知识服务自己的样例桶（桶要在 `knowledge_dataset_allowed_buckets` 里），`source_app` 为 `knowledge-sample`，`security_code` 不填。生产上用哪个桶、谁持有登记令牌，发布时定。
