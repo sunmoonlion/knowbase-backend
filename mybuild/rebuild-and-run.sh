@@ -3,8 +3,8 @@
 
 set -e
 
-IMAGE_NAME="knowledge-backend:architecture-v2-dev"
-CONTAINER_NAME="knowledge-backend"
+IMAGE_NAME="knowbase-backend:architecture-v2-dev"
+CONTAINER_NAME="knowbase-backend"
 
 echo "停止并删除旧容器..."
 docker stop $CONTAINER_NAME 2>/dev/null || true

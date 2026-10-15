@@ -247,7 +247,7 @@ async def test_migration_backfills_only_inflight_and_preserves_unknowns(db):
     async with db() as session:
         for status in ("accepted", "running", "succeeded"):
             job = KnowledgeIngestionJob(
-                source_app="info-app",
+                source_app="knowfeed-app",
                 source_document_id=uuid.uuid4(),
                 source_document_version_id=uuid.uuid4(),
                 target_dataset="market-news",

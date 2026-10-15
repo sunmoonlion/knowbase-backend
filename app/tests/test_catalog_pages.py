@@ -37,7 +37,7 @@ from app.domain.dataset_view import matches, metric_view, note_label, notes_of
 from app.domain.datasets import SUPERSEDED
 from app.interfaces.http.admin.catalog import get_dataset_pages
 from app.interfaces.http.admin.datasets import get_registry_view, registry_settings
-from app.interfaces.mcp.knowledge_mcp import KnowledgeMcp
+from app.interfaces.mcp.knowbase_mcp import KnowledgeMcp
 from app.main import app
 
 NEWER = "sh600009-financials-ffffffffffffffff"
@@ -141,7 +141,7 @@ def pages_for(default_dataset, tmp_path, registry=None, **changes):
     settings = settings_for(default_dataset, tmp_path, **changes)
     registry = registry if registry is not None else MemoryRegistry(registered())
     catalog = catalog_for(settings, registry, LocalFiles(tmp_path))
-    enabled = settings.knowledge_dataset_registry_enabled
+    enabled = settings.knowbase_dataset_registry_enabled
     return DatasetPages(catalog, registry_enabled=enabled), catalog, settings
 
 
@@ -249,7 +249,7 @@ async def test_the_default_dataset_has_a_page_too(default_dataset, tmp_path):
     """`AT-KNOW-08`：多数据集没打开，目录里只有默认数据集，详情也打得开。"""
     # 关着的时候，装配层不给目录登记表；这里按那个样子建
     settings = settings_for(
-        default_dataset, tmp_path, knowledge_dataset_registry_enabled=False
+        default_dataset, tmp_path, knowbase_dataset_registry_enabled=False
     )
     pages = DatasetPages(catalog_for(settings, None, None), registry_enabled=False)
     listing = await pages.listing()
@@ -273,14 +273,14 @@ def console(who: str | None = "owner") -> httpx.AsyncClient:
         transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     )
     if who:
-        http.cookies.set("sunmoonai_knowledge_admin_sid", who)
+        http.cookies.set("sunmoonai_knowbase_admin_sid", who)
     return http
 
 
 def admins() -> FakeAuthService:
     return FakeAuthService(
         {
-            "owner": session("admin", "knowledge:admin"),
+            "owner": session("admin", "knowbase:admin"),
             "visitor": session("admin", "profile:read"),
         }
     )
@@ -301,7 +301,7 @@ LIST = "/api/admin/v1/knowledge/catalog/datasets"
 
 
 async def test_only_the_knowledge_admin_sees_the_catalog(catalog):
-    """没登录的 401；登录了但不是 knowledge 管理员的 403。"""
+    """没登录的 401；登录了但不是 knowbase 管理员的 403。"""
     async with console(None) as http:
         assert (await http.get(LIST)).status_code == 401
         assert (await http.get(f"{LIST}/{DATASET}")).status_code == 401
@@ -427,7 +427,7 @@ def two_versions():
 def admin(default_dataset, tmp_path, monkeypatch: pytest.MonkeyPatch):
     fake = FakeAuthService(
         {
-            "owner": session("admin", "knowledge:admin"),
+            "owner": session("admin", "knowbase:admin"),
             "visitor": session("admin", "profile:read"),
         }
     )
@@ -455,7 +455,7 @@ async def test_only_the_knowledge_admin_sees_the_registry(admin):
         assert (await http.get(f"{REGISTRY}/{DATASET}/versions")).status_code == 403
     # 拿网页端的登录来：管理接口不认
     async with console(None) as http:
-        http.cookies.set("sunmoonai_knowledge_web_sid", "owner")
+        http.cookies.set("sunmoonai_knowbase_web_sid", "owner")
         assert (await http.get(REGISTRY)).status_code == 401
         assert (await http.get(LIST)).status_code == 401
 
@@ -495,7 +495,7 @@ async def test_the_registry_page_works_when_the_registry_is_off(
     admin, default_dataset, tmp_path
 ):
     admin["settings"] = settings_for(
-        default_dataset, tmp_path, knowledge_dataset_registry_enabled=False
+        default_dataset, tmp_path, knowbase_dataset_registry_enabled=False
     )
     async with console() as http:
         got = await http.get(REGISTRY)

@@ -39,17 +39,17 @@ def ensure_dataset(
     settings: Settings, transport: httpx.BaseTransport | None = None
 ) -> Path:
     """返回可用的本地文件路径；需要时从对象存储取回并校验。"""
-    path = Path(settings.knowledge_dataset_path)
-    expected = (settings.knowledge_dataset_sha256 or "").lower()
+    path = Path(settings.knowbase_dataset_path)
+    expected = (settings.knowbase_dataset_sha256 or "").lower()
     if path.is_file():
         if expected and _sha256(path) != expected:
             raise DatasetUnavailable("local dataset does not match the pinned sha256")
         return path
-    if not settings.knowledge_dataset_object:
+    if not settings.knowbase_dataset_object:
         raise DatasetUnavailable(
             "dataset file missing and no dataset object configured"
         )
-    bucket, key = parse_object(settings.knowledge_dataset_object)
+    bucket, key = parse_object(settings.knowbase_dataset_object)
     return fetch_pinned_object(
         settings,
         bucket=bucket,
@@ -151,7 +151,7 @@ class ObjectDatasetFiles:
 
     def _path(self, dataset) -> Path:
         return (
-            Path(self._settings.knowledge_dataset_cache_dir)
+            Path(self._settings.knowbase_dataset_cache_dir)
             / f"{dataset.sha256}.sqlite"
         )
 
@@ -162,7 +162,7 @@ class ObjectDatasetFiles:
     def ensure(self, dataset) -> Path:
         allowed = {
             b.strip()
-            for b in self._settings.knowledge_dataset_allowed_buckets.split(",")
+            for b in self._settings.knowbase_dataset_allowed_buckets.split(",")
             if b.strip()
         }
         if dataset.bucket not in allowed:

@@ -87,7 +87,7 @@ class Evidence(BaseModel):
     rank: int = Field(ge=1, le=50)
     title: str | None = Field(default=None, max_length=4096)
     source_uri: str | None = Field(default=None, max_length=8192)
-    source_app: Literal["info-app"] = "info-app"
+    source_app: Literal["knowfeed-app"] = "knowfeed-app"
     source_document_id: uuid.UUID
     source_document_version_id: uuid.UUID
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

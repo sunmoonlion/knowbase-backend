@@ -44,22 +44,22 @@ class Settings(BaseSettings):
 
     env: str = "development"
     log_level: str = "INFO"
-    service_name: str = "knowledge-backend"
+    service_name: str = "knowbase-backend"
     deployment_id: str = "local"
-    app_slug: str = "knowledge"
+    app_slug: str = "knowbase"
 
     # 跨应用跳转（app/domain/cross_app.py）。都可不配：不配就是不带人来、也不带人去。
     # 哪些应用可以把用户带到这里，各自的回跳地址。回跳地址只从这里取，从不从链接里取。
     #   {"investment": {"return_url": "https://…/zh-CN/workbench?ref={ref}"},
-    #    "knowledge": {}}
-    # knowledge 默认认 investment 与 info，都没有回跳地址：页面上不显示「回到原处」。
-    cross_app_sources_json: str = '{"investment": {}, "info": {}}'
+    #    "knowbase": {}}
+    # knowbase 默认认 investment 与 knowfeed，都没有回跳地址：页面上不显示「回到原处」。
+    cross_app_sources_json: str = '{"investment": {}, "knowfeed": {}}'
     # 这个应用会把用户带去哪些应用，各自网页端的地址。
-    #   {"info": {"web_base_url": "https://info.example"}}
+    #   {"knowfeed": {"web_base_url": "https://knowfeed.example"}}
     cross_app_targets_json: str = "{}"
 
     database_url: str = (
-        "postgresql+asyncpg://knowledge:knowledge@localhost:5432/knowledge"
+        "postgresql+asyncpg://knowbase:knowbase@localhost:5432/knowbase"
     )
     migration_database_url: str | None = None
 
@@ -83,8 +83,8 @@ class Settings(BaseSettings):
     admin_casdoor_client_id: str = ""
     admin_casdoor_client_secret: str = ""
     admin_casdoor_redirect_uri: str = ""
-    admin_casdoor_application: str = "sunmoonai-knowledge-admin"
-    admin_auth_policy_version: str = "knowledge-admin-v2"
+    admin_casdoor_application: str = "sunmoonai-knowbase-admin"
+    admin_auth_policy_version: str = "knowbase-admin-v2"
     admin_auth_role_allowlist: str = ""
     admin_auth_scope_allowlist: str = ""
     admin_frontend_base_url: str = "http://localhost:5173"
@@ -95,8 +95,8 @@ class Settings(BaseSettings):
     web_casdoor_client_id: str = ""
     web_casdoor_client_secret: str = ""
     web_casdoor_redirect_uri: str = ""
-    web_casdoor_application: str = "sunmoonai-knowledge-web"
-    web_auth_policy_version: str = "knowledge-web-v2"
+    web_casdoor_application: str = "sunmoonai-knowbase-web"
+    web_auth_policy_version: str = "knowbase-web-v2"
     web_auth_role_allowlist: str = ""
     web_auth_scope_allowlist: str = ""
     web_frontend_base_url: str = "http://localhost:3000"
@@ -137,7 +137,7 @@ class Settings(BaseSettings):
         default=None, validation_alias="CELERY_BROKER_URL"
     )
     celery_queue: str = Field(
-        default="knowledge.default",
+        default="knowbase.default",
         validation_alias=AliasChoices("CELERY_QUEUE", "CELERY_TASK_DEFAULT_QUEUE"),
     )
     celery_result_backend: str | None = Field(
@@ -148,45 +148,45 @@ class Settings(BaseSettings):
         default=False, validation_alias="CELERY_TASK_TOPOLOGY_PREDECLARED"
     )
 
-    # Info -> Knowledge ingestion resource boundary.
-    internal_auth_casdoor_application: str = "sunmoonai-info-knowledge-ingest"
+    # Knowfeed -> Knowbase ingestion resource boundary.
+    internal_auth_casdoor_application: str = "sunmoonai-knowfeed-knowbase-ingest"
     internal_auth_discovery_url: str | None = None
     internal_auth_backchannel_endpoint: str | None = None
     internal_auth_audience: str | None = None
     internal_auth_subject_allowlist: str = ""
-    internal_auth_required_scope: str = "knowledge:ingest"
+    internal_auth_required_scope: str = "knowbase:ingest"
 
-    # Investment -> Knowledge retrieval resource boundary.
-    retrieval_auth_casdoor_application: str = "sunmoonai-investment-knowledge-retrieve"
+    # Investment -> Knowbase retrieval resource boundary.
+    retrieval_auth_casdoor_application: str = "sunmoonai-investment-knowbase-retrieve"
     retrieval_auth_discovery_url: str | None = None
     retrieval_auth_backchannel_endpoint: str | None = None
     retrieval_auth_audience: str | None = None
     retrieval_auth_subject_allowlist: str = ""
-    retrieval_auth_required_scope: str = "knowledge:retrieve"
+    retrieval_auth_required_scope: str = "knowbase:retrieve"
 
     # Knowledge providers and upstream artifact policy.
     # 知识 MCP（0006）：数据集与令牌表；第一期静态令牌（D10）
-    knowledge_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
-    knowledge_dataset_id: str = "lesson23-business-analysis"
+    knowbase_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
+    knowbase_dataset_id: str = "lesson23-business-analysis"
     # 默认数据集在数据目录页面上叫什么；不配就显示它的标识
-    knowledge_dataset_title: str | None = None
+    knowbase_dataset_title: str | None = None
     # 本地没有文件时从对象存储取：s3://bucket/key，并按 sha256 钉版本（F-KNOW-07）
-    knowledge_dataset_object: str | None = None
-    knowledge_dataset_sha256: str | None = None
-    knowledge_mcp_tokens_json: str = "{}"
-    # D10：工作台签发的 ES256 JWT（aud=knowledge）用这把公钥就地验；未配置时只认静态表
-    knowledge_mcp_jwt_public_key: str | None = None
-    knowledge_mcp_jwt_issuer: str | None = None
-    knowledge_mcp_rate_per_minute: int = 120
+    knowbase_dataset_object: str | None = None
+    knowbase_dataset_sha256: str | None = None
+    knowbase_mcp_tokens_json: str = "{}"
+    # D10：工作台签发的 ES256 JWT（aud=knowbase）用这把公钥就地验；未配置时只认静态表
+    knowbase_mcp_jwt_public_key: str | None = None
+    knowbase_mcp_jwt_issuer: str | None = None
+    knowbase_mcp_rate_per_minute: int = 120
     # 多数据集（0008-info 段三）：打开后，除默认数据集外还认登记表里的数据集。
     # 登记的数据集只从下面列出的桶里取（逗号分隔），按 sha256 钉版，取到缓存目录。
-    knowledge_dataset_registry_enabled: bool = False
-    knowledge_dataset_allowed_buckets: str = ""
-    knowledge_dataset_cache_dir: str = "/tmp/knowledge-datasets"  # noqa: S108
+    knowbase_dataset_registry_enabled: bool = False
+    knowbase_dataset_allowed_buckets: str = ""
+    knowbase_dataset_cache_dir: str = "/tmp/knowbase-datasets"  # noqa: S108
     # 语义层（0009-semantic）：打开后，工具后面的检查、规划、执行走语义层；
     # 关着时与以前完全一样。转换出的库放在缓存目录，按数据集文件的校验值命名。
-    knowledge_semantic_engine_enabled: bool = False
-    knowledge_semantic_cache_dir: str = "/tmp/knowledge-semantic"  # noqa: S108
+    knowbase_semantic_engine_enabled: bool = False
+    knowbase_semantic_cache_dir: str = "/tmp/knowledge-semantic"  # noqa: S108
 
     ragflow_api_base: str | None = Field(
         default=None, validation_alias="RAGFLOW_API_BASE"
@@ -231,11 +231,11 @@ class Settings(BaseSettings):
         default=True, validation_alias="S3_FORCE_PATH_STYLE"
     )
     artifact_s3_allowed_buckets: str = Field(
-        default="development-info-originals",
+        default="development-knowfeed-originals",
         validation_alias="ARTIFACT_S3_ALLOWED_BUCKETS",
     )
     artifact_s3_allowed_prefixes: str = Field(
-        default="info/original/",
+        default="knowfeed/original/",
         validation_alias="ARTIFACT_S3_ALLOWED_PREFIXES",
     )
     artifact_max_size_bytes: int = Field(

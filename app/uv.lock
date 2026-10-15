@@ -818,7 +818,7 @@ wheels = [
 ]
 
 [[package]]
-name = "knowledge-backend"
+name = "knowbase-backend"
 version = "2.0.0"
 source = { virtual = "." }
 dependencies = [

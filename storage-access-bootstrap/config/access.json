@@ -2,23 +2,23 @@
   "apiVersion": "storage.sunmoonai.com/v1alpha1",
   "kind": "ObjectStorageAccess",
   "metadata": {
-    "name": "knowledge-backend"
+    "name": "knowbase-backend"
   },
   "spec": {
     "provider": "platform-s3",
     "environment": "development",
-    "app": "knowledge-app",
-    "backend": "knowledge-backend",
+    "app": "knowbase-app",
+    "backend": "knowbase-backend",
     "namespace": "app-platform-dev",
-    "secretName": "knowledge-backend-s3",
-    "configMapName": "knowledge-backend-s3",
+    "secretName": "knowbase-backend-s3",
+    "configMapName": "knowbase-backend-s3",
     "region": "us-east-1",
     "forcePathStyle": true,
     "useTLS": false,
     "deletionPolicy": "Retain",
     "buckets": [
       {
-        "name": "development-info-originals",
+        "name": "development-knowfeed-originals",
         "permissions": [
           "read"
         ],
@@ -26,7 +26,7 @@
         "objectLock": false
       },
       {
-        "name": "development-knowledge-admin-assets",
+        "name": "development-knowbase-admin-assets",
         "permissions": [
           "read",
           "write",
@@ -37,7 +37,7 @@
         "objectLock": false
       },
       {
-        "name": "development-knowledge-datasets",
+        "name": "development-knowbase-datasets",
         "permissions": [
           "read"
         ],

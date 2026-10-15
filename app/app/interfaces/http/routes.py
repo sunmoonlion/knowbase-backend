@@ -14,11 +14,11 @@ from app.interfaces.http.admin.diagnostics import router as admin_diagnostics_ro
 from app.interfaces.http.internal.delivery_metrics import (
     router as delivery_metrics_router,
 )
-from app.interfaces.http.middleware.auth import require_knowledge_admin
+from app.interfaces.http.middleware.auth import require_knowbase_admin
 from app.interfaces.http.web.auth import router as web_auth_router
 from app.interfaces.http.web.cross_app import router as web_cross_app_router
 from app.interfaces.http.web.interactions import router as web_interactions_router
-from app.interfaces.mcp.knowledge_mcp import build_router as build_knowledge_mcp_router
+from app.interfaces.mcp.knowbase_mcp import build_router as build_knowledge_mcp_router
 
 router = APIRouter()
 router.include_router(admin_auth_router)
@@ -31,7 +31,7 @@ router.include_router(admin_catalog_router)
 router.include_router(admin_datasets_router)
 router.include_router(
     knowledge_admin_router,
-    dependencies=[Depends(require_knowledge_admin)],
+    dependencies=[Depends(require_knowbase_admin)],
 )
 router.include_router(knowledge_internal_router)
 # 工具与数据目录页面用同一份数据集目录（F-KNOW-11）

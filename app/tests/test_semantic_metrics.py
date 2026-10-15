@@ -1,6 +1,6 @@
 """按口径名查询（0009-semantic 乙段，SEM-07 至 SEM-09）。
 
-用的是 info 按数据集自述第二版重建的 600009 数据集原件；旧版原件用来验「不支持」的答复。
+用的是 knowfeed 按数据集自述第二版重建的 600009 数据集原件；旧版原件用来验「不支持」的答复。
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from app.domain.semantic import (
 )
 from app.infrastructure.semantic import SemanticDataset
 from app.infrastructure.semantic.sqlite_source import read_description
-from app.interfaces.mcp.knowledge_mcp import ALL_TOOLS, KNOWN_TOOLS, KnowledgeMcp
+from app.interfaces.mcp.knowbase_mcp import ALL_TOOLS, KNOWN_TOOLS, KnowledgeMcp
 
 HERE = Path(__file__).parent
 V2 = HERE / "fixtures" / "sh600009-financials-v2.dataset.bin"
@@ -622,8 +622,8 @@ def server(default_dataset, tmp_path, *, semantic: bool, fixture: Path = V2):
     settings = settings_for(
         default_dataset,
         tmp_path,
-        knowledge_semantic_engine_enabled=semantic,
-        knowledge_semantic_cache_dir=str(tmp_path / "semantic"),
+        knowbase_semantic_engine_enabled=semantic,
+        knowbase_semantic_cache_dir=str(tmp_path / "semantic"),
     )
     target = KnowledgeMcp(settings)
     entry = replace(

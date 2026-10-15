@@ -35,13 +35,13 @@ from app.infrastructure.external.ragflow import RAGFlowClient, RAGFlowProtocolEr
 from app.infrastructure.messaging.delivery_handlers import get_delivery_handlers
 from app.infrastructure.messaging.durable_tasks import DurableTasks
 from app.infrastructure.models.knowledge import KnowledgeIngestionJob
-from app.infrastructure.security.service_auth import require_knowledge_ingest_service
+from app.infrastructure.security.service_auth import require_knowbase_ingest_service
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.knowledge_routes import internal_router, router
 from app.interfaces.errors.exception_handlers import register_exception_handlers
 from core.config import Settings
 
-INFO_APP = Path(__file__).resolve().parents[4] / "info-app/info-backend/app"
+KNOWFEED_APP = Path(__file__).resolve().parents[4] / "knowfeed-app/knowfeed-backend/app"
 
 
 @pytest.fixture(autouse=True)
@@ -110,16 +110,16 @@ async def test_admin_and_internal_share_dataset_authorization(db, path, key, exp
     # identity/CSRF suites cover authentication; it is not a live OIDC test.
     principal = SimpleNamespace(
         actor_type="service",
-        subject="info-service",
+        subject="knowfeed-service",
         issuer="test",
-        audience="knowledge",
-        app="info-app",
+        audience="knowbase",
+        app="knowfeed-app",
         surface="internal",
-        scopes={"knowledge:ingest"},
+        scopes={"knowbase:ingest"},
         policy_version="test",
     )
     app.dependency_overrides[get_db_session] = session
-    app.dependency_overrides[require_knowledge_ingest_service] = lambda: principal
+    app.dependency_overrides[require_knowbase_ingest_service] = lambda: principal
     request = payload().model_copy(update={"dataset_key": key})
     if key == "reserved-execution-metadata":
         from app.application.services.ingestion_execution import EXECUTION_KEY
@@ -145,14 +145,14 @@ async def exercise_info_consumer(response):
     Isolate its app/core imports in a subprocess. Transport and token acquisition
     are injected; no live HTTP or credentials. No Info source changes needed.
     """
-    app_path = INFO_APP
+    app_path = KNOWFEED_APP
     interpreter = app_path / ".venv/bin/python"
     if not await asyncio.to_thread(interpreter.is_file):
         pytest.skip("initialize the sibling Info consumer and its test venv")
     script = """
 import asyncio, json, sys
 import httpx
-from app.infrastructure.external.knowledge_app import KnowledgeAppClient
+from app.infrastructure.external.knowbase_app import KnowbaseAppClient
 data = json.load(sys.stdin)
 original = httpx.AsyncClient
 transport = httpx.MockTransport(
@@ -162,7 +162,7 @@ httpx.AsyncClient = lambda **kwargs: original(transport=transport, **kwargs)
 class Token:
     async def get_token(self): return "test-only"
 async def run():
-    client = KnowledgeAppClient("https://test/ingestions", Token(), 1)
+    client = KnowbaseAppClient("https://test/ingestions", Token(), 1)
     try:
         result = await client.ingest_document({"fixture": True})
     except httpx.HTTPStatusError as exc:

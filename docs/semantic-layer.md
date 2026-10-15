@@ -9,8 +9,8 @@ MCP 工具后面的检查、规划、执行可以走语义层。引擎是 WrenAI
 
 | 配置（环境变量同名大写） | 默认 | 含义 |
 | --- | --- | --- |
-| `knowledge_semantic_engine_enabled` | `false` | 打开后，默认数据集与登记的数据集都走语义层 |
-| `knowledge_semantic_cache_dir` | `/tmp/knowledge-semantic` | 转换出的库放这里，文件名 `<数据集文件的 sha256>-b<生成规则版本>.duckdb` |
+| `knowbase_semantic_engine_enabled` | `false` | 打开后，默认数据集与登记的数据集都走语义层 |
+| `knowbase_semantic_cache_dir` | `/tmp/knowledge-semantic` | 转换出的库放这里，文件名 `<数据集文件的 sha256>-b<生成规则版本>.duckdb` |
 
 缓存目录要可写。数据集文件本身只读，不会被改动。
 
@@ -107,7 +107,7 @@ run_sql 收到 SQL
 | 口径只有说明、不能按名查询（`roe_avg`） | 拒绝，并列出可查的口径 |
 | 数据集没有第二版自述（零售库、第一版财务数据集） | 拒绝，答复改用 `metric_definitions` 加 `run_sql` |
 
-口径的定义来自数据集自己（info 的数据集自述第二版，见 info-backend 的 `docs/SECURITY_INGESTION.md`）。
+口径的定义来自数据集自己（knowfeed 的数据集自述第二版，见 knowfeed-backend 的 `docs/SECURITY_INGESTION.md`）。
 知识服务把它当数据看：表达式先按语法树校验，只许字段、常数、四则运算、比较、逻辑、`CASE`、
 `COALESCE`、`NULLIF`、`ABS`、`ROUND`；字段必须是基础表的，或是与基础表声明了关系的表的。
 不合规的口径记日志、不提供，不影响别的口径；`metric_definitions` 里它的 `queryable` 为假。

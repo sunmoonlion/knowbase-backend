@@ -1,6 +1,6 @@
 # v5 M1-204 / B5：摄入 Dataset 静态授权
 
-2026-09-13，Luna 单人实施、自测；基线 `knowledge-backend@72f17d2`。
+2026-09-13，Luna 单人实施、自测；基线 `knowbase-backend@72f17d2`。
 仅源码候选；未修改业务 dataset、Secret、部署或业务数据库。总处置清单位于 k8s
 `sunmoonai/docs/v5-backlog-disposition-luna.md`。
 

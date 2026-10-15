@@ -17,10 +17,10 @@ def _settings() -> Settings:
         _env_file=None,
         env="test",
         casdoor_endpoint="https://identity.example.test",
-        internal_auth_casdoor_application="sunmoonai-info-knowledge-ingest",
+        internal_auth_casdoor_application="sunmoonai-knowfeed-knowbase-ingest",
         internal_auth_audience="service-client",
         internal_auth_subject_allowlist="service-subject",
-        internal_auth_required_scope="knowledge:ingest",
+        internal_auth_required_scope="knowbase:ingest",
     )
 
 
@@ -28,11 +28,11 @@ def _retrieval_settings() -> Settings:
     return _settings().model_copy(
         update={
             "retrieval_auth_casdoor_application": (
-                "sunmoonai-investment-knowledge-retrieve"
+                "sunmoonai-investment-knowbase-retrieve"
             ),
             "retrieval_auth_audience": "retrieval-client",
             "retrieval_auth_subject_allowlist": "investment-agent-worker",
-            "retrieval_auth_required_scope": "knowledge:retrieve",
+            "retrieval_auth_required_scope": "knowbase:retrieve",
         }
     )
 
@@ -107,7 +107,7 @@ def _token(key: RSAKey, **overrides) -> str:
         "aud": "service-client",
         "iat": now,
         "exp": now + 300,
-        "scope": "knowledge:ingest",
+        "scope": "knowbase:ingest",
     }
     claims.update(overrides)
     return jwt.encode(
@@ -128,9 +128,9 @@ async def test_service_token_is_verified_and_bound_to_relation() -> None:
 
     assert principal.actor_type == "service"
     assert principal.subject == "service-subject"
-    assert principal.app == "knowledge"
+    assert principal.app == "knowbase"
     assert principal.surface == "internal"
-    assert principal.scopes == frozenset({"knowledge:ingest"})
+    assert principal.scopes == frozenset({"knowbase:ingest"})
 
 
 @pytest.mark.asyncio
@@ -170,7 +170,7 @@ async def test_retrieval_relation_is_independent_from_ingestion_relation() -> No
 
     assert principal.subject == "investment-agent-worker"
     assert principal.audience == "retrieval-client"
-    assert principal.scopes == frozenset({"knowledge:retrieve"})
+    assert principal.scopes == frozenset({"knowbase:retrieve"})
 
 
 @pytest.mark.asyncio

@@ -3,8 +3,8 @@ from pathlib import Path
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 LEGACY_INFRASTRUCTURE_NAMES = (
-    "knowledge-admin-backend",
-    "knowledge-web-backend",
+    "knowbase-admin-backend",
+    "knowbase-web-backend",
     "knowledge_admin_backend",
     "knowledge_admin_user",
 )
@@ -16,9 +16,9 @@ def test_access_declarations_use_unified_knowledge_backend_identity() -> None:
         "storage-access-bootstrap/config/access.json",
     ):
         declaration = json.loads((BACKEND_ROOT / relative_path).read_text())
-        assert declaration["metadata"]["name"] == "knowledge-backend"
-        assert declaration["spec"]["app"] == "knowledge-app"
-        assert declaration["spec"]["backend"] == "knowledge-backend"
+        assert declaration["metadata"]["name"] == "knowbase-backend"
+        assert declaration["spec"]["app"] == "knowbase-app"
+        assert declaration["spec"]["backend"] == "knowbase-backend"
 
 
 def test_database_bootstrap_has_no_legacy_identity_or_committed_password() -> None:
@@ -37,6 +37,6 @@ def test_database_bootstrap_has_no_legacy_identity_or_committed_password() -> No
 
 def test_build_uses_unified_backend_identity() -> None:
     build_conf = (BACKEND_ROOT / "mybuild" / "build.conf").read_text()
-    assert 'BACKEND_IMAGE="knowledge-backend"' in build_conf
+    assert 'BACKEND_IMAGE="knowbase-backend"' in build_conf
     assert 'BACKEND_TAG="architecture-v2-dev"' in build_conf
     assert "ADMIN_BACKEND_IMAGE" not in build_conf

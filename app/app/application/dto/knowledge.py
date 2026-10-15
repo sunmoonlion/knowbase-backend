@@ -51,7 +51,7 @@ class KnowledgeIngestionCreate(BaseModel):
     contract_version: Literal[1]
     operation: Literal["upsert"]
     distribution_id: uuid.UUID
-    source_app: Literal["info-app"]
+    source_app: Literal["knowfeed-app"]
     source_document_id: uuid.UUID
     source_document_version_id: uuid.UUID
     artifact: ArtifactRef

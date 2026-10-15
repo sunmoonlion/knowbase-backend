@@ -1,7 +1,7 @@
-"""给管理端造样例（knowledge-admin-frontend `preview/fixtures/`）。
+"""给管理端造样例（knowbase-admin-frontend `preview/fixtures/`）。
 
 账 56 起数据目录只在管理端，用户侧没有页面，所以样例都是管理接口的返回。
-数据目录的返回由真的目录、真的查询、真的接口造出来：上海机场那一个是 info 实采建出来的
+数据目录的返回由真的目录、真的查询、真的接口造出来：上海机场那一个是 knowfeed 实采建出来的
 数据集文件（`fixtures/sh600009-financials-v2.dataset.bin`）；贵州茅台那一个是这里现编的，
 它自己的说明里写明了是样例。目录页只有结构，所以样例里没有任何数值。
 平时它就是一个测试。要把样例写进管理端的仓库：
@@ -40,7 +40,7 @@ from app.infrastructure.external.dataset_store import ObjectDatasetFiles
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
 from app.interfaces.http.admin import catalog as catalog_routes
 from app.interfaces.http.admin import datasets as admin_routes
-from app.interfaces.http.middleware.auth import require_knowledge_admin
+from app.interfaces.http.middleware.auth import require_knowbase_admin
 from core.config import Settings
 
 HERE = Path(__file__).parent
@@ -109,7 +109,7 @@ def airport(**changes):
         "sha256": sha(AIRPORT_FILE),
         "size_bytes": AIRPORT_FILE.stat().st_size,
         "object_key": (
-            f"info/securities/code=600009/datasets/{AIRPORT_VERSION}/"
+            f"knowfeed/securities/code=600009/datasets/{AIRPORT_VERSION}/"
             "sh600009-financials.sqlite"
         ),
     }
@@ -126,7 +126,7 @@ def moutai(path: Path):
         size_bytes=path.stat().st_size,
         start_date="2001-12-31",
         object_key=(
-            f"info/securities/code=600519/datasets/{MOUTAI_VERSION}/"
+            f"knowfeed/securities/code=600519/datasets/{MOUTAI_VERSION}/"
             "sh600519-financials.sqlite"
         ),
     )
@@ -135,24 +135,24 @@ def moutai(path: Path):
 def settings_of(default_dataset: Path, tmp_path: Path, *, registry: bool) -> Settings:  # noqa: F811
     return Settings(
         _env_file=None,
-        knowledge_dataset_path=str(default_dataset),
-        knowledge_dataset_id="retail",
-        knowledge_dataset_title="零售经营库（最小实例）",
-        knowledge_dataset_registry_enabled=registry,
-        knowledge_dataset_allowed_buckets=BUCKET,
-        knowledge_dataset_cache_dir=str(tmp_path / "cache"),
+        knowbase_dataset_path=str(default_dataset),
+        knowbase_dataset_id="retail",
+        knowbase_dataset_title="零售经营库（最小实例）",
+        knowbase_dataset_registry_enabled=registry,
+        knowbase_dataset_allowed_buckets=BUCKET,
+        knowbase_dataset_cache_dir=str(tmp_path / "cache"),
     )
 
 
 def served(pages: DatasetPages) -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(catalog_routes.router, prefix="/api")
-    app.dependency_overrides[require_knowledge_admin] = lambda: (
-        session("admin", "knowledge:admin").principal
+    app.dependency_overrides[require_knowbase_admin] = lambda: (
+        session("admin", "knowbase:admin").principal
     )
     app.dependency_overrides[catalog_routes.get_dataset_pages] = lambda: pages
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://knowledge"
+        transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
     )
 
 
@@ -160,11 +160,11 @@ def pages_of(config: Settings, rows: list, files: dict[str, Path]) -> DatasetPag
     def opened(path: Path, dataset_id: str) -> SqliteDatasetQueries:
         return SqliteDatasetQueries(path, dataset_id=dataset_id)
 
-    enabled = config.knowledge_dataset_registry_enabled
+    enabled = config.knowbase_dataset_registry_enabled
     catalog = DatasetCatalog(
-        default=opened(Path(config.knowledge_dataset_path), "retail"),
+        default=opened(Path(config.knowbase_dataset_path), "retail"),
         ensure_default=lambda: None,
-        default_title=config.knowledge_dataset_title or "retail",
+        default_title=config.knowbase_dataset_title or "retail",
         registry=MemoryRegistry(*rows) if enabled else None,
         files=Files(files) if enabled else None,
         open_dataset=opened if enabled else None,
@@ -174,7 +174,7 @@ def pages_of(config: Settings, rows: list, files: dict[str, Path]) -> DatasetPag
 
 def already_fetched(config: Settings, file: Path) -> None:
     """现行的上海机场已经取回来了；别的还没有人查过，所以还没取。"""
-    cache = Path(config.knowledge_dataset_cache_dir)
+    cache = Path(config.knowbase_dataset_cache_dir)
     cache.mkdir(parents=True)
     (cache / f"{sha(file)}.sqlite").write_bytes(file.read_bytes())
 
@@ -244,7 +244,7 @@ async def test_a_catalog_with_datasets(default_dataset, tmp_path):  # noqa: F811
         "catalog",
         title="管理端：数据目录，有几个数据集",
         description=(
-            "默认数据集之外登记了两家公司。上海机场的表、列、口径、说明是 info 实采"
+            "默认数据集之外登记了两家公司。上海机场的表、列、口径、说明是 knowfeed 实采"
             "建出来的那一份；贵州茅台那一个是为预览现编的，它的说明里写着。"
             "只有结构，没有任何数值。搜没录过的词，预览会拿整份列表来答。"
         ),
@@ -275,7 +275,7 @@ async def test_a_catalog_with_datasets(default_dataset, tmp_path):  # noqa: F811
         (directory / r["file"]).read_text() for r in manifest["responses"]
     )
     # 存放位置、校验值、数据的数值，都不在样例里
-    assert BUCKET not in everything and "info/securities" not in everything
+    assert BUCKET not in everything and "knowfeed/securities" not in everything
     assert sha(AIRPORT_FILE) not in everything and "object_key" not in everything
     assert not [v for v in numbers_in(AIRPORT_FILE) if v in everything]
 
@@ -315,12 +315,12 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
         sha256=sha(AIRPORT_OLD_FILE),
         size_bytes=AIRPORT_OLD_FILE.stat().st_size,
         object_key=(
-            f"info/securities/code=600009/datasets/{AIRPORT_OLD_VERSION}/"
+            f"knowfeed/securities/code=600009/datasets/{AIRPORT_OLD_VERSION}/"
             "sh600009-financials.sqlite"
         ),
     )
     for reg in (older, moutai(made_up), airport()):
-        await registry.register(reg, registered_by="service:info-backend")
+        await registry.register(reg, registered_by="service:knowfeed-backend")
     state = SimpleNamespace(
         config=settings_of(default_dataset, tmp_path, registry=True)
     )
@@ -328,8 +328,8 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
 
     app = FastAPI()
     app.include_router(admin_routes.router, prefix="/api")
-    app.dependency_overrides[require_knowledge_admin] = lambda: (
-        session("admin", "knowledge:admin").principal
+    app.dependency_overrides[require_knowbase_admin] = lambda: (
+        session("admin", "knowbase:admin").principal
     )
     app.dependency_overrides[admin_routes.registry_settings] = lambda: state.config
     app.dependency_overrides[admin_routes.get_registry_view] = lambda: (
@@ -338,7 +338,7 @@ async def test_the_registry_for_the_admin_pages(db, default_dataset, tmp_path): 
     out = where_to(tmp_path)
     url = "/api/admin/v1/knowledge/datasets"
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://knowledge"
+        transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
     ) as http:
         rec = Recorder(
             "full",

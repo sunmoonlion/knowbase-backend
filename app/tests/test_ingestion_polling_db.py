@@ -100,7 +100,7 @@ async def command_key(db):
     return await sql(
         db,
         "SELECT aggregate_key FROM outbox_message "
-        "WHERE deduplication_key LIKE 'knowledge:ingest:%' "
+        "WHERE deduplication_key LIKE 'knowbase:ingest:%' "
         "ORDER BY created_at,id LIMIT 1",
     )
 

@@ -167,7 +167,7 @@ async def _enqueue_ingestion(session: AsyncSession, job: KnowledgeIngestionJob) 
         topic="knowledge.ingest.v1",
         key=str(upload_identity(job)),
         payload={"ingestion_id": str(job.id), "generation": generation, "step": 0},
-        deduplication_key=f"knowledge:ingest:{job.id}:{generation}",
+        deduplication_key=f"knowbase:ingest:{job.id}:{generation}",
     )
 
 

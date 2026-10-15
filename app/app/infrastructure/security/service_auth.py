@@ -93,7 +93,7 @@ class ServiceAuthVerifier:
             actor_type="service",
             subject=subject,
             issuer=issuer,
-            app="knowledge",
+            app="knowbase",
             surface="internal",
             audience=expected_audience,
             roles=(),
@@ -150,13 +150,13 @@ def _bearer_token(authorization: str | None) -> str:
     return encoded.strip()
 
 
-async def require_knowledge_ingest_service(
+async def require_knowbase_ingest_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> Principal:
     return await get_service_auth_verifier().verify(_bearer_token(authorization))
 
 
-async def require_knowledge_retrieve_service(
+async def require_knowbase_retrieve_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> Principal:
     return await get_retrieval_service_auth_verifier().verify(

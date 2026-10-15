@@ -39,7 +39,7 @@ from core.config import Settings, get_settings
 log = logging.getLogger(__name__)
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "sunmoon-knowledge", "version": "0.2.0"}
+SERVER_KNOWFEED = {"name": "sunmoon-knowbase", "version": "0.2.0"}
 _DATASET_ARG = {
     "type": "string",
     "description": (
@@ -214,7 +214,7 @@ class TokenTable:
 
     静态表 JSON：{"<token>": {"user": "...", "sandbox": "...", "tools": [..]|null}}；
     tools 为空即全部。
-    D10：配了工作台公钥时，三段式令牌按 ES256 JWT 验签（aud=knowledge、exp、可选 iss），
+    D10：配了工作台公钥时，三段式令牌按 ES256 JWT 验签（aud=knowbase、exp、可选 iss），
     claims 里的 sub/sandbox/tools 就是授权；验不过不回退到静态表。
     """
 
@@ -250,7 +250,7 @@ class TokenTable:
             claims = jwt.decode(token, self.public_key, algorithms=["ES256"]).claims
         except JoseError:
             return None
-        if claims.get("aud") != "knowledge" or not claims.get("sub"):
+        if claims.get("aud") != "knowbase" or not claims.get("sub"):
             return None
         if self.issuer and claims.get("iss") != self.issuer:
             return None
@@ -277,12 +277,12 @@ class KnowledgeMcp:
     ) -> None:
         self.settings = settings
         self.tokens = TokenTable(
-            settings.knowledge_mcp_tokens_json,
-            public_key_pem=settings.knowledge_mcp_jwt_public_key,
-            issuer=settings.knowledge_mcp_jwt_issuer,
+            settings.knowbase_mcp_tokens_json,
+            public_key_pem=settings.knowbase_mcp_jwt_public_key,
+            issuer=settings.knowbase_mcp_jwt_issuer,
         )
-        self.limiter = RateLimiter(settings.knowledge_mcp_rate_per_minute)
-        self.semantic = settings.knowledge_semantic_engine_enabled
+        self.limiter = RateLimiter(settings.knowbase_mcp_rate_per_minute)
+        self.semantic = settings.knowbase_semantic_engine_enabled
         self.tools = tool_specs(semantic=self.semantic)
         self.anomalies: dict[str, int] = defaultdict(int)
         # 默认数据集与目录在装配层建（app/bootstrap/datasets.py）：页面用的也是那一份
@@ -309,7 +309,7 @@ class KnowledgeMcp:
                 {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": SERVER_INFO,
+                    "serverInfo": SERVER_KNOWFEED,
                     "instructions": (
                         "Read-only dataset tools. Cite data_version from each result."
                     ),

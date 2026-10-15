@@ -20,7 +20,7 @@ from test_knowledge_datasets import default_dataset as default_dataset
 from app.infrastructure.datasets import SqliteDatasetQueries
 from app.infrastructure.semantic import SemanticDataset
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.interfaces.mcp.knowledge_mcp import (
+from app.interfaces.mcp.knowbase_mcp import (
     ALL_TOOLS,
     SEMANTIC_SQL_NOTE,
     KnowledgeMcp,
@@ -33,8 +33,8 @@ def server(default_dataset, tmp_path, *, semantic: bool) -> KnowledgeMcp:
     settings = settings_for(
         default_dataset,
         tmp_path,
-        knowledge_semantic_engine_enabled=semantic,
-        knowledge_semantic_cache_dir=str(tmp_path / "semantic"),
+        knowbase_semantic_engine_enabled=semantic,
+        knowbase_semantic_cache_dir=str(tmp_path / "semantic"),
     )
     target = KnowledgeMcp(settings)
     # 登记表与对象存储用替身；打开数据集的方式用服务自己的
@@ -72,7 +72,7 @@ async def tools(target: KnowledgeMcp) -> dict[str, dict]:
 
 def test_the_switch_is_off_by_default(default_dataset, tmp_path):
     settings = settings_for(default_dataset, tmp_path)
-    assert settings.knowledge_semantic_engine_enabled is False
+    assert settings.knowbase_semantic_engine_enabled is False
     target = KnowledgeMcp(settings)
     assert isinstance(target.dataset, SqliteDatasetQueries)
     assert target.tools is ALL_TOOLS
@@ -210,9 +210,9 @@ async def test_over_http_with_the_switch_on(default_dataset, tmp_path):
     settings = settings_for(
         default_dataset,
         tmp_path,
-        knowledge_semantic_engine_enabled=True,
-        knowledge_semantic_cache_dir=str(tmp_path / "semantic"),
-        knowledge_dataset_registry_enabled=False,
+        knowbase_semantic_engine_enabled=True,
+        knowbase_semantic_cache_dir=str(tmp_path / "semantic"),
+        knowbase_dataset_registry_enabled=False,
     )
     app = FastAPI()
     register_exception_handlers(app)

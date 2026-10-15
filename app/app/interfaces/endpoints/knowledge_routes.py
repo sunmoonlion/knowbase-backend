@@ -20,8 +20,8 @@ from app.domain.security import Principal
 from app.infrastructure.external.dataset_store import DatasetUnavailable, parse_object
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
 from app.infrastructure.security.service_auth import (
-    require_knowledge_ingest_service,
-    require_knowledge_retrieve_service,
+    require_knowbase_ingest_service,
+    require_knowbase_retrieve_service,
 )
 from app.infrastructure.storage.postgres import get_db_session, get_postgres
 from app.interfaces.schemas.datasets import DatasetRead, DatasetRegister
@@ -67,7 +67,7 @@ async def submit_ingestion(
 )
 async def submit_internal_ingestion(
     payload: KnowledgeIngestionCreate,
-    service_principal: Principal = Depends(require_knowledge_ingest_service),
+    service_principal: Principal = Depends(require_knowbase_ingest_service),
     session: AsyncSession = Depends(get_db_session),
 ):
     # The service principal is verified by the dependency and recorded in the
@@ -87,7 +87,7 @@ async def submit_internal_ingestion(
 )
 async def retrieve_internal_knowledge(
     payload: KnowledgeRetrievalRequest,
-    service_principal: Principal = Depends(require_knowledge_retrieve_service),
+    service_principal: Principal = Depends(require_knowbase_retrieve_service),
     session: AsyncSession = Depends(get_db_session),
 ):
     return await knowledge_retrieval_service.retrieve_knowledge(
@@ -208,7 +208,7 @@ def get_dataset_registry() -> DatasetRegistry:
 )
 async def register_dataset(
     payload: DatasetRegister,
-    service_principal: Principal = Depends(require_knowledge_ingest_service),
+    service_principal: Principal = Depends(require_knowbase_ingest_service),
     registry: DatasetRegistry = Depends(get_dataset_registry),
     settings: Settings = Depends(get_settings),
 ):
@@ -217,7 +217,7 @@ async def register_dataset(
     只接受来源方声明已通过质量检查的数据集；文件不经这里上传，知识服务按登记的
     位置与校验值自己去取，取到的内容对不上就不用。
     """
-    if not settings.knowledge_dataset_registry_enabled:
+    if not settings.knowbase_dataset_registry_enabled:
         raise HTTPException(status_code=404, detail="dataset registry is disabled")
     if not payload.quality_passed:
         raise HTTPException(
@@ -243,11 +243,11 @@ async def register_dataset(
         registration.validate(
             allowed_buckets=frozenset(
                 b.strip()
-                for b in settings.knowledge_dataset_allowed_buckets.split(",")
+                for b in settings.knowbase_dataset_allowed_buckets.split(",")
                 if b.strip()
             )
         )
-        if registration.dataset_id == settings.knowledge_dataset_id:
+        if registration.dataset_id == settings.knowbase_dataset_id:
             raise InvalidDatasetRegistration(
                 "dataset_id is reserved for the default dataset"
             )
@@ -264,10 +264,10 @@ async def register_dataset(
 
 @internal_router.get("/datasets", response_model=list[DatasetRead])
 async def list_registered_datasets(
-    service_principal: Principal = Depends(require_knowledge_ingest_service),
+    service_principal: Principal = Depends(require_knowbase_ingest_service),
     registry: DatasetRegistry = Depends(get_dataset_registry),
     settings: Settings = Depends(get_settings),
 ):
-    if not settings.knowledge_dataset_registry_enabled:
+    if not settings.knowbase_dataset_registry_enabled:
         raise HTTPException(status_code=404, detail="dataset registry is disabled")
     return await registry.active()

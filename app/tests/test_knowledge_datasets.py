@@ -1,6 +1,6 @@
 """多数据集（0008-info 段三）：登记的校验、数据集目录、文件取用、MCP、登记接口。
 
-`fixtures/sh600009-financials.dataset.bin` 是 info 从 2026-09-27 实采的 600009 建出来的
+`fixtures/sh600009-financials.dataset.bin` 是 knowfeed 从 2026-09-27 实采的 600009 建出来的
 数据集文件，原样放在这里：知识服务读得了它，就是两边的约定对上了。
 不访问外网，不需要数据库。
 """
@@ -32,20 +32,20 @@ from app.infrastructure.external.dataset_store import (
     DatasetUnavailable,
     ObjectDatasetFiles,
 )
-from app.infrastructure.security.service_auth import require_knowledge_ingest_service
+from app.infrastructure.security.service_auth import require_knowbase_ingest_service
 from app.interfaces.endpoints.knowledge_routes import (
     get_dataset_registry,
     internal_router,
 )
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.interfaces.mcp.knowledge_mcp import KnowledgeMcp, build_router
+from app.interfaces.mcp.knowbase_mcp import KnowledgeMcp, build_router
 from core.config import Settings, get_settings
 
 FIXTURE = Path(__file__).parent / "fixtures" / "sh600009-financials.dataset.bin"
 SHA256 = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
 VERSION = "sh600009-financials-39a395bfa6f16b67"
-BUCKET = "development-info-originals"
-KEY = f"info/securities/code=600009/datasets/{VERSION}/sh600009-financials.sqlite"
+BUCKET = "development-knowfeed-originals"
+KEY = f"knowfeed/securities/code=600009/datasets/{VERSION}/sh600009-financials.sqlite"
 TOKEN = "tok-full-0123456789abcdef"
 TOKEN_NO_LIST = "tok-nolist-0123456789abcdef"
 
@@ -61,7 +61,7 @@ def registration(**changes) -> DatasetRegistration:
         "size_bytes": FIXTURE.stat().st_size,
         "start_date": "1994-12-31",
         "end_date": "2026-06-30",
-        "source_app": "info",
+        "source_app": "knowfeed",
         "source_ref": "ingestion-1",
         "security_code": "600009",
     }
@@ -69,7 +69,7 @@ def registration(**changes) -> DatasetRegistration:
 
 
 def registered(
-    reg: DatasetRegistration | None = None, *, by: str = "service:info-backend"
+    reg: DatasetRegistration | None = None, *, by: str = "service:knowfeed-backend"
 ) -> RegisteredDataset:
     reg = reg or registration()
     return RegisteredDataset(
@@ -159,9 +159,9 @@ def default_dataset(tmp_path: Path) -> Path:
 def settings_for(default_dataset: Path, tmp_path: Path, **changes) -> Settings:
     base = {
         "_env_file": None,
-        "knowledge_dataset_path": str(default_dataset),
-        "knowledge_dataset_id": "retail",
-        "knowledge_mcp_tokens_json": json.dumps(
+        "knowbase_dataset_path": str(default_dataset),
+        "knowbase_dataset_id": "retail",
+        "knowbase_mcp_tokens_json": json.dumps(
             {
                 TOKEN: {"user": "u1", "sandbox": "sb1"},
                 TOKEN_NO_LIST: {
@@ -171,9 +171,9 @@ def settings_for(default_dataset: Path, tmp_path: Path, **changes) -> Settings:
                 },
             }
         ),
-        "knowledge_dataset_registry_enabled": True,
-        "knowledge_dataset_allowed_buckets": BUCKET,
-        "knowledge_dataset_cache_dir": str(tmp_path / "cache"),
+        "knowbase_dataset_registry_enabled": True,
+        "knowbase_dataset_allowed_buckets": BUCKET,
+        "knowbase_dataset_cache_dir": str(tmp_path / "cache"),
         "S3_ENDPOINT": "http://minio.test:9000",
         "S3_ACCESS_KEY_ID": "access",
         "S3_SECRET_ACCESS_KEY": "secret",
@@ -186,7 +186,7 @@ def catalog_for(
     settings: Settings, registry, files, clock=None, **more
 ) -> DatasetCatalog:
     default = SqliteDatasetQueries(
-        Path(settings.knowledge_dataset_path), dataset_id=settings.knowledge_dataset_id
+        Path(settings.knowbase_dataset_path), dataset_id=settings.knowbase_dataset_id
     )
     extra = {"monotonic": clock} if clock else {}
     return DatasetCatalog(
@@ -404,7 +404,7 @@ def test_a_damaged_cache_file_is_fetched_again(default_dataset, tmp_path):
     ("changes", "overrides", "message"),
     [
         ({"bucket": "another-bucket"}, {}, "bucket is not allowed"),
-        ({}, {"knowledge_dataset_allowed_buckets": ""}, "bucket is not allowed"),
+        ({}, {"knowbase_dataset_allowed_buckets": ""}, "bucket is not allowed"),
         ({}, {"S3_ACCESS_KEY_ID": None}, "S3 credentials are not configured"),
         ({"object_key": "a/../b"}, {}, "object key is invalid"),
     ],
@@ -508,16 +508,16 @@ def test_the_default_is_installed_only_when_its_file_or_object_is_there(tmp_path
     def site(**changes):
         base = {
             "_env_file": None,
-            "knowledge_dataset_path": str(tmp_path / "absent.sqlite"),
-            "knowledge_semantic_engine_enabled": False,
+            "knowbase_dataset_path": str(tmp_path / "absent.sqlite"),
+            "knowbase_semantic_engine_enabled": False,
         }
         return build_datasets(Settings(**(base | changes))).catalog
 
     assert site()._has_default() is False
-    assert site(knowledge_dataset_object="s3://b/k.sqlite")._has_default() is True
+    assert site(knowbase_dataset_object="s3://b/k.sqlite")._has_default() is True
     present = tmp_path / "here.sqlite"
     present.write_bytes(b"x")
-    assert site(knowledge_dataset_path=str(present))._has_default() is True
+    assert site(knowbase_dataset_path=str(present))._has_default() is True
 
 
 @pytest.fixture
@@ -666,7 +666,7 @@ async def test_a_registry_failure_is_not_shown_to_the_model(default_dataset, tmp
 
 async def test_registry_is_off_by_default(default_dataset, tmp_path):
     settings = settings_for(
-        default_dataset, tmp_path, knowledge_dataset_registry_enabled=False
+        default_dataset, tmp_path, knowbase_dataset_registry_enabled=False
     )
     server = KnowledgeMcp(settings)
     grant = server.tokens.resolve(f"Bearer {TOKEN}")
@@ -689,12 +689,12 @@ async def test_registry_is_off_by_default(default_dataset, tmp_path):
 def principal() -> Principal:
     return Principal(
         actor_type="service",
-        subject="service:info-backend",
+        subject="service:knowfeed-backend",
         issuer="https://casdoor.test",
-        app="info",
+        app="knowfeed",
         surface="internal",
-        audience="knowledge",
-        scopes=frozenset({"knowledge:ingest"}),
+        audience="knowbase",
+        scopes=frozenset({"knowbase:ingest"}),
         authenticated_at=datetime(2026, 9, 27, tzinfo=UTC),
         expires_at=datetime(2026, 9, 27, 1, tzinfo=UTC),
         policy_version="test",
@@ -712,7 +712,7 @@ def body(**changes) -> dict:
         "size_bytes": FIXTURE.stat().st_size,
         "start_date": "1994-12-31",
         "end_date": "2026-06-30",
-        "source_app": "info",
+        "source_app": "knowfeed",
         "source_ref": "ingestion-1",
         "quality_passed": True,
     }
@@ -734,7 +734,7 @@ async def api(default_dataset, tmp_path):
             raise HTTPException(status_code=401, detail="unauthorized")
         return principal()
 
-    app.dependency_overrides[require_knowledge_ingest_service] = authenticate
+    app.dependency_overrides[require_knowbase_ingest_service] = authenticate
     app.dependency_overrides[get_dataset_registry] = lambda: registry
     app.dependency_overrides[get_settings] = lambda: state["settings"]
     async with httpx.AsyncClient(
@@ -751,9 +751,9 @@ async def test_registration_records_who_registered_from_the_verified_identity(ap
     response = await client.post(URL, json=body())
     assert response.status_code == 201
     assert response.json()["status"] == "active"
-    assert response.json()["registered_by"] == "service:info-backend"
+    assert response.json()["registered_by"] == "service:knowfeed-backend"
     reg, who = registry.registered[0]
-    assert who == "service:info-backend"
+    assert who == "service:knowfeed-backend"
     assert (reg.bucket, reg.object_key) == (BUCKET, KEY)
     listed = (await client.get(URL)).json()
     assert [d["data_version"] for d in listed] == [VERSION]
@@ -801,7 +801,7 @@ async def test_the_interface_does_not_exist_while_the_registry_is_off(
 ):
     client, registry, state = api
     state["settings"] = settings_for(
-        default_dataset, tmp_path, knowledge_dataset_registry_enabled=False
+        default_dataset, tmp_path, knowbase_dataset_registry_enabled=False
     )
     assert (await client.post(URL, json=body())).status_code == 404
     assert (await client.get(URL)).status_code == 404

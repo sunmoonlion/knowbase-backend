@@ -35,7 +35,7 @@ class Datasets:
     def pages(self) -> DatasetPages:
         return DatasetPages(
             self.catalog,
-            registry_enabled=self.settings.knowledge_dataset_registry_enabled,
+            registry_enabled=self.settings.knowbase_dataset_registry_enabled,
         )
 
 
@@ -71,7 +71,7 @@ def build_dataset_registry_view(settings: Settings) -> DatasetRegistryView:
 
 
 def build_datasets(settings: Settings) -> Datasets:
-    semantic = settings.knowledge_semantic_engine_enabled
+    semantic = settings.knowbase_semantic_engine_enabled
     fetch = _DefaultDataset(settings)
 
     def open_dataset(path: Path, dataset_id: str, *, ensure=None) -> DatasetQueries:
@@ -80,28 +80,28 @@ def build_datasets(settings: Settings) -> Datasets:
         return SemanticDataset(
             path,
             dataset_id=dataset_id,
-            cache_dir=Path(settings.knowledge_semantic_cache_dir),
+            cache_dir=Path(settings.knowbase_semantic_cache_dir),
             ensure=ensure,
         )
 
     default = open_dataset(
-        Path(settings.knowledge_dataset_path),
-        settings.knowledge_dataset_id,
+        Path(settings.knowbase_dataset_path),
+        settings.knowbase_dataset_id,
         ensure=fetch.ensure,
     )
-    enabled = settings.knowledge_dataset_registry_enabled
+    enabled = settings.knowbase_dataset_registry_enabled
     catalog = DatasetCatalog(
         default=default,
         ensure_default=fetch.ensure,
-        default_title=settings.knowledge_dataset_title or settings.knowledge_dataset_id,
+        default_title=settings.knowbase_dataset_title or settings.knowbase_dataset_id,
         registry=build_dataset_registry() if enabled else None,
         files=build_dataset_files(settings) if enabled else None,
         open_dataset=open_dataset,
         # 默认数据集是样例库，文件不进镜像：
         # 本地没有、也没配对象存储里的那一份，就是这个站点没装它
         has_default=lambda: (
-            Path(settings.knowledge_dataset_path).is_file()
-            or bool(settings.knowledge_dataset_object)
+            Path(settings.knowbase_dataset_path).is_file()
+            or bool(settings.knowbase_dataset_object)
         ),
     )
     return Datasets(settings=settings, default=default, catalog=catalog)

@@ -17,11 +17,11 @@ SHA = hashlib.sha256(BODY).hexdigest()
 
 def settings(tmp_path: Path, **extra) -> Settings:
     values = {
-        "knowledge_dataset_path": str(tmp_path / "ds" / "mini.sqlite"),
-        "knowledge_dataset_object": (
-            "s3://development-knowledge-datasets/lesson23/mini.sqlite"
+        "knowbase_dataset_path": str(tmp_path / "ds" / "mini.sqlite"),
+        "knowbase_dataset_object": (
+            "s3://development-knowbase-datasets/lesson23/mini.sqlite"
         ),
-        "knowledge_dataset_sha256": SHA,
+        "knowbase_dataset_sha256": SHA,
         "S3_ENDPOINT": "http://minio.test",
         "S3_ACCESS_KEY_ID": "AKIA",
         "S3_SECRET_ACCESS_KEY": "secret",
@@ -44,7 +44,7 @@ def test_fetches_signed_object_and_pins_sha(tmp_path: Path):
     path = ensure_dataset(settings(tmp_path), transport(seen=seen))
     assert path.read_bytes() == BODY
     request = seen[0]
-    assert request.url.path == "/development-knowledge-datasets/lesson23/mini.sqlite"
+    assert request.url.path == "/development-knowbase-datasets/lesson23/mini.sqlite"
     assert request.headers["Authorization"].startswith(
         "AWS4-HMAC-SHA256 Credential=AKIA/"
     )
@@ -61,10 +61,10 @@ def test_mismatched_or_failed_fetch_leaves_nothing(tmp_path: Path):
     with pytest.raises(DatasetUnavailable, match="HTTP 403"):
         ensure_dataset(settings(tmp_path), transport(status=403))
     with pytest.raises(DatasetUnavailable, match="sha256 is required"):
-        ensure_dataset(settings(tmp_path, knowledge_dataset_sha256=None), transport())
+        ensure_dataset(settings(tmp_path, knowbase_dataset_sha256=None), transport())
     with pytest.raises(DatasetUnavailable, match="s3://"):
         ensure_dataset(
-            settings(tmp_path, knowledge_dataset_object="http://x/y"), transport()
+            settings(tmp_path, knowbase_dataset_object="http://x/y"), transport()
         )
 
 

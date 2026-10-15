@@ -26,7 +26,7 @@ from test_knowledge_datasets import (
 from test_knowledge_datasets import default_dataset as default_dataset
 
 from app.infrastructure.semantic.sqlite_source import read_description
-from app.interfaces.mcp.knowledge_mcp import KnowledgeMcp
+from app.interfaces.mcp.knowbase_mcp import KnowledgeMcp
 from scripts.build_olist_dataset import (
     DECLARATION,
     BuildError,
@@ -370,8 +370,8 @@ async def test_the_knowledge_tools_serve_it(sample, tmp_path, default_dataset):
     settings = settings_for(
         default_dataset,
         tmp_path,
-        knowledge_semantic_engine_enabled=True,
-        knowledge_semantic_cache_dir=str(tmp_path / "semantic"),
+        knowbase_semantic_engine_enabled=True,
+        knowbase_semantic_cache_dir=str(tmp_path / "semantic"),
     )
     target = KnowledgeMcp(settings)
     reg = registration(

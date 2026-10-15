@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from app.application.services.dataset_catalog import UnknownDataset
 from app.application.services.dataset_pages import DatasetPages
 from app.bootstrap.datasets import shared_dataset_pages
-from app.interfaces.http.middleware.auth import require_knowledge_admin
+from app.interfaces.http.middleware.auth import require_knowbase_admin
 from app.interfaces.schemas.catalog import CatalogDatasetRead, CatalogListRead
 
 log = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 router = APIRouter(
     prefix="/admin/v1/knowledge/catalog",
     tags=["Admin data catalog"],
-    dependencies=[Depends(require_knowledge_admin)],
+    dependencies=[Depends(require_knowbase_admin)],
 )
 
 

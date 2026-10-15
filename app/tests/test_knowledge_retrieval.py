@@ -46,7 +46,7 @@ def _version(**updates: Any) -> Any:
     values = {
         "id": uuid.UUID("50a7f1ae-0b4f-4dc4-b33c-604df996334a"),
         "knowledge_document_id": uuid.UUID("417070e0-403f-4dd5-a3c8-ae8f16e0c6c4"),
-        "source_app": "info-app",
+        "source_app": "knowfeed-app",
         "source_document_id": uuid.UUID("83bb7926-47f0-4262-8215-27da1cc1e681"),
         "source_document_version_id": uuid.UUID("359ea32d-90b3-47e4-9168-930bfb768d0d"),
         "dataset_key": "market-news",
@@ -101,7 +101,7 @@ def test_domain_identity_is_stable_and_provider_independent() -> None:
     job = cast(
         Any,
         SimpleNamespace(
-            source_app="info-app",
+            source_app="knowfeed-app",
             source_document_id=uuid.UUID("83bb7926-47f0-4262-8215-27da1cc1e681"),
             source_document_version_id=uuid.UUID(
                 "359ea32d-90b3-47e4-9168-930bfb768d0d"
@@ -246,7 +246,7 @@ def test_dataset_allowlist_configuration_has_no_wildcard_semantics() -> None:
     assert "*" not in settings.retrieval_datasets
 
 
-def _principal(scope: str = "knowledge:retrieve") -> Principal:
+def _principal(scope: str = "knowbase:retrieve") -> Principal:
     from datetime import UTC, datetime, timedelta
 
     now = datetime.now(UTC)
@@ -254,7 +254,7 @@ def _principal(scope: str = "knowledge:retrieve") -> Principal:
         actor_type="service",
         subject="investment-agent-worker",
         issuer="https://identity.example.test",
-        app="knowledge",
+        app="knowbase",
         surface="internal",
         audience="retrieve-client",
         roles=(),

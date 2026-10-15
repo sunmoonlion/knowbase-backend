@@ -48,9 +48,9 @@ def dataset(tmp_path: Path) -> Path:
 def settings(dataset: Path) -> Settings:
     return Settings(
         _env_file=None,
-        knowledge_dataset_path=str(dataset),
-        knowledge_dataset_id="mini",
-        knowledge_mcp_tokens_json=json.dumps(
+        knowbase_dataset_path=str(dataset),
+        knowbase_dataset_id="mini",
+        knowbase_mcp_tokens_json=json.dumps(
             {
                 TOKEN_FULL: {"user": "u1", "sandbox": "sb1"},
                 TOKEN_SCHEMA_ONLY: {
@@ -60,7 +60,7 @@ def settings(dataset: Path) -> Settings:
                 },
             }
         ),
-        knowledge_mcp_rate_per_minute=5,
+        knowbase_mcp_rate_per_minute=5,
     )
 
 
@@ -101,7 +101,7 @@ async def test_initialize_and_notification(client):
     assert r.status_code == 200
     result = r.json()["result"]
     assert result["protocolVersion"] == "2025-03-26"
-    assert result["serverInfo"]["name"] == "sunmoon-knowledge"
+    assert result["serverInfo"]["name"] == "sunmoon-knowbase"
     r = await post(client, TOKEN_FULL, rpc("notifications/initialized", mid=None))
     assert r.status_code == 202
     r = await client.get(
@@ -269,7 +269,7 @@ SIGNING_KEY = ECKey.generate_key("P-256")
 def mint(claims: dict, key: ECKey = SIGNING_KEY) -> str:
     base = {
         "iss": "wb-test",
-        "aud": "knowledge",
+        "aud": "knowbase",
         "sub": "u-jwt",
         "sandbox": "u-jwt",
         "exp": 4102444800,
@@ -281,8 +281,8 @@ def mint(claims: dict, key: ECKey = SIGNING_KEY) -> str:
 def jwt_settings(settings: Settings) -> Settings:
     return settings.model_copy(
         update={
-            "knowledge_mcp_jwt_public_key": SIGNING_KEY.as_pem(private=False).decode(),
-            "knowledge_mcp_jwt_issuer": "wb-test",
+            "knowbase_mcp_jwt_public_key": SIGNING_KEY.as_pem(private=False).decode(),
+            "knowbase_mcp_jwt_issuer": "wb-test",
         }
     )
 

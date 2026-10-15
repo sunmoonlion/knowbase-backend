@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from app.interfaces.errors.exception_handlers import register_exception_handlers
-from app.interfaces.mcp.knowledge_mcp import build_router
+from app.interfaces.mcp.knowbase_mcp import build_router
 from core.config import Settings, get_settings
 
 

@@ -2,16 +2,16 @@
   "apiVersion": "search.sunmoonai.com/v1alpha1",
   "kind": "ElasticsearchAccess",
   "metadata": {
-    "name": "knowledge-backend"
+    "name": "knowbase-backend"
   },
   "spec": {
     "provider": "platform-elasticsearch",
     "environment": "development",
-    "app": "knowledge-app",
-    "backend": "knowledge-backend",
+    "app": "knowbase-app",
+    "backend": "knowbase-backend",
     "namespace": "app-platform-dev",
-    "secretName": "knowledge-backend-elasticsearch",
-    "configMapName": "knowledge-backend-elasticsearch",
+    "secretName": "knowbase-backend-elasticsearch",
+    "configMapName": "knowbase-backend-elasticsearch",
     "datasets": [
       {
         "name": "admin-documents",

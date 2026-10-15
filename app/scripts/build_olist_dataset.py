@@ -3,13 +3,13 @@
 设计：k8s 仓 tree-build/SDD/modules/0023-fin-forecast.md 第三节。
 读 datasets/olist/olist.yml 与九个 parquet，按定义里的 sample 抽一个完整的
 小样例（按真实客户 1/20；入样客户的订单连同明细、支付、评价都在），写出与
-info 产出的数据集同形的 SQLite：业务表，加自述表 dataset_metadata、
+knowfeed 产出的数据集同形的 SQLite：业务表，加自述表 dataset_metadata、
 field_dictionary、metric_dictionary、table_links、table_keys。
 写完按知识服务自己的读法自检一遍，再让引擎规划一条查询；最后打印一行 JSON 供登记。
 
 许可证：Olist 巴西电商数据集是 CC BY-NC-SA 4.0，只作演示与评测，不得商用。
 
-用法（在 knowledge-backend/app 下）：
+用法（在 knowbase-backend/app 下）：
     uv run python -m scripts.build_olist_dataset \
         --cache <parquet 目录> --out <SQLite 文件>
 

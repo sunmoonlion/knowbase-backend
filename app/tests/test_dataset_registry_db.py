@@ -13,7 +13,7 @@ from app.domain.datasets import ACTIVE, SUPERSEDED, DatasetVersionConflict
 from app.infrastructure.repositories.dataset_registry import SqlDatasetRegistry
 
 NEWER = "sh600009-financials-ffffffffffffffff"
-BY = "service:info-backend"
+BY = "service:knowfeed-backend"
 
 
 def registry(db) -> SqlDatasetRegistry:
@@ -45,7 +45,7 @@ async def test_a_registration_is_stored_and_becomes_the_active_version(db):
             "SELECT status || '/' || security_code || '/' || source_app || '/' || "
             "source_ref || '/' || registered_by FROM knowledge_dataset",
         )
-        == f"active/600009/info/ingestion-1/{BY}"
+        == f"active/600009/knowfeed/ingestion-1/{BY}"
     )
     active = await registry(db).active()
     assert [d.data_version for d in active] == [VERSION]
@@ -143,7 +143,7 @@ async def test_the_database_refuses_two_active_versions_and_bad_values(db):
         "INSERT INTO knowledge_dataset (dataset_id, data_version, title, bucket,"
         " object_key, sha256, size_bytes, start_date, end_date, source_app, status,"
         " registered_by, registered_at) VALUES ('sh600009-financials', :v, 't', 'b',"
-        " 'k', :s, 1, '2020-01-01', '2020-12-31', 'info', :status, 'x', now())"
+        " 'k', :s, 1, '2020-01-01', '2020-12-31', 'knowfeed', :status, 'x', now())"
     )
     with pytest.raises(Exception, match="uq_knowledge_dataset_one_active"):
         await sql(db, insert, v="v2", s="a" * 64, status="active")

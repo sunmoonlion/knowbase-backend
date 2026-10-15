@@ -43,7 +43,7 @@ from core.config import Settings
 
 CONTRACT_PATH = (
     Path(__file__).resolve().parents[3]
-    / "contracts/artifact/v1/info-knowledge-artifact.schema.json"
+    / "contracts/artifact/v1/knowfeed-knowbase-artifact.schema.json"
 )
 CONTRACT_MANIFEST_PATH = CONTRACT_PATH.with_name("contract-manifest.json")
 CONTRACT_EXAMPLE_PATH = CONTRACT_PATH.parent / "examples/upsert.json"
@@ -57,19 +57,19 @@ def _contract_payload() -> dict[str, Any]:
         "contract_version": 1,
         "operation": "upsert",
         "distribution_id": str(distribution_id),
-        "source_app": "info-app",
+        "source_app": "knowfeed-app",
         "source_document_id": str(document_id),
         "source_document_version_id": str(version_id),
         "artifact": {
             "artifact_type": "clean_markdown",
-            "uri": "s3://development-info-originals/info/original/doc/clean.md",
+            "uri": "s3://development-knowfeed-originals/knowfeed/original/doc/clean.md",
             "storage_version": "version-1",
             "sha256": "a" * 64,
             "size_bytes": 7,
             "content_type": "text/markdown; charset=utf-8",
         },
         "dataset_key": "market-news",
-        "idempotency_key": f"info-app:{version_id}:market-news:artifact-v1",
+        "idempotency_key": f"knowfeed-app:{version_id}:market-news:artifact-v1",
         "correlation_id": str(distribution_id),
         "causation_id": str(version_id),
         "document": {
@@ -145,7 +145,7 @@ def test_published_artifact_contract_example_is_valid() -> None:
 
 def test_ingestion_payload_rejects_legacy_and_unversioned_artifacts() -> None:
     legacy = {
-        "source_app": "info-app",
+        "source_app": "knowfeed-app",
         "source_document_id": str(uuid.uuid4()),
         "source_document_version_id": str(uuid.uuid4()),
         "source_artifact_refs": [{"uri": "info-artifact:123"}],
@@ -167,13 +167,13 @@ def test_ingestion_payload_rejects_legacy_and_unversioned_artifacts() -> None:
 def test_database_url_uses_asyncpg_without_sslmode() -> None:
     settings = Settings(
         database_url=(
-            "postgresql://knowledge:secret@postgresql:5432/knowledge"
+            "postgresql://knowbase:secret@postgresql:5432/knowbase"
             "?sslmode=require&connect_timeout=10"
         )
     )
 
     assert settings.database_url == (
-        "postgresql+asyncpg://knowledge:secret@postgresql:5432/knowledge"
+        "postgresql+asyncpg://knowbase:secret@postgresql:5432/knowbase"
         "?connect_timeout=10"
     )
 
@@ -236,7 +236,7 @@ async def test_resolve_artifact_content_verifies_version_size_type_and_hash(
         source_artifact_refs=[
             {
                 "artifact_type": "clean_markdown",
-                "uri": "s3://development-info-originals/info/original/doc/clean.md",
+                "uri": "s3://development-knowfeed-originals/knowfeed/original/doc/clean.md",
                 "storage_version": "version-1",
                 "sha256": hashlib.sha256(content).hexdigest(),
                 "size_bytes": len(content),
@@ -270,7 +270,7 @@ async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -
         )
 
     ref = _contract_payload()["artifact"]
-    ref["uri"] = "s3://private-bucket/info/original/doc/clean.md"
+    ref["uri"] = "s3://private-bucket/knowfeed/original/doc/clean.md"
     with pytest.raises(ArtifactError, match="bucket is not allowed"):
         await resolve_artifact_content(
             settings=settings,
@@ -282,7 +282,7 @@ async def test_resolve_artifact_content_rejects_non_s3_and_disallowed_bucket() -
         )
 
     ref = _contract_payload()["artifact"]
-    ref["uri"] = "s3://development-info-originals/private/doc/clean.md"
+    ref["uri"] = "s3://development-knowfeed-originals/private/doc/clean.md"
     with pytest.raises(ArtifactError, match="outside the allowed prefixes"):
         await resolve_artifact_content(
             settings=settings,
@@ -447,16 +447,16 @@ async def test_ragflow_client_wraps_http_errors() -> None:
 
 
 def test_celery_delivery_options_use_platform_queue(monkeypatch) -> None:
-    monkeypatch.setenv("CELERY_QUEUE", "knowledge.admin.default")
+    monkeypatch.setenv("CELERY_QUEUE", "knowbase.admin.default")
     from core.config import get_settings
 
     get_settings.cache_clear()
     options = CeleryProducer()._delivery_options()
 
     assert options == {
-        "queue": "knowledge.admin.default",
-        "exchange": "knowledge.admin.default",
-        "routing_key": "knowledge.admin.default",
+        "queue": "knowbase.admin.default",
+        "exchange": "knowbase.admin.default",
+        "routing_key": "knowbase.admin.default",
     }
     get_settings.cache_clear()
 
