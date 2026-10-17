@@ -252,7 +252,7 @@ def _principal(scope: str = "knowbase:retrieve") -> Principal:
     now = datetime.now(UTC)
     return Principal(
         actor_type="service",
-        subject="investment-agent-worker",
+        subject="knowbench-agent-worker",
         issuer="https://identity.example.test",
         app="knowbase",
         surface="internal",

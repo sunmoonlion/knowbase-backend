@@ -50,10 +50,10 @@ class Settings(BaseSettings):
 
     # 跨应用跳转（app/domain/cross_app.py）。都可不配：不配就是不带人来、也不带人去。
     # 哪些应用可以把用户带到这里，各自的回跳地址。回跳地址只从这里取，从不从链接里取。
-    #   {"investment": {"return_url": "https://…/zh-CN/workbench?ref={ref}"},
+    #   {"knowbench": {"return_url": "https://…/zh-CN/workbench?ref={ref}"},
     #    "knowbase": {}}
-    # knowbase 默认认 investment 与 knowfeed，都没有回跳地址：页面上不显示「回到原处」。
-    cross_app_sources_json: str = '{"investment": {}, "knowfeed": {}}'
+    # knowbase 默认认 knowbench 与 knowfeed，都没有回跳地址：页面上不显示「回到原处」。
+    cross_app_sources_json: str = '{"knowbench": {}, "knowfeed": {}}'
     # 这个应用会把用户带去哪些应用，各自网页端的地址。
     #   {"knowfeed": {"web_base_url": "https://knowfeed.example"}}
     cross_app_targets_json: str = "{}"
@@ -156,8 +156,8 @@ class Settings(BaseSettings):
     internal_auth_subject_allowlist: str = ""
     internal_auth_required_scope: str = "knowbase:ingest"
 
-    # Investment -> Knowbase retrieval resource boundary.
-    retrieval_auth_casdoor_application: str = "sunmoonai-investment-knowbase-retrieve"
+    # Knowbench -> Knowbase retrieval resource boundary.
+    retrieval_auth_casdoor_application: str = "sunmoonai-knowbench-knowbase-retrieve"
     retrieval_auth_discovery_url: str | None = None
     retrieval_auth_backchannel_endpoint: str | None = None
     retrieval_auth_audience: str | None = None
