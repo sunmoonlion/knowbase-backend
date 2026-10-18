@@ -24,6 +24,7 @@ from app.infrastructure.security.service_auth import (
     require_knowbase_retrieve_service,
 )
 from app.infrastructure.storage.postgres import get_db_session, get_postgres
+from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.datasets import DatasetRead, DatasetRegister
 from app.interfaces.schemas.knowledge import (
     KnowledgeIngestionCreate,
@@ -42,6 +43,7 @@ router = APIRouter(prefix="/knowledge", tags=["知识入库"])
 internal_router = APIRouter(
     prefix="/internal/v1/knowledge",
     tags=["内部-知识入库"],
+    dependencies=[Depends(internal_host_only)],  # 公网地址来的当没有（审读第 1 条）
 )
 
 

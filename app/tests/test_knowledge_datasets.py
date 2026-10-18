@@ -489,7 +489,8 @@ async def test_without_the_default_the_tools_say_where_to_look(
     register_exception_handlers(app)
     app.include_router(build_router(settings, catalog), prefix="/api")
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://kb"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://knowbase-tls.app-platform-dev.svc.cluster.local",
     ) as client:
         error, data, _ = await call(client, "list_datasets")
         assert not error
@@ -529,7 +530,8 @@ async def mcp(default_dataset, tmp_path):
     register_exception_handlers(app)
     app.include_router(build_router(settings, catalog), prefix="/api")
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://kb"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://knowbase-tls.app-platform-dev.svc.cluster.local",
     ) as client:
         yield client
 
@@ -738,7 +740,8 @@ async def api(default_dataset, tmp_path):
     app.dependency_overrides[get_dataset_registry] = lambda: registry
     app.dependency_overrides[get_settings] = lambda: state["settings"]
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://kb"
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://knowbase-tls.app-platform-dev.svc.cluster.local",
     ) as client:
         yield client, registry, state
 

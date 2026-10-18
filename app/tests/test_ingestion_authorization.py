@@ -126,8 +126,10 @@ async def test_admin_and_internal_share_dataset_authorization(db, path, key, exp
 
         request = payload()
         request.document.metadata[EXECUTION_KEY] = {"generation": 42}
+    # 内部接口只认集群内地址（审读第 1 条）
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app), base_url="http://test"
+        transport=httpx.ASGITransport(app),
+        base_url="http://knowbase-tls.app-platform-dev.svc.cluster.local",
     ) as client:
         response = await client.post(path, json=request.model_dump(mode="json"))
     assert response.status_code == expected
