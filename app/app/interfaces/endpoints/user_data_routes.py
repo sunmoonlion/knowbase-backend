@@ -330,6 +330,16 @@ async def view_grant(
     return GrantView(**_grant(grant), granted=granted)
 
 
+@router.post("/grants/{grant_id}/release", status_code=status.HTTP_204_NO_CONTENT)
+async def release_grant(
+    grant_id: str,
+    reader: tuple[Principal, App] = Depends(require_reader),
+    service: UserDataService = Depends(get_user_data_service),
+):
+    """读的一方交还授权：委托、会话结束就撤，不等时限（SDD 0042 第四节）。"""
+    await _call(lambda: service.release(reader[1], grant_id))
+
+
 @router.get("/grants/{grant_id}/items/{item_id}/content")
 async def read_granted_content(
     grant_id: str,

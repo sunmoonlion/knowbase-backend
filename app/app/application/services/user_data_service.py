@@ -255,6 +255,16 @@ class UserDataService:
             return item, describe_format(item, content)
         return item, content
 
+    async def release(self, reader_app: App, grant_id: str) -> None:
+        """读的一方交还给自己的授权（委托、会话结束时；只会收窄，不用本人在场）。
+
+        已撤、已过期的再交还一次照样成功。
+        """
+        grant = await self.repo.get_grant(grant_id)
+        if grant is None or grant.reader_app != reader_app:
+            raise not_found("grant")
+        await self._revoke(grant)
+
     async def grant_view(self, reader_app: App, grant_id: str) -> Grant:
         """读的一方看这条授权钉了哪几份（列清单用）。"""
         grant = await self.repo.get_grant(grant_id)

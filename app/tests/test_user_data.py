@@ -712,6 +712,16 @@ async def test_api_grant_then_read_as_the_reader_app(api):
     state["principal"] = service_principal(READ, subject="svc-lab")
     other = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert (other.status_code, other.json()["code"]) == (404, "grant_not_found")
+    # 别的应用不能替它交还；读的一方自己交还，交还后再读是确定的拒绝，用户就能删了
+    released = await client.post(f"{BASE}/grants/{gid}/release")
+    assert (released.status_code, released.json()["code"]) == (404, "grant_not_found")
+    state["principal"] = service_principal(READ, subject="svc-test")
+    assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
+    assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
+    after = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
+    assert (after.status_code, after.json()["code"]) == (403, "grant_inactive")
+    gone = await client.delete(f"{BASE}/items/{item['item_id']}")
+    assert gone.status_code == 204, gone.text
 
 
 async def test_api_test_grant_and_purchase_as_services(api):
