@@ -25,6 +25,7 @@ from app.application.ports.user_data import UserDataRepository, UserObjects
 from app.domain.user_data import (
     APPS,
     GRANT_SCOPE,
+    MAX_CONSENT_ITEMS,
     RECEIVING_APPS,
     USER_GRANT_KINDS,
     App,
@@ -159,7 +160,7 @@ class UserDataService:
     ) -> Consent:
         check_purpose(purpose)
         check_ref(ref)
-        await self._own_pins(owner, check_pins(pins))
+        await self._own_pins(owner, check_pins(pins, MAX_CONSENT_ITEMS))
         return await self.repo.add_consent(
             Consent(
                 id=self.new_id(),

@@ -32,7 +32,8 @@ class ConsentCreate(BaseModel):
 
     purpose: str = Field(min_length=2, max_length=80)
     ref: str = Field(min_length=1, max_length=255)
-    items: list[PinIn] = Field(min_length=1, max_length=64)
+    # 同意依据可以比一条授权大（knowlab 的测试同意覆盖整个知识库，SDD 0042 第七节）
+    items: list[PinIn] = Field(min_length=1, max_length=1000)
 
 
 class ConsentRead(BaseModel):

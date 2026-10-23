@@ -802,3 +802,31 @@ async def test_an_app_imports_its_old_data_into_its_own_partition(api):
     )
     denied = await client.post(f"{BASE}/imports", params=params, content=CSV)
     assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
+
+
+async def test_a_consent_may_cover_more_than_one_grant(world):
+    """knowlab 的测试同意覆盖整个知识库（SDD 0042 第七节）。
+
+    同意依据最多 1000 份，授权仍 64 份。
+    """
+    service, *_ = world
+    items = [
+        await service.upload(ALICE_LAB, f"表{i}.csv", CSV + str(i).encode())
+        for i in range(65)
+    ]
+    consent = await service.consent(
+        ALICE_LAB, "knowlab-test", "knowlab-kb", tuple(pin(i) for i in items)
+    )
+    assert len(consent.pins) == 65
+    await refused(
+        service.grant_test(
+            "svc-lab",
+            "alice",
+            consent.id,
+            "knowbench",
+            "test-1",
+            tuple(pin(i) for i in items),
+        ),
+        422,
+        "pins_too_many",
+    )

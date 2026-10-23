@@ -36,6 +36,9 @@ Scope = Literal["content", "format"]
 MAX_ITEM_BYTES = 50 * 1024 * 1024
 QUOTA_BYTES = 1024 * 1024 * 1024
 MAX_GRANT_ITEMS = 64
+# 同意依据可以比一条授权大：knowlab 的测试同意覆盖他知识库里的全部资料
+# （SDD 0042 第七节），每次测试只按绑定签其中几份
+MAX_CONSENT_ITEMS = 1000
 # 运行授权最长多久（到点兜底失效，数据拓扑第 5.3 节第 7 条）
 MAX_GRANT_TTL: dict[GrantKind, timedelta] = {
     "test": timedelta(hours=26),  # 测试时限加等人的最长时间
@@ -218,11 +221,11 @@ def check_purpose(purpose: str) -> str:
     return purpose
 
 
-def check_pins(pins: tuple[Pin, ...]) -> tuple[Pin, ...]:
+def check_pins(pins: tuple[Pin, ...], limit: int = MAX_GRANT_ITEMS) -> tuple[Pin, ...]:
     if not pins:
         raise refused("pins_empty", "at least one item is required")
-    if len(pins) > MAX_GRANT_ITEMS:
-        raise refused("pins_too_many", f"at most {MAX_GRANT_ITEMS} items")
+    if len(pins) > limit:
+        raise refused("pins_too_many", f"at most {limit} items")
     ids = [p.item_id for p in pins]
     if len(set(ids)) != len(ids):
         raise refused("pins_duplicate", "an item is listed twice")
