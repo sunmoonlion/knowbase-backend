@@ -58,9 +58,7 @@ class Settings(BaseSettings):
     #   {"knowfeed": {"web_base_url": "https://knowfeed.example"}}
     cross_app_targets_json: str = "{}"
 
-    database_url: str = (
-        "postgresql+asyncpg://knowbase:knowbase@localhost:5432/knowbase"
-    )
+    database_url: str = "postgresql+asyncpg://knowbase:knowbase@localhost:5432/knowbase"
     migration_database_url: str | None = None
 
     redis_host: str = "localhost"
@@ -132,6 +130,16 @@ class Settings(BaseSettings):
     # The JSON object maps an exact token subject to its maximum allowed scopes.
     service_auth_audience: str = ""
     service_auth_subject_bindings_json: str = "{}"
+
+    # 用户资料（SDD 0042）。用户本人的令牌：应用后端经 Casdoor 令牌交换换来，
+    # aud 是下面这个值；代办的应用由令牌的 azp 认，只认这里登记的客户端编号
+    # （JSON：客户端编号 → knowbench / knowlab / knowmart）。
+    user_token_audience: str = ""
+    user_token_apps_json: str = "{}"
+    # 用户资料存哪个桶、键的前缀；S3 地址与密钥用上面的 S3_* 配置
+    user_data_bucket: str = ""
+    user_data_prefix: str = "users"
+    user_data_storage_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
 
     celery_broker_url: str | None = Field(
         default=None, validation_alias="CELERY_BROKER_URL"
@@ -662,6 +670,24 @@ class Settings(BaseSettings):
                 raise ValueError("SERVICE_AUTH_SUBJECT_BINDINGS_JSON is invalid")
             result[subject.strip()] = normalized
         return result
+
+    @property
+    def user_token_apps(self) -> dict[str, str]:
+        """令牌的 azp（Casdoor 客户端编号）→ 应用分区。"""
+        try:
+            raw = json.loads(self.user_token_apps_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("USER_TOKEN_APPS_JSON must be valid JSON") from exc
+        if not isinstance(raw, dict) or any(
+            not isinstance(k, str)
+            or not k.strip()
+            or v not in ("knowbench", "knowlab", "knowmart")
+            for k, v in raw.items()
+        ):
+            raise ValueError(
+                "USER_TOKEN_APPS_JSON maps client ids to knowbench/knowlab/knowmart"
+            )
+        return {k.strip(): v for k, v in raw.items()}
 
     def require_service_identity(self) -> None:
         if not self.service_auth_audience.strip():

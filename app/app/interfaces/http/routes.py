@@ -7,6 +7,7 @@ from app.interfaces.endpoints.knowledge_routes import (
 from app.interfaces.endpoints.knowledge_routes import (
     router as knowledge_admin_router,
 )
+from app.interfaces.endpoints.user_data_routes import router as user_data_router
 from app.interfaces.http.admin.auth import router as admin_auth_router
 from app.interfaces.http.admin.catalog import router as admin_catalog_router
 from app.interfaces.http.admin.datasets import router as admin_datasets_router
@@ -34,5 +35,7 @@ router.include_router(
     dependencies=[Depends(require_knowbase_admin)],
 )
 router.include_router(knowledge_internal_router)
+# 用户资料：各应用知识库的云端真源（SDD 0042）
+router.include_router(user_data_router)
 # 工具与数据目录页面用同一份数据集目录（F-KNOW-11）
 router.include_router(build_knowledge_mcp_router(catalog=shared_datasets().catalog))
