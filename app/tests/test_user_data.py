@@ -598,11 +598,11 @@ def test_object_store_refuses_to_start_without_configuration():
 # —— 接口 ——
 
 
-def service_principal(*scopes: str) -> Principal:
+def service_principal(*scopes: str, subject: str = "svc-test") -> Principal:
     now = datetime.now(UTC)
     return Principal(
         actor_type="service",
-        subject="svc-test",
+        subject=subject,
         issuer="https://casdoor.test",
         app="knowbase",
         surface="internal",
@@ -620,13 +620,18 @@ def api(world):
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(user_data_routes.router, prefix="/api")
-    state = {"owner": ALICE, "principal": service_principal("user-data:read:knowbench")}
+    state = {"owner": ALICE, "principal": service_principal(READ)}
     overrides = app.dependency_overrides
     overrides[user_data_routes.internal_host_only] = lambda: None
     overrides[user_data_routes.require_user_owner] = lambda: state["owner"]
     overrides[user_data_routes.get_user_data_service] = lambda: service
+    overrides[user_data_routes.get_settings] = lambda: Settings(
+        user_data_reader_apps_json=json.dumps(
+            {"svc-test": "knowbench", "svc-lab": "knowlab"}
+        )
+    )
     for dep in (
-        user_data_routes.require_any_service,
+        user_data_routes.require_read_service,
         user_data_routes.require_grant_test_service,
         user_data_routes.require_purchase_service,
     ):
@@ -637,6 +642,7 @@ def api(world):
 
 
 BASE = "/api/internal/v1/user-data"
+READ = user_data_routes.READ
 
 
 async def test_api_upload_list_download_and_errors_with_codes(api):
@@ -695,13 +701,15 @@ async def test_api_grant_then_read_as_the_reader_app(api):
     assert [g["name"] for g in view["granted"]] == ["a.csv"]
     read = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert read.content == CSV and repo.reads[-1].reader == "svc-test"
-    # 服务身份要有且只有一个 user-data:read:<应用>
-    state["principal"] = service_principal(
-        "user-data:read:knowbench", "user-data:read:knowlab"
-    )
+    # 没有读的权限，或者配置里没登记这个服务身份以哪个应用读：拒
+    state["principal"] = service_principal(user_data_routes.PURCHASE)
     denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
-    state["principal"] = service_principal("user-data:read:knowlab")
+    state["principal"] = service_principal(READ, subject="svc-unknown")
+    denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
+    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
+    # 登记成别的应用：授权不是给它的，与没有一样
+    state["principal"] = service_principal(READ, subject="svc-lab")
     other = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert (other.status_code, other.json()["code"]) == (404, "grant_not_found")
 
@@ -719,7 +727,7 @@ async def test_api_test_grant_and_purchase_as_services(api):
             json={"purpose": "knowlab-test", "ref": "idea-1@v1", "items": pins},
         )
     ).json()
-    state["principal"] = service_principal("user-data:grant-test")
+    state["principal"] = service_principal(user_data_routes.GRANT_TEST)
     grant = await client.post(
         f"{BASE}/test-grants",
         json={
@@ -738,7 +746,7 @@ async def test_api_test_grant_and_purchase_as_services(api):
     goods = (
         await client.post(f"{BASE}/items", params={"name": "b.csv"}, content=CSV)
     ).json()
-    state["principal"] = service_principal("user-data:purchase")
+    state["principal"] = service_principal(user_data_routes.PURCHASE)
     bought = await client.post(
         f"{BASE}/purchases",
         json={

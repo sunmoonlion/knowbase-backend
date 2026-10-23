@@ -140,6 +140,8 @@ class Settings(BaseSettings):
     user_data_bucket: str = ""
     user_data_prefix: str = "users"
     user_data_storage_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    # 凭运行授权读的服务身份以哪个应用的名义读（JSON：服务身份 sub → 应用）
+    user_data_reader_apps_json: str = "{}"
 
     celery_broker_url: str | None = Field(
         default=None, validation_alias="CELERY_BROKER_URL"
@@ -670,6 +672,23 @@ class Settings(BaseSettings):
                 raise ValueError("SERVICE_AUTH_SUBJECT_BINDINGS_JSON is invalid")
             result[subject.strip()] = normalized
         return result
+
+    @property
+    def user_data_reader_apps(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self.user_data_reader_apps_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("USER_DATA_READER_APPS_JSON must be valid JSON") from exc
+        if not isinstance(raw, dict) or any(
+            not isinstance(k, str)
+            or not k.strip()
+            or v not in ("knowbench", "knowlab", "knowmart")
+            for k, v in raw.items()
+        ):
+            raise ValueError(
+                "USER_DATA_READER_APPS_JSON maps service subjects to app names"
+            )
+        return {k.strip(): v for k, v in raw.items()}
 
     @property
     def user_token_apps(self) -> dict[str, str]:

@@ -2,9 +2,10 @@
 
 两种身份，路径分开：
 - 用户本人：`Authorization: Bearer <换来的用户令牌>`（`sub` 是用户，`azp` 认应用分区）；
-- 服务：`Authorization: Bearer <服务身份令牌>`，按权限：
-  `user-data:grant-test`（knowlab 签测试授权）、`user-data:read:<应用>`（凭授权读）、
-  `user-data:purchase`（knowmart 成交复制）。
+- 服务：`Authorization: Bearer <服务身份令牌>`，权限照跨应用的约定写成「目标:关系」：
+  `knowbase:user-data-grant-test`（knowlab 签测试授权）、`knowbase:user-data-read`
+  （凭授权读；以哪个应用的名义读，由配置 USER_DATA_READER_APPS_JSON 按服务身份认）、
+  `knowbase:user-data-purchase`（knowmart 成交复制）。
 """
 
 from __future__ import annotations
@@ -55,9 +56,9 @@ router = APIRouter(
     dependencies=[Depends(internal_host_only)],
 )
 
-GRANT_TEST = "user-data:grant-test"
-PURCHASE = "user-data:purchase"
-READ_PREFIX = "user-data:read:"
+GRANT_TEST = "knowbase:user-data-grant-test"
+PURCHASE = "knowbase:user-data-purchase"
+READ = "knowbase:user-data-read"
 
 
 def get_user_data_service(
@@ -132,30 +133,29 @@ def _content(item: Item, content: bytes) -> Response:
     )
 
 
-def reader_app_of(principal: Principal) -> App:
-    """服务身份能以哪个应用的名义读：权限 `user-data:read:<应用>`，只许一个。"""
-    apps = {
-        s[len(READ_PREFIX) :] for s in principal.scopes if s.startswith(READ_PREFIX)
-    }
-    if len(apps) != 1 or not apps <= set(APPS):
+def reader_app_of(principal: Principal, settings: Settings) -> App:
+    """服务身份以哪个应用的名义读：要有读的权限，并且在配置里登记了是哪个应用。"""
+    app = settings.user_data_reader_apps.get(principal.subject)
+    if READ not in principal.scopes or app not in APPS:
         raise AppException(
             code="service_scope_denied",
             status_code=403,
             msg="The service identity may not read user data",
         )
-    return apps.pop()  # type: ignore[return-value]
+    return app  # type: ignore[return-value]
 
 
 # 服务身份的三种依赖放在模块一级：测试里按对象替换
 require_grant_test_service = require_internal_scopes(GRANT_TEST)
 require_purchase_service = require_internal_scopes(PURCHASE)
-require_any_service = require_internal_scopes()
+require_read_service = require_internal_scopes(READ)
 
 
 async def require_reader(
-    principal: Principal = Depends(require_any_service),
+    principal: Principal = Depends(require_read_service),
+    settings: Settings = Depends(get_settings),
 ) -> tuple[Principal, App]:
-    return principal, reader_app_of(principal)
+    return principal, reader_app_of(principal, settings)
 
 
 # —— 用户本人 ——
