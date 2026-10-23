@@ -5,7 +5,9 @@
 - 服务：`Authorization: Bearer <服务身份令牌>`，权限照跨应用的约定写成「目标:关系」：
   `knowbase:user-data-grant-test`（knowlab 签测试授权）、`knowbase:user-data-read`
   （凭授权读；以哪个应用的名义读，由配置 USER_DATA_READER_APPS_JSON 按服务身份认）、
-  `knowbase:user-data-purchase`（knowmart 成交复制）。
+  `knowbase:user-data-purchase`（knowmart 成交复制）、`knowbase:user-data-import`
+  （应用把自己原来存的资料搬进自己的分区，只能导进它自己那个应用的分区；
+  knowlab 知识库搬家用）。
 """
 
 from __future__ import annotations
@@ -59,6 +61,7 @@ router = APIRouter(
 GRANT_TEST = "knowbase:user-data-grant-test"
 PURCHASE = "knowbase:user-data-purchase"
 READ = "knowbase:user-data-read"
+IMPORT = "knowbase:user-data-import"
 
 
 def get_user_data_service(
@@ -149,6 +152,7 @@ def reader_app_of(principal: Principal, settings: Settings) -> App:
 require_grant_test_service = require_internal_scopes(GRANT_TEST)
 require_purchase_service = require_internal_scopes(PURCHASE)
 require_read_service = require_internal_scopes(READ)
+require_import_service = require_internal_scopes(IMPORT)
 
 
 async def require_reader(
@@ -303,6 +307,50 @@ async def revoke_test_grant(
     service: UserDataService = Depends(get_user_data_service),
 ):
     await _call(lambda: service.revoke_by_service(principal.subject, grant_id))
+
+
+# —— 应用搬自己的资料 ——
+
+
+@router.post("/imports", response_model=ItemRead, status_code=status.HTTP_201_CREATED)
+async def import_item(
+    request: Request,
+    owner: str = Query(min_length=1, max_length=255),
+    name: str = Query(min_length=1, max_length=200),
+    ref: str = Query(min_length=1, max_length=255),
+    principal: Principal = Depends(require_import_service),
+    settings: Settings = Depends(get_settings),
+    service: UserDataService = Depends(get_user_data_service),
+):
+    """请求体就是文件本身。
+
+    导进调用方自己那个应用的分区（按服务身份认，配置同读的一方），按 ref 幂等。
+    """
+    app = settings.user_data_reader_apps.get(principal.subject)
+    if app not in APPS:
+        raise AppException(
+            code="service_scope_denied",
+            status_code=403,
+            msg="The service identity is not registered for an app",
+        )
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_ITEM_BYTES:
+            raise AppException(
+                code="too_large", status_code=413, msg="file is larger than 50 MB"
+            )
+        chunks.append(chunk)
+    item = await _call(
+        lambda: service.import_item(
+            Owner(owner, app),  # type: ignore[arg-type]
+            name,
+            b"".join(chunks),
+            ref,
+        )
+    )
+    return _item(item)
 
 
 # —— 读的一方：凭授权读 ——

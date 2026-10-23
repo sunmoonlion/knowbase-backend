@@ -87,7 +87,13 @@ class UserDataService:
 
     # —— 本人 ——
 
-    async def upload(self, owner: Owner, name: str | None, content: bytes) -> Item:
+    async def upload(
+        self,
+        owner: Owner,
+        name: str | None,
+        content: bytes,
+        origin_ref: str | None = None,
+    ) -> Item:
         filename = clean_name(name)
         media_type = kind_of(filename, content)
         check_size(len(content), await self.repo.bytes_used(owner))
@@ -104,11 +110,29 @@ class UserDataService:
                 size_bytes=len(content),
                 sha256=hashlib.sha256(content).hexdigest(),
                 origin="upload",
-                origin_ref=None,
+                origin_ref=origin_ref,
                 object_key=key,
                 created_at=self.now(),
             )
         )
+
+    async def import_item(
+        self, owner: Owner, name: str | None, content: bytes, origin_ref: str
+    ) -> Item:
+        """应用把自己原来存的资料搬进自己的分区（knowlab 知识库搬家，SDD 0042 第七节）。
+
+        按调用方给的原编号幂等：同一个编号、同样的内容回已搬的那份；内容不同是 409。
+        记成本人上传的（origin 照旧是 upload，origin_ref 写原编号）。
+        """
+        check_ref(origin_ref, "origin_ref")
+        existing = await self.repo.find_by_origin(owner, origin_ref)
+        if existing is not None and existing.deleted_at is None:
+            if existing.sha256 != hashlib.sha256(content).hexdigest():
+                raise conflict(
+                    "origin_ref_reused", "this ref was imported with other content"
+                )
+            return existing
+        return await self.upload(owner, name, content, origin_ref=origin_ref)
 
     async def items_of(self, owner: Owner) -> list[Item]:
         return await self.repo.list_items(owner)

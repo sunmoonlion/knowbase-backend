@@ -634,6 +634,7 @@ def api(world):
         user_data_routes.require_read_service,
         user_data_routes.require_grant_test_service,
         user_data_routes.require_purchase_service,
+        user_data_routes.require_import_service,
     ):
         overrides[dep] = lambda: state["principal"]
     transport = httpx.ASGITransport(app=app)
@@ -768,3 +769,36 @@ async def test_api_test_grant_and_purchase_as_services(api):
         },
     )
     assert bought.status_code == 201 and bought.json()["origin"] == "purchase"
+
+
+async def test_an_app_imports_its_old_data_into_its_own_partition(api):
+    """knowlab 知识库搬家（SDD 0042 第七节）。
+
+    按原编号幂等，只进调用方自己那个应用的分区。
+    """
+    client, state, _ = api
+    state["principal"] = service_principal(user_data_routes.IMPORT, subject="svc-lab")
+    params = {"owner": "alice", "name": "年报.csv", "ref": "knowlab-dataset:d1"}
+    first = await client.post(f"{BASE}/imports", params=params, content=CSV)
+    assert first.status_code == 201, first.text
+    item = first.json()
+    assert (item["app"], item["origin"], item["origin_ref"]) == (
+        "knowlab",
+        "upload",
+        "knowlab-dataset:d1",
+    )
+    again = await client.post(f"{BASE}/imports", params=params, content=CSV)
+    assert again.json()["item_id"] == item["item_id"]
+    other = await client.post(f"{BASE}/imports", params=params, content=CSV + b"x")
+    assert (other.status_code, other.json()["code"]) == (409, "origin_ref_reused")
+    # 本人在 knowlab 的知识库里看得到
+    state["owner"] = ALICE_LAB
+    assert [i["item_id"] for i in (await client.get(f"{BASE}/items")).json()] == [
+        item["item_id"]
+    ]
+    # 没登记是哪个应用的服务身份、没有导入权限：拒
+    state["principal"] = service_principal(
+        user_data_routes.IMPORT, subject="svc-unknown"
+    )
+    denied = await client.post(f"{BASE}/imports", params=params, content=CSV)
+    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
