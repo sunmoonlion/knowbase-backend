@@ -314,12 +314,21 @@ async def test_user_grants_read_the_right_partition_and_only_own_pins(world):
 
 
 async def test_grant_lifetime_is_capped_by_kind(world):
+    """兜底时限与 knowbench 申请的一致：委托 7 天、会话 24 小时（Qwen 评审 Q-06）。"""
     service, _, _, clock = world
     item = await service.upload(ALICE, "a.csv", CSV)
-    grant = await service.grant_by_user(
+    session = await service.grant_by_user(
         ALICE, "session", "knowbench", "s", (pin(item),), 7 * 24 * 3600
     )
-    assert grant.expires_at == clock.now + timedelta(hours=12)
+    assert session.expires_at == clock.now + timedelta(hours=24)
+    delegation = await service.grant_by_user(
+        ALICE, "delegation", "knowbench", "t", (pin(item),), 7 * 24 * 3600
+    )
+    assert delegation.expires_at == clock.now + timedelta(days=7)
+    longer = await service.grant_by_user(
+        ALICE, "delegation", "knowbench", "u", (pin(item),), 30 * 24 * 3600
+    )
+    assert longer.expires_at == clock.now + timedelta(days=7)
 
 
 async def test_test_grants_stay_inside_the_users_consent(world):

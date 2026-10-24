@@ -40,10 +40,13 @@ MAX_GRANT_ITEMS = 64
 # （SDD 0042 第七节），每次测试只按绑定签其中几份
 MAX_CONSENT_ITEMS = 1000
 # 运行授权最长多久（到点兜底失效，数据拓扑第 5.3 节第 7 条）
+# 读的一方结束时主动交还，这里只管没交还的。委托 7 天、会话 24 小时与 SDD 0042、
+# knowbench 申请的一致（原来截成 24、12 小时，委托跑过一天、会话过半天就读不到，
+# Qwen 评审 Q-06）
 MAX_GRANT_TTL: dict[GrantKind, timedelta] = {
     "test": timedelta(hours=26),  # 测试时限加等人的最长时间
-    "delegation": timedelta(hours=24),
-    "session": timedelta(hours=12),
+    "delegation": timedelta(days=7),
+    "session": timedelta(hours=24),
     "incubation": timedelta(hours=6),
 }
 # 读格式的授权只看得到格式；其余三种看内容
