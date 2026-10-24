@@ -412,6 +412,25 @@ async def test_reading_needs_an_active_grant_for_that_reader_and_item(world):
     )
 
 
+async def test_a_check_judges_like_a_read_without_the_content(world):
+    """读的一方用缓存前核一次（Astra F01）：判断与读一样，不给内容，也留记录。"""
+    service, repo, _, _ = world
+    item = await service.upload(ALICE, "a.csv", CSV)
+    grant = await service.grant_by_user(
+        ALICE, "delegation", "knowbench", "task-1", (pin(item),)
+    )
+    checked = await service.check("knowbench", "svc-bench", grant.id, item.id)
+    assert checked.sha256 == item.sha256
+    assert (repo.reads[-1].operation, repo.reads[-1].reader) == ("check", "svc-bench")
+    await refused(
+        service.check("knowlab", "svc", grant.id, item.id), 404, "grant_not_found"
+    )
+    await service.revoke_by_user(ALICE, grant.id)
+    await refused(
+        service.check("knowbench", "svc", grant.id, item.id), 403, "grant_inactive"
+    )
+
+
 async def test_incubation_grants_see_formats_only(world):
     service, repo, _, _ = world
     book = await service.upload(ALICE_LAB, "三表.xlsx", xlsx("资产负债表", "利润表"))
@@ -702,6 +721,9 @@ async def test_api_grant_then_read_as_the_reader_app(api):
     assert [g["name"] for g in view["granted"]] == ["a.csv"]
     read = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert read.content == CSV and repo.reads[-1].reader == "svc-test"
+    check = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/check")
+    assert check.json() == {"item_id": item["item_id"], "sha256": item["sha256"]}
+    assert repo.reads[-1].operation == "check"
     # 没有读的权限，或者配置里没登记这个服务身份以哪个应用读：拒
     state["principal"] = service_principal(user_data_routes.PURCHASE)
     denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")

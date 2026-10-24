@@ -98,6 +98,13 @@ class GrantView(GrantRead):
     granted: list[GrantedItem]
 
 
+class ItemCheck(BaseModel):
+    """核一次的回答：这份还能按这个授权读，版本是这个。"""
+
+    item_id: str
+    sha256: str
+
+
 class FormatRead(BaseModel):
     item_id: str
     name: str

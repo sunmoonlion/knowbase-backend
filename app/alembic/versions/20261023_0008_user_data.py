@@ -165,7 +165,8 @@ def upgrade():
         sa.Column("operation", sa.String(20), nullable=False),
         sa.Column("grant_id", postgresql.UUID(as_uuid=True)),
         sa.CheckConstraint(
-            "operation IN ('owner-download', 'content', 'format', 'purchase-copy')",
+            "operation IN ('owner-download', 'content', 'format', 'purchase-copy',"
+            " 'check')",
             name="ck_user_data_read_operation",
         ),
     )

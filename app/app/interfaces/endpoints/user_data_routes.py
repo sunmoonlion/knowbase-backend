@@ -44,6 +44,7 @@ from app.interfaces.schemas.user_data import (
     GrantedItem,
     GrantRead,
     GrantView,
+    ItemCheck,
     ItemRead,
     PinIn,
     PurchaseCreate,
@@ -400,6 +401,19 @@ async def read_granted_content(
         lambda: service.read(app, principal.subject, grant_id, item_id, "content")
     )
     return _content(item, content)  # type: ignore[arg-type]
+
+
+@router.get("/grants/{grant_id}/items/{item_id}/check", response_model=ItemCheck)
+async def check_granted(
+    grant_id: str,
+    item_id: str,
+    reader: tuple[Principal, App] = Depends(require_reader),
+    service: UserDataService = Depends(get_user_data_service),
+):
+    """读的一方用缓存的内容前核一次：授权还算不算数、版本对不对（不给内容，留读数记录）。"""
+    principal, app = reader
+    item = await _call(lambda: service.check(app, principal.subject, grant_id, item_id))
+    return ItemCheck(item_id=item.id, sha256=item.sha256)
 
 
 @router.get("/grants/{grant_id}/items/{item_id}/format", response_model=FormatRead)

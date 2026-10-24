@@ -168,7 +168,7 @@ class ReadEvent:
     item_id: str
     sha256: str
     reader: str
-    operation: Literal["owner-download", "content", "format", "purchase-copy"]
+    operation: Literal["owner-download", "content", "format", "purchase-copy", "check"]
     grant_id: str | None = None
     at: datetime | None = None
 

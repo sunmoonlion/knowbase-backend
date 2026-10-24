@@ -171,7 +171,8 @@ class UserDataRead(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "operation IN ('owner-download', 'content', 'format', 'purchase-copy')",
+            "operation IN ('owner-download', 'content', 'format', 'purchase-copy',"
+            " 'check')",
             name="ck_user_data_read_operation",
         ),
         Index("ix_user_data_read_at", "at"),

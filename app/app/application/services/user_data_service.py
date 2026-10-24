@@ -256,6 +256,28 @@ class UserDataService:
     async def read(
         self, reader_app: App, reader: str, grant_id: str, item_id: str, scope: Scope
     ) -> tuple[Item, bytes | FormatView]:
+        grant, item = await self._granted(reader_app, grant_id, item_id, scope)
+        content = await self._content(item)
+        await self._log(item, reader=reader, operation=scope, grant_id=grant.id)
+        if scope == "format":
+            return item, describe_format(item, content)
+        return item, content
+
+    async def check(
+        self, reader_app: App, reader: str, grant_id: str, item_id: str
+    ) -> Item:
+        """读的一方用自己缓存的内容之前，核这次读还算不算数（不取内容）。
+
+        与 read 同样的判断：授权在、给这个应用、没撤没过期、钉了这一份、资料没删、
+        版本对得上；同样留一条读数记录（operation=check）。读的一方不能让缓存跳过授权。
+        """
+        grant, item = await self._granted(reader_app, grant_id, item_id, None)
+        await self._log(item, reader=reader, operation="check", grant_id=grant.id)
+        return item
+
+    async def _granted(
+        self, reader_app: App, grant_id: str, item_id: str, scope: Scope | None
+    ) -> tuple[Grant, Item]:
         grant = await self.repo.get_grant(grant_id)
         # 授权不在、不是给这个应用的，与没有一样；过期、撤了是确定的拒绝
         if grant is None or grant.reader_app != reader_app:
@@ -274,11 +296,7 @@ class UserDataService:
             raise not_found()
         if item.sha256 != pin.sha256:
             raise conflict("sha256_mismatch", "the pinned version does not match")
-        content = await self._content(item)
-        await self._log(item, reader=reader, operation=scope, grant_id=grant.id)
-        if scope == "format":
-            return item, describe_format(item, content)
-        return item, content
+        return grant, item
 
     async def release(self, reader_app: App, grant_id: str) -> None:
         """读的一方交还给自己的授权（委托、会话结束时；只会收窄，不用本人在场）。
