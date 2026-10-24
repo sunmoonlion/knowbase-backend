@@ -31,6 +31,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.GrantedItem,
     models.GrantView,
     models.FormatRead,
+    models.ItemCheck,
     models.PurchaseCreate,
 )
 
