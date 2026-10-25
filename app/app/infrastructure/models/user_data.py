@@ -5,6 +5,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -40,6 +41,8 @@ class UserDataItem(TimestampMixin, Base):
     origin_ref: Mapped[str | None] = mapped_column(String(255))
     object_key: Mapped[str] = mapped_column(Text, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 买来、卖家写明不许转卖的（Fable 评审 P2-16）
+    no_resale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     __table_args__ = (
         CheckConstraint(f"app IN {_APPS}", name="ck_user_data_item_app"),

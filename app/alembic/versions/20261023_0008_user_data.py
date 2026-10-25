@@ -45,6 +45,8 @@ def upgrade():
         sa.Column("origin_ref", sa.String(255)),
         sa.Column("object_key", sa.Text(), nullable=False),
         sa.Column("deleted_at", sa.DateTime(timezone=True)),
+        # 买来、卖家写明不许转卖的（Fable 评审 P2-16）
+        sa.Column("no_resale", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.CheckConstraint(f"app IN {APPS}", name="ck_user_data_item_app"),
         sa.CheckConstraint(
             "origin IN ('upload', 'collect', 'purchase')",

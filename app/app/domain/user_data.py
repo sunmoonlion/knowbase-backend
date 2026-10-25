@@ -122,6 +122,8 @@ class Item:
     object_key: str
     created_at: datetime
     deleted_at: datetime | None = None
+    # 买来、卖家写明不许转卖的；同一个人再传同样内容的也带上（Fable 评审 P2-16）
+    no_resale: bool = False
 
 
 @dataclass(frozen=True)

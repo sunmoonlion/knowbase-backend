@@ -99,6 +99,7 @@ def _item(item: Item) -> ItemRead:
         origin=item.origin,
         origin_ref=item.origin_ref,
         created_at=item.created_at,
+        no_resale=item.no_resale,
     )
 
 
@@ -455,6 +456,7 @@ async def purchase_copy(
             payload.buyer,
             payload.buyer_app,
             payload.transaction_ref,
+            payload.no_resale,
         )
     )
     return _item(item)

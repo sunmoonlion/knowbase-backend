@@ -71,6 +71,15 @@ class MemoryRepo:
     async def get_item(self, item_id: str) -> Item | None:
         return self.item_rows.get(item_id)
 
+    async def holds_no_resale(self, subject: str, sha256: str) -> bool:
+        return any(
+            i.owner.subject == subject
+            and i.sha256 == sha256
+            and i.no_resale
+            and i.deleted_at is None
+            for i in self.item_rows.values()
+        )
+
     async def items(self, ids: list[str]) -> dict[str, Item]:
         return {i: self.item_rows[i] for i in ids if i in self.item_rows}
 
@@ -490,6 +499,23 @@ async def test_a_purchase_copies_once_into_the_buyers_chosen_knowledge_base(worl
     await service.delete(seller, goods.id)
     _, content = await service.download(ALICE_LAB, copied.id)
     assert content == CSV
+
+
+async def test_no_resale_follows_the_copy_and_its_reuploads(world):
+    """买来不许转卖的：复制出的那份带标记；买家下载了再传进别的知识库，同样内容的也带上
+    （Fable 评审 P2-16）。改过字节的认不出，只能靠驻场规则。"""
+    service, *_ = world
+    goods = await service.upload(Owner("seller", "knowmart"), "整理.csv", CSV)
+    copied = await service.purchase(
+        "svc-mart", "seller", goods.id, "alice", "knowbench", "tx-9", True
+    )
+    assert copied.no_resale
+    again = await service.upload(Owner("alice", "knowmart"), "转手.csv", CSV)
+    assert again.no_resale
+    other = await service.upload(Owner("alice", "knowmart"), "改过.csv", CSV + b"x")
+    assert not other.no_resale
+    mine = await service.upload(Owner("bob", "knowmart"), "别人的.csv", CSV)
+    assert not mine.no_resale  # 只认这个人手里的
 
 
 async def test_purchases_come_from_knowmart_and_go_to_bench_or_lab(world):

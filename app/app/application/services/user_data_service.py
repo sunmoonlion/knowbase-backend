@@ -100,6 +100,7 @@ class UserDataService:
         check_size(len(content), await self.repo.bytes_used(owner))
         item_id = self.new_id()
         key = object_key(self.prefix, owner, item_id)
+        sha256 = hashlib.sha256(content).hexdigest()
         # 先存对象再记：记没写上，只多一个没人引用的对象，不会有指向空处的记录
         await self.objects.put(key, content, media_type)
         return await self.repo.add_item(
@@ -109,11 +110,13 @@ class UserDataService:
                 name=filename,
                 media_type=media_type,
                 size_bytes=len(content),
-                sha256=hashlib.sha256(content).hexdigest(),
+                sha256=sha256,
                 origin="upload",
                 origin_ref=origin_ref,
                 object_key=key,
                 created_at=self.now(),
+                # 买来不许转卖的，下载了再传进别的知识库，标记照样跟着（Fable P2-16）
+                no_resale=await self.repo.holds_no_resale(owner.subject, sha256),
             )
         )
 
@@ -325,6 +328,7 @@ class UserDataService:
         buyer_subject: str,
         buyer_app: App,
         transaction_ref: str,
+        no_resale: bool = False,
     ) -> Item:
         if buyer_app not in RECEIVING_APPS:
             raise refused(
@@ -358,6 +362,7 @@ class UserDataService:
                 origin_ref=transaction_ref,
                 object_key=key,
                 created_at=self.now(),
+                no_resale=no_resale,
             )
         )
         await self._log(source, reader=reader, operation="purchase-copy")

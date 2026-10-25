@@ -86,6 +86,20 @@ async def test_items_round_trip_per_partition(db):
     assert set(await r.items([a.id, "bad", str(uuid.uuid4())])) == {a.id}
 
 
+async def test_no_resale_is_stored_and_found_by_content(db):
+    """买来不许转卖的标记存得住，按「这个人手里同样内容」找得到（Fable 评审 P2-16）。"""
+    from dataclasses import replace
+
+    r = repo(db)
+    bought = await r.add_item(
+        replace(item(ALICE_LAB, origin="purchase", origin_ref="tx-1"), no_resale=True)
+    )
+    assert (await r.get_item(bought.id)).no_resale  # type: ignore[union-attr]
+    assert await r.holds_no_resale(ALICE.subject, SHA)
+    assert not await r.holds_no_resale(BOB.subject, SHA)
+    assert not await r.holds_no_resale(ALICE.subject, "b" * 64)
+
+
 async def test_one_copy_per_origin_ref_in_a_partition(db):
     r = repo(db)
     bought = await r.add_item(item(origin="purchase", origin_ref="tx-1"))

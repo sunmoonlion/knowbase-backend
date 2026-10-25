@@ -49,6 +49,7 @@ def _item(row: UserDataItem) -> Item:
         object_key=row.object_key,
         created_at=row.created_at,
         deleted_at=row.deleted_at,
+        no_resale=row.no_resale,
     )
 
 
@@ -72,6 +73,7 @@ class SqlUserDataRepository:
                 origin_ref=item.origin_ref,
                 object_key=item.object_key,
                 created_at=item.created_at,
+                no_resale=item.no_resale,
             )
             session.add(row)
             await session.flush()
@@ -79,6 +81,20 @@ class SqlUserDataRepository:
             entity = _item(row)
             await session.commit()
             return entity
+
+    async def holds_no_resale(self, subject: str, sha256: str) -> bool:
+        async with self._sessions()() as session:
+            found = await session.execute(
+                select(UserDataItem.id)
+                .where(
+                    UserDataItem.owner_subject == subject,
+                    UserDataItem.sha256 == sha256,
+                    UserDataItem.no_resale.is_(True),
+                    UserDataItem.deleted_at.is_(None),
+                )
+                .limit(1)
+            )
+            return found.first() is not None
 
     async def get_item(self, item_id: str) -> Item | None:
         key = _uuid(item_id)

@@ -25,6 +25,7 @@ class ItemRead(BaseModel):
     origin: Literal["upload", "collect", "purchase"]
     origin_ref: str | None
     created_at: datetime
+    no_resale: bool = False
 
 
 class ConsentCreate(BaseModel):
@@ -123,3 +124,4 @@ class PurchaseCreate(BaseModel):
     buyer: str = Field(min_length=1, max_length=255)
     buyer_app: Literal["knowbench", "knowlab"]
     transaction_ref: str = Field(min_length=1, max_length=255)
+    no_resale: bool = False
