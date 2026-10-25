@@ -31,6 +31,7 @@ from app.domain.user_data import (
     conflict,
     not_found,
 )
+from app.infrastructure.security.relation_auth import ServiceCaller
 from app.infrastructure.security.user_token import UserTokenVerifier
 from app.infrastructure.storage.user_objects import S3UserObjects, sign
 from app.interfaces.endpoints import user_data_routes
@@ -626,9 +627,9 @@ async def test_object_store_puts_gets_copies_and_deletes_in_its_bucket():
     store = S3UserObjects(
         Settings(
             **{
-                "S3_ENDPOINT": "http://minio:9000",
-                "S3_ACCESS_KEY_ID": "k",
-                "S3_SECRET_ACCESS_KEY": "s",
+                "user_data_s3_endpoint": "http://minio:9000",
+                "user_data_s3_access_key_id": "k",
+                "user_data_s3_secret_access_key": "s",
                 "user_data_bucket": "user-data",
             }
         ),
@@ -651,26 +652,62 @@ async def test_object_store_puts_gets_copies_and_deletes_in_its_bucket():
 
 def test_object_store_refuses_to_start_without_configuration():
     with pytest.raises(UserDataError) as caught:
-        S3UserObjects(Settings(**{"S3_ENDPOINT": "http://minio:9000"}))
+        S3UserObjects(Settings(user_data_s3_endpoint="http://minio:9000"))
     assert caught.value.code == "storage_unconfigured"
+
+
+def test_object_store_does_not_borrow_the_knowledge_source_credentials():
+    """S3_* 是知识源只读身份（只读 knowfeed 的桶）：只配它，用户资料照样未配置。"""
+    with pytest.raises(UserDataError) as caught:
+        S3UserObjects(
+            Settings(
+                **{
+                    "S3_ENDPOINT": "http://minio:9000",
+                    "S3_ACCESS_KEY_ID": "k",
+                    "S3_SECRET_ACCESS_KEY": "s",
+                    "user_data_bucket": "user-data",
+                }
+            )
+        )
+    assert caught.value.code == "storage_unconfigured"
+
+
+def test_object_store_checks_tls_with_the_object_storage_ca(tmp_path):
+    settings = {
+        "user_data_s3_endpoint": "https://object-storage:9000",
+        "user_data_s3_access_key_id": "k",
+        "user_data_s3_secret_access_key": "s",
+        "user_data_bucket": "knowbase-originals",
+    }
+    missing = str(tmp_path / "missing.crt")
+    with pytest.raises(UserDataError) as caught:
+        S3UserObjects(Settings(**settings, AWS_CA_BUNDLE=missing))
+    assert caught.value.code == "storage_unconfigured"
+    assert S3UserObjects(Settings(**settings))._verify is True
 
 
 # —— 接口 ——
 
 
-def service_principal(*scopes: str, subject: str = "svc-test") -> Principal:
+def service_caller(
+    scope: str, caller: str = "knowbench", subject: str = "svc-test"
+) -> ServiceCaller:
+    """按关系校验认出的调用方（校验本身在 test_relation_auth.py）。"""
     now = datetime.now(UTC)
-    return Principal(
-        actor_type="service",
-        subject=subject,
-        issuer="https://casdoor.test",
-        app="knowbase",
-        surface="internal",
-        audience="knowbase",
-        scopes=frozenset(scopes),
-        authenticated_at=now,
-        expires_at=now + timedelta(minutes=5),
-        policy_version="service-v1",
+    return ServiceCaller(
+        caller=caller,
+        principal=Principal(
+            actor_type="service",
+            subject=subject,
+            issuer="https://casdoor.test",
+            app="knowbase",
+            surface="internal",
+            audience=f"sunmoon-{caller}-{scope.removeprefix('knowbase:')}",
+            scopes=frozenset({scope}),
+            authenticated_at=now,
+            expires_at=now + timedelta(minutes=5),
+            policy_version="service-v1",
+        ),
     )
 
 
@@ -680,23 +717,18 @@ def api(world):
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(user_data_routes.router, prefix="/api")
-    state = {"owner": ALICE, "principal": service_principal(READ)}
+    state = {"owner": ALICE, "caller": service_caller(READ)}
     overrides = app.dependency_overrides
     overrides[user_data_routes.internal_host_only] = lambda: None
     overrides[user_data_routes.require_user_owner] = lambda: state["owner"]
     overrides[user_data_routes.get_user_data_service] = lambda: service
-    overrides[user_data_routes.get_settings] = lambda: Settings(
-        user_data_reader_apps_json=json.dumps(
-            {"svc-test": "knowbench", "svc-lab": "knowlab"}
-        )
-    )
     for dep in (
         user_data_routes.require_read_service,
         user_data_routes.require_grant_test_service,
         user_data_routes.require_purchase_service,
         user_data_routes.require_import_service,
     ):
-        overrides[dep] = lambda: state["principal"]
+        overrides[dep] = lambda: state["caller"]
     transport = httpx.ASGITransport(app=app)
     client = httpx.AsyncClient(transport=transport, base_url="http://knowbase")
     return client, state, repo
@@ -765,21 +797,18 @@ async def test_api_grant_then_read_as_the_reader_app(api):
     check = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/check")
     assert check.json() == {"item_id": item["item_id"], "sha256": item["sha256"]}
     assert repo.reads[-1].operation == "check"
-    # 没有读的权限，或者配置里没登记这个服务身份以哪个应用读：拒
-    state["principal"] = service_principal(user_data_routes.PURCHASE)
+    # 调用方不是三个应用之一（部署配了别的运行方）：没有分区可代表，拒
+    state["caller"] = service_caller(READ, caller="other-runtime", subject="svc-x")
     denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
-    state["principal"] = service_principal(READ, subject="svc-unknown")
-    denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
-    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
-    # 登记成别的应用：授权不是给它的，与没有一样
-    state["principal"] = service_principal(READ, subject="svc-lab")
+    # 别的应用来读：授权不是给它的，与没有一样
+    state["caller"] = service_caller(READ, caller="knowlab", subject="svc-lab")
     other = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
     assert (other.status_code, other.json()["code"]) == (404, "grant_not_found")
     # 别的应用不能替它交还；读的一方自己交还，交还后再读是确定的拒绝，用户就能删了
     released = await client.post(f"{BASE}/grants/{gid}/release")
     assert (released.status_code, released.json()["code"]) == (404, "grant_not_found")
-    state["principal"] = service_principal(READ, subject="svc-test")
+    state["caller"] = service_caller(READ)
     assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
     assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
     after = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
@@ -801,7 +830,9 @@ async def test_api_test_grant_and_purchase_as_services(api):
             json={"purpose": "knowlab-test", "ref": "idea-1@v1", "items": pins},
         )
     ).json()
-    state["principal"] = service_principal(user_data_routes.GRANT_TEST)
+    state["caller"] = service_caller(
+        user_data_routes.GRANT_TEST, caller="knowlab", subject="svc-lab"
+    )
     grant = await client.post(
         f"{BASE}/test-grants",
         json={
@@ -820,7 +851,9 @@ async def test_api_test_grant_and_purchase_as_services(api):
     goods = (
         await client.post(f"{BASE}/items", params={"name": "b.csv"}, content=CSV)
     ).json()
-    state["principal"] = service_principal(user_data_routes.PURCHASE)
+    state["caller"] = service_caller(
+        user_data_routes.PURCHASE, caller="knowmart", subject="svc-mart"
+    )
     bought = await client.post(
         f"{BASE}/purchases",
         json={
@@ -840,7 +873,9 @@ async def test_an_app_imports_its_old_data_into_its_own_partition(api):
     按原编号幂等，只进调用方自己那个应用的分区。
     """
     client, state, _ = api
-    state["principal"] = service_principal(user_data_routes.IMPORT, subject="svc-lab")
+    state["caller"] = service_caller(
+        user_data_routes.IMPORT, caller="knowlab", subject="svc-lab"
+    )
     params = {"owner": "alice", "name": "年报.csv", "ref": "knowlab-dataset:d1"}
     first = await client.post(f"{BASE}/imports", params=params, content=CSV)
     assert first.status_code == 201, first.text
@@ -859,9 +894,9 @@ async def test_an_app_imports_its_old_data_into_its_own_partition(api):
     assert [i["item_id"] for i in (await client.get(f"{BASE}/items")).json()] == [
         item["item_id"]
     ]
-    # 没登记是哪个应用的服务身份、没有导入权限：拒
-    state["principal"] = service_principal(
-        user_data_routes.IMPORT, subject="svc-unknown"
+    # 调用方不是三个应用之一：没有自己的分区，拒
+    state["caller"] = service_caller(
+        user_data_routes.IMPORT, caller="other-runtime", subject="svc-x"
     )
     denied = await client.post(f"{BASE}/imports", params=params, content=CSV)
     assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")

@@ -1,13 +1,16 @@
 """用户资料的对象存储（S3 兼容，SigV4 签名，SDD 0042）。
 
-和 `external/artifact_content.py` 用同一套 S3 配置；那边只取不写，
-这里要放、取、删、复制，所以单写一份带请求体摘要与复制头的签名，不动那边的代码。
+凭据单独一套 `USER_DATA_S3_*`（`external/artifact_content.py` 用的 `S3_*` 是知识源
+只读身份）。那边只取不写，这里要放、取、删、复制，所以单写一份带请求体摘要与复制头
+的签名，不动那边的代码。对象存储的证书按 `AWS_CA_BUNDLE` 核：`SSL_CERT_FILE` 是给
+知识源那套连接的。
 """
 
 from __future__ import annotations
 
 import hashlib
 import hmac
+import ssl
 from datetime import UTC, datetime
 from urllib.parse import quote, urlsplit
 
@@ -22,26 +25,36 @@ class S3UserObjects:
         self, settings: Settings, *, transport: httpx.AsyncBaseTransport | None = None
     ) -> None:
         if (
-            not settings.s3_endpoint
-            or not settings.s3_access_key_id
-            or not settings.s3_secret_access_key
+            not settings.user_data_s3_endpoint
+            or not settings.user_data_s3_access_key_id
+            or not settings.user_data_s3_secret_access_key
             or not settings.user_data_bucket
         ):
             raise UserDataError(
                 503, "storage_unconfigured", "user data storage is not configured"
             )
-        parsed = urlsplit(settings.s3_endpoint.rstrip("/"))
+        parsed = urlsplit(settings.user_data_s3_endpoint.rstrip("/"))
         if not parsed.scheme or not parsed.netloc or parsed.path not in ("", "/"):
-            raise UserDataError(503, "storage_unconfigured", "S3_ENDPOINT is invalid")
+            raise UserDataError(
+                503, "storage_unconfigured", "USER_DATA_S3_ENDPOINT is invalid"
+            )
         self._scheme = parsed.scheme
         self._endpoint_host = parsed.netloc
         self._bucket = settings.user_data_bucket
-        self._path_style = settings.s3_force_path_style
-        self._region = settings.s3_region
-        self._access_key = settings.s3_access_key_id
-        self._secret_key = settings.s3_secret_access_key
+        self._path_style = settings.user_data_s3_force_path_style
+        self._region = settings.user_data_s3_region
+        self._access_key = settings.user_data_s3_access_key_id
+        self._secret_key = settings.user_data_s3_secret_access_key
         self._timeout = settings.user_data_storage_timeout_seconds
         self._transport = transport
+        self._verify: ssl.SSLContext | bool = True
+        if parsed.scheme == "https" and settings.aws_ca_bundle:
+            try:
+                self._verify = ssl.create_default_context(cafile=settings.aws_ca_bundle)
+            except (OSError, ssl.SSLError):
+                raise UserDataError(
+                    503, "storage_unconfigured", "AWS_CA_BUNDLE cannot be loaded"
+                ) from None
 
     async def put(self, key: str, content: bytes, media_type: str) -> None:
         response = await self._request(
@@ -96,7 +109,7 @@ class S3UserObjects:
         )
         try:
             async with httpx.AsyncClient(
-                timeout=self._timeout, transport=self._transport
+                timeout=self._timeout, transport=self._transport, verify=self._verify
             ) as client:
                 return await client.request(
                     method,

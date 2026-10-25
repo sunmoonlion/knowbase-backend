@@ -136,12 +136,18 @@ class Settings(BaseSettings):
     # （JSON：客户端编号 → knowbench / knowlab / knowmart）。
     user_token_audience: str = ""
     user_token_apps_json: str = "{}"
-    # 用户资料存哪个桶、键的前缀；S3 地址与密钥用上面的 S3_* 配置
+    # 用户资料存哪个桶、键的前缀。对象存储单独一套身份 USER_DATA_S3_*：S3_* 是
+    # 知识源只读身份（只读 knowfeed 的桶），不能写；没配这套就回「未配置」
     user_data_bucket: str = ""
     user_data_prefix: str = "users"
     user_data_storage_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
-    # 凭运行授权读的服务身份以哪个应用的名义读（JSON：服务身份 sub → 应用）
-    user_data_reader_apps_json: str = "{}"
+    user_data_s3_endpoint: str | None = None
+    user_data_s3_region: str = "us-east-1"
+    user_data_s3_access_key_id: str | None = None
+    user_data_s3_secret_access_key: str | None = None
+    user_data_s3_force_path_style: bool = True
+    # 对象存储的 CA（部署挂在 /etc/sunmoon/object-storage/ca.crt）；没给就用系统的
+    aws_ca_bundle: str | None = Field(default=None, validation_alias="AWS_CA_BUNDLE")
 
     celery_broker_url: str | None = Field(
         default=None, validation_alias="CELERY_BROKER_URL"
@@ -672,23 +678,6 @@ class Settings(BaseSettings):
                 raise ValueError("SERVICE_AUTH_SUBJECT_BINDINGS_JSON is invalid")
             result[subject.strip()] = normalized
         return result
-
-    @property
-    def user_data_reader_apps(self) -> dict[str, str]:
-        try:
-            raw = json.loads(self.user_data_reader_apps_json)
-        except json.JSONDecodeError as exc:
-            raise ValueError("USER_DATA_READER_APPS_JSON must be valid JSON") from exc
-        if not isinstance(raw, dict) or any(
-            not isinstance(k, str)
-            or not k.strip()
-            or v not in ("knowbench", "knowlab", "knowmart")
-            for k, v in raw.items()
-        ):
-            raise ValueError(
-                "USER_DATA_READER_APPS_JSON maps service subjects to app names"
-            )
-        return {k.strip(): v for k, v in raw.items()}
 
     @property
     def user_token_apps(self) -> dict[str, str]:

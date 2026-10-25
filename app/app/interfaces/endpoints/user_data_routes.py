@@ -4,10 +4,10 @@
 - 用户本人：`Authorization: Bearer <换来的用户令牌>`（`sub` 是用户，`azp` 认应用分区）；
 - 服务：`Authorization: Bearer <服务身份令牌>`，权限照跨应用的约定写成「目标:关系」：
   `knowbase:user-data-grant-test`（knowlab 签测试授权）、`knowbase:user-data-read`
-  （凭授权读；以哪个应用的名义读，由配置 USER_DATA_READER_APPS_JSON 按服务身份认）、
-  `knowbase:user-data-purchase`（knowmart 成交复制）、`knowbase:user-data-import`
-  （应用把自己原来存的资料搬进自己的分区，只能导进它自己那个应用的分区；
-  knowlab 知识库搬家用）。
+  （凭授权读；以调用方那个应用的名义读）、`knowbase:user-data-purchase`（knowmart
+  成交复制）、`knowbase:user-data-import`（应用把自己原来存的资料搬进自己的分区，
+  只能导进调用方自己那个应用的分区；knowlab 知识库搬家用）。按关系校验，调用方是谁
+  由校验认出来（infrastructure/security/relation_auth.py）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
 from app.application.services.user_data_service import UserDataService
-from app.domain.security import Principal
 from app.domain.user_data import (
     APPS,
     MAX_ITEM_BYTES,
@@ -32,11 +31,17 @@ from app.domain.user_data import (
     UserDataError,
 )
 from app.infrastructure.repositories.user_data import SqlUserDataRepository
+from app.infrastructure.security.relation_auth import (
+    ServiceCaller,
+    require_grant_test_service,
+    require_import_service,
+    require_purchase_service,
+    require_read_service,
+)
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
 from app.interfaces.http.internal.host_guard import internal_host_only
-from app.interfaces.http.middleware.auth import require_internal_scopes
 from app.interfaces.schemas.user_data import (
     ConsentCreate,
     ConsentRead,
@@ -59,6 +64,7 @@ router = APIRouter(
     dependencies=[Depends(internal_host_only)],
 )
 
+# 四种关系各自要的权限（relation_auth 按 knowbase:<关系> 核）
 GRANT_TEST = "knowbase:user-data-grant-test"
 PURCHASE = "knowbase:user-data-purchase"
 READ = "knowbase:user-data-read"
@@ -138,30 +144,25 @@ def _content(item: Item, content: bytes) -> Response:
     )
 
 
-def reader_app_of(principal: Principal, settings: Settings) -> App:
-    """服务身份以哪个应用的名义读：要有读的权限，并且在配置里登记了是哪个应用。"""
-    app = settings.user_data_reader_apps.get(principal.subject)
-    if READ not in principal.scopes or app not in APPS:
+def app_of(caller: ServiceCaller) -> App:
+    """服务以哪个应用的名义读、导入：就是校验认出的调用方，要是三个应用之一。"""
+    if caller.caller not in APPS:
         raise AppException(
             code="service_scope_denied",
             status_code=403,
-            msg="The service identity may not read user data",
+            msg="The service caller is not an app with a user data partition",
         )
-    return app  # type: ignore[return-value]
+    return caller.caller  # type: ignore[return-value]
 
 
-# 服务身份的三种依赖放在模块一级：测试里按对象替换
-require_grant_test_service = require_internal_scopes(GRANT_TEST)
-require_purchase_service = require_internal_scopes(PURCHASE)
-require_read_service = require_internal_scopes(READ)
-require_import_service = require_internal_scopes(IMPORT)
+# 服务身份的四种依赖（require_*_service）从 relation_auth 引进模块一级：测试里按对象替换
 
 
 async def require_reader(
-    principal: Principal = Depends(require_read_service),
-    settings: Settings = Depends(get_settings),
-) -> tuple[Principal, App]:
-    return principal, reader_app_of(principal, settings)
+    caller: ServiceCaller = Depends(require_read_service),
+) -> tuple[str, App]:
+    """读的一方：（服务身份 sub，以哪个应用的名义）。"""
+    return caller.principal.subject, app_of(caller)
 
 
 # —— 用户本人 ——
@@ -285,12 +286,12 @@ async def revoke_user_grant(
 )
 async def create_test_grant(
     payload: TestGrantCreate,
-    principal: Principal = Depends(require_grant_test_service),
+    caller: ServiceCaller = Depends(require_grant_test_service),
     service: UserDataService = Depends(get_user_data_service),
 ):
     grant = await _call(
         lambda: service.grant_test(
-            principal.subject,
+            caller.principal.subject,
             payload.owner,
             payload.consent_id,
             payload.reader_app,
@@ -305,10 +306,10 @@ async def create_test_grant(
 @router.post("/test-grants/{grant_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_test_grant(
     grant_id: str,
-    principal: Principal = Depends(require_grant_test_service),
+    caller: ServiceCaller = Depends(require_grant_test_service),
     service: UserDataService = Depends(get_user_data_service),
 ):
-    await _call(lambda: service.revoke_by_service(principal.subject, grant_id))
+    await _call(lambda: service.revoke_by_service(caller.principal.subject, grant_id))
 
 
 # —— 应用搬自己的资料 ——
@@ -320,21 +321,14 @@ async def import_item(
     owner: str = Query(min_length=1, max_length=255),
     name: str = Query(min_length=1, max_length=200),
     ref: str = Query(min_length=1, max_length=255),
-    principal: Principal = Depends(require_import_service),
-    settings: Settings = Depends(get_settings),
+    caller: ServiceCaller = Depends(require_import_service),
     service: UserDataService = Depends(get_user_data_service),
 ):
     """请求体就是文件本身。
 
-    导进调用方自己那个应用的分区（按服务身份认，配置同读的一方），按 ref 幂等。
+    导进调用方自己那个应用的分区（校验认出的调用方），按 ref 幂等。
     """
-    app = settings.user_data_reader_apps.get(principal.subject)
-    if app not in APPS:
-        raise AppException(
-            code="service_scope_denied",
-            status_code=403,
-            msg="The service identity is not registered for an app",
-        )
+    app = app_of(caller)
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
@@ -346,7 +340,7 @@ async def import_item(
         chunks.append(chunk)
     item = await _call(
         lambda: service.import_item(
-            Owner(owner, app),  # type: ignore[arg-type]
+            Owner(owner, app),
             name,
             b"".join(chunks),
             ref,
@@ -361,7 +355,7 @@ async def import_item(
 @router.get("/grants/{grant_id}", response_model=GrantView)
 async def view_grant(
     grant_id: str,
-    reader: tuple[Principal, App] = Depends(require_reader),
+    reader: tuple[str, App] = Depends(require_reader),
     service: UserDataService = Depends(get_user_data_service),
 ):
     grant = await _call(lambda: service.grant_view(reader[1], grant_id))
@@ -383,7 +377,7 @@ async def view_grant(
 @router.post("/grants/{grant_id}/release", status_code=status.HTTP_204_NO_CONTENT)
 async def release_grant(
     grant_id: str,
-    reader: tuple[Principal, App] = Depends(require_reader),
+    reader: tuple[str, App] = Depends(require_reader),
     service: UserDataService = Depends(get_user_data_service),
 ):
     """读的一方交还授权：委托、会话结束就撤，不等时限（SDD 0042 第四节）。"""
@@ -394,12 +388,12 @@ async def release_grant(
 async def read_granted_content(
     grant_id: str,
     item_id: str,
-    reader: tuple[Principal, App] = Depends(require_reader),
+    reader: tuple[str, App] = Depends(require_reader),
     service: UserDataService = Depends(get_user_data_service),
 ):
-    principal, app = reader
+    subject, app = reader
     item, content = await _call(
-        lambda: service.read(app, principal.subject, grant_id, item_id, "content")
+        lambda: service.read(app, subject, grant_id, item_id, "content")
     )
     return _content(item, content)  # type: ignore[arg-type]
 
@@ -408,12 +402,12 @@ async def read_granted_content(
 async def check_granted(
     grant_id: str,
     item_id: str,
-    reader: tuple[Principal, App] = Depends(require_reader),
+    reader: tuple[str, App] = Depends(require_reader),
     service: UserDataService = Depends(get_user_data_service),
 ):
     """读的一方用缓存的内容前核一次：授权还算不算数、版本对不对（不给内容，留读数记录）。"""
-    principal, app = reader
-    item = await _call(lambda: service.check(app, principal.subject, grant_id, item_id))
+    subject, app = reader
+    item = await _call(lambda: service.check(app, subject, grant_id, item_id))
     return ItemCheck(item_id=item.id, sha256=item.sha256)
 
 
@@ -421,12 +415,12 @@ async def check_granted(
 async def read_granted_format(
     grant_id: str,
     item_id: str,
-    reader: tuple[Principal, App] = Depends(require_reader),
+    reader: tuple[str, App] = Depends(require_reader),
     service: UserDataService = Depends(get_user_data_service),
 ):
-    principal, app = reader
+    subject, app = reader
     item, view = await _call(
-        lambda: service.read(app, principal.subject, grant_id, item_id, "format")
+        lambda: service.read(app, subject, grant_id, item_id, "format")
     )
     return FormatRead(
         item_id=item.id,
@@ -445,12 +439,12 @@ async def read_granted_format(
 @router.post("/purchases", response_model=ItemRead, status_code=status.HTTP_201_CREATED)
 async def purchase_copy(
     payload: PurchaseCreate,
-    principal: Principal = Depends(require_purchase_service),
+    caller: ServiceCaller = Depends(require_purchase_service),
     service: UserDataService = Depends(get_user_data_service),
 ):
     item = await _call(
         lambda: service.purchase(
-            principal.subject,
+            caller.principal.subject,
             payload.seller,
             payload.seller_item_id,
             payload.buyer,
