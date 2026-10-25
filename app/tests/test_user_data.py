@@ -344,6 +344,12 @@ async def test_test_grants_stay_inside_the_users_consent(world):
         ALICE_LAB,
         consent.id,
     )
+    # knowlab 按超时 + 等人 3 天 + 1 小时申请：照给，不截（Fable 评审 P1-1）
+    asked = 600 + 3 * 24 * 3600 + 3600
+    long = await service.grant_test(
+        "svc-knowlab", "alice", consent.id, "knowbench", "test-7", (pin(a),), asked
+    )
+    assert long.expires_at - long.issued_at == timedelta(seconds=asked)
     await refused(
         service.grant_test(
             "svc-knowlab", "alice", consent.id, "knowbench", "test-6", (pin(b),)

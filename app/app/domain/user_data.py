@@ -44,7 +44,9 @@ MAX_CONSENT_ITEMS = 1000
 # knowbench 申请的一致（原来截成 24、12 小时，委托跑过一天、会话过半天就读不到，
 # Qwen 评审 Q-06）
 MAX_GRANT_TTL: dict[GrantKind, timedelta] = {
-    "test": timedelta(hours=26),  # 测试时限加等人的最长时间
+    # 测试时限加等人的最长时间：knowlab 按超时 + 等人 3 天 + 1 小时申请，最长 7 天
+    # （原来截成 26 小时，等人一天以上的测试中途读不到，Fable 评审 P1-1）
+    "test": timedelta(days=7),
     "delegation": timedelta(days=7),
     "session": timedelta(hours=24),
     "incubation": timedelta(hours=6),
