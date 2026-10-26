@@ -24,8 +24,10 @@ from app.infrastructure.models.user_data import (
     UserDataConsentItem,
     UserDataGrant,
     UserDataGrantItem,
+    UserDataHolding,
     UserDataItem,
     UserDataRead,
+    UserDataVersion,
 )
 
 
@@ -74,8 +76,37 @@ class SqlUserDataRepository:
                 object_key=item.object_key,
                 created_at=item.created_at,
                 no_resale=item.no_resale,
+                content_origin="collected" if item.origin == "collect" else "upload",
             )
             session.add(row)
+            await session.flush()
+            # 第四版同一行就是一份资料：v1 传进来的也记第 1 版与所有者的使用权，
+            # 兼容期里 v1、v2 看到的是同一份（SDD 0043 第九节）
+            session.add(
+                UserDataVersion(
+                    id=uuid.uuid4(),
+                    item_id=row.id,
+                    version_no=1,
+                    sha256=item.sha256,
+                    size_bytes=item.size_bytes,
+                    media_type=item.media_type,
+                    object_key=item.object_key,
+                    created_at=item.created_at,
+                    created_by=item.owner.subject,
+                )
+            )
+            session.add(
+                UserDataHolding(
+                    id=uuid.uuid4(),
+                    subject=item.owner.subject,
+                    item_id=row.id,
+                    basis=item.origin,
+                    license="self",
+                    version_no=1 if item.origin == "purchase" else None,
+                    ref=item.origin_ref if item.origin == "purchase" else None,
+                    created_at=item.created_at,
+                )
+            )
             await session.flush()
             await session.refresh(row)
             entity = _item(row)
@@ -181,6 +212,17 @@ class SqlUserDataRepository:
                     "in_use", "the item is used by a run or a consent and cannot go"
                 )
             row.deleted_at = now
+            # 所有者的使用权随之结束；买家的使用权不动（SDD 0043 第 2.8 节）
+            await session.execute(
+                update(UserDataHolding)
+                .where(
+                    UserDataHolding.item_id == key,
+                    UserDataHolding.subject == row.owner_subject,
+                    UserDataHolding.basis != "purchase",
+                    UserDataHolding.ended_at.is_(None),
+                )
+                .values(ended_at=now, end_reason="deleted")
+            )
             await session.commit()
 
     async def add_consent(self, consent: Consent) -> Consent:

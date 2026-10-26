@@ -51,6 +51,8 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20260911_0006_durable_delivery.py",
         "20260927_0007_dataset_registry.py",
         "20261023_0008_user_data.py",
+        "20261025_0009_auth_user_by_subject.py",
+        "20261026_0010_user_data_v4.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert (
@@ -67,6 +69,8 @@ def test_one_linear_canonical_migration_chain() -> None:
     assert 'down_revision = "20260811_0005"' in contents[5]
     assert 'down_revision = "20260911_0006"' in contents[6]
     assert 'down_revision = "20260927_0007"' in contents[7]
+    assert 'down_revision = "20261023_0008"' in contents[8]
+    assert 'down_revision = "20261025_0009"' in contents[9]
 
 
 def test_uuid_mixin_has_client_and_database_defaults() -> None:
