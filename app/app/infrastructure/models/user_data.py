@@ -73,6 +73,13 @@ class UserDataItem(TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(f"app IN {_APPS}", name="ck_user_data_item_app"),
+        Index(
+            "ix_user_data_item_description",
+            "subject_code",
+            "doc_type",
+            "period_end",
+            postgresql_where=text("subject_code IS NOT NULL"),
+        ),
         CheckConstraint(
             "content_origin IN ('disclosure', 'collected', 'upload', 'output')",
             name="ck_user_data_item_content_origin",
@@ -627,4 +634,78 @@ class UserDataDeletion(Base):
             "state IN ('processing', 'done')", name="ck_user_data_deletion_state"
         ),
         Index("ix_user_data_deletion_subject", "subject", "requested_at"),
+    )
+
+
+class UserDataResolution(Base):
+    """解析清单（SDD 0043 第 3.2 节）：每个修订一行，运行中冒出的新需求出新修订。"""
+
+    __tablename__ = "user_data_resolution"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    app: Mapped[str] = mapped_column(String(16), nullable=False)
+    consumer: Mapped[str] = mapped_column(String(160), nullable=False)
+    contract_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    vocab_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_ref: Mapped[str | None] = mapped_column(String(255))
+    needs: Mapped[list] = mapped_column(JSONB, nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    items: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("revision >= 1", name="ck_user_data_resolution_revision"),
+        Index("ix_user_data_resolution_subject", "subject", "created_at"),
+    )
+
+
+class UserDataConfirmation(Base):
+    """确认：清单修订、任务、声明快照、确认的条目、供给条件快照；7 天有效。"""
+
+    __tablename__ = "user_data_confirmation"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    app: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    task_ref: Mapped[str | None] = mapped_column(String(255))
+    resolution_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    resolution_revision: Mapped[int | None] = mapped_column(Integer)
+    needs: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    items: Mapped[list] = mapped_column(JSONB, nullable=False)
+    supply: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('description', 'url', 'topic')",
+            name="ck_user_data_confirmation_kind",
+        ),
+        Index("ix_user_data_confirmation_subject", "subject", "expires_at"),
+    )
+
+
+class UserDataPreference(Base):
+    """偏好：用户 × 使用者 × 声明契约版本 × 需求 key × 规范化的任务参数 → 资料。"""
+
+    __tablename__ = "user_data_preference"
+
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    consumer: Mapped[str] = mapped_column(String(160), primary_key=True)
+    contract_version: Mapped[str] = mapped_column(String(40), primary_key=True)
+    need_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    params_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    material_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
+    vocab_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )

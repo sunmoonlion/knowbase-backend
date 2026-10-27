@@ -11,12 +11,21 @@ from fastapi import FastAPI
 from test_durable_delivery_db import db as db
 from test_user_data import CSV, Clock, MemoryObjects
 
+from app.application.services.call_rate import RateLimiter
 from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import Owner
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
+from app.infrastructure.repositories.user_resolution import (
+    SqlUserResolutionRepository,
+)
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
-from app.interfaces.endpoints import user_library_routes, user_run_routes
+from app.interfaces.endpoints import (
+    user_library_routes,
+    user_resolution_routes,
+    user_run_routes,
+)
 from app.interfaces.errors.exception_handlers import register_exception_handlers
 
 BASE = "/api/internal/v2/user-data"
@@ -35,16 +44,25 @@ def api(db):
         prefix="p",
         clock=clock,
     )
+    resolver = UserResolutionService(
+        SqlUserResolutionRepository(lambda: db),
+        SqlUserLibraryRepository(lambda: db),
+        SqlUserRunRepository(lambda: db),
+        clock=clock,
+        limiter=RateLimiter(1000),
+    )
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(user_library_routes.router, prefix="/api")
     app.include_router(user_run_routes.router, prefix="/api")
+    app.include_router(user_resolution_routes.router, prefix="/api")
     state = {"owner": Owner("alice", "knowbench")}
     overrides = app.dependency_overrides
     overrides[user_library_routes.internal_host_only] = lambda: None
     overrides[user_library_routes.require_user_owner] = lambda: state["owner"]
     overrides[user_library_routes.get_user_library_service] = lambda: service
     overrides[user_run_routes.get_user_run_service] = lambda: runs
+    overrides[user_resolution_routes.get_user_resolution_service] = lambda: resolver
     state["service"] = "knowlab"
     caller = lambda: SimpleNamespace(caller=state["service"])  # noqa: E731
     overrides[user_library_routes.require_directory_service] = caller
@@ -52,7 +70,7 @@ def api(db):
     for need in (
         user_run_routes.require_grant_test_service,
         user_run_routes.require_output_service,
-        user_run_routes.require_processing_service,
+        user_run_routes.require_supply_service,
         user_run_routes.require_read_service,
     ):
         overrides[need] = lambda: SimpleNamespace(
@@ -469,3 +487,85 @@ async def test_knowlab_platform_grants_end_with_the_process(api):
     )
     assert (read.status_code, read.json()["code"]) == (403, "grant_inactive")
     assert (await client.get(f"{BASE}/platform-consents/test/t-9")).json() == []
+
+
+async def test_resolve_confirm_and_knowfeed_checks(api):
+    """块 2：按描述查、解析、确认、knowfeed 核确认、偏好只读。"""
+    client, state = api
+    await client.put(f"{BASE}/account", json={"default_display": True})
+    created = await client.post(
+        f"{BASE}/materials",
+        params={
+            "name": "maotai-2025.csv",
+            "subject": "600519.SH",
+            "doc_type": "annual_report",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+            "disclosed_on": "2026-03-28",
+            "confirm": "true",
+        },
+        content=CSV,
+    )
+    material_id = created.json()["material"]["material_id"]
+    found = await client.get(
+        f"{BASE}/lookup",
+        params={
+            "subject": "600519.SH",
+            "doc_type": "annual_report",
+            "period_start": "2025-01-01",
+            "period_end": "2025-12-31",
+        },
+    )
+    assert found.json() == {"status": "shown", "zone": "own"}
+
+    need = {
+        "key": "annual",
+        "name": "年报",
+        "doc_type": "annual_report",
+        "period": {"kind": "latest", "count": 2},
+        "formats": ["csv", "pdf"],
+    }
+    resolved = await client.post(
+        f"{BASE}/resolutions",
+        json={
+            "consumer": "expert:fa-1@2",
+            "contract_version": "knowbot-manifest/v2",
+            "needs": [need],
+            "params": {"subjects": ["600519.SH"], "task_date": "2026-10-27"},
+        },
+    )
+    assert resolved.status_code == 201, resolved.text
+    body = resolved.json()
+    assert [(i["key"]["period_end"], i["status"]) for i in body["items"]] == [
+        ("2025-12-31", "resolved"),
+        ("2024-12-31", "to_confirm"),
+    ]
+    assert body["items"][0]["chosen"][0]["material_id"] == material_id
+    again = await client.get(f"{BASE}/resolutions/{body['resolution_id']}")
+    assert again.json()["revision"] == 1
+
+    confirmed = await client.post(
+        f"{BASE}/confirmations",
+        json={
+            "kind": "description",
+            "resolution_id": body["resolution_id"],
+            "items": [{"key": body["items"][1]["key"], "need_key": "annual"}],
+            "supply": {"prematch": "ok"},
+        },
+    )
+    assert confirmed.status_code == 201, confirmed.text
+    confirmation_id = confirmed.json()["confirmation_id"]
+    assert confirmed.json()["branches"] == [{"item_id": "c1", "branch": "supply"}]
+
+    state["service"] = "knowfeed"
+    checked = await client.get(
+        f"{BASE}/service/confirmations/{confirmation_id}", params={"subject": "alice"}
+    )
+    assert checked.status_code == 200, checked.text
+    assert checked.json()["supply"] == {"prematch": "ok"}
+    assert checked.json()["needs"][0]["key"] == "annual"
+    prefs = await client.get(
+        f"{BASE}/preferences",
+        params={"consumer": "expert:fa-1@2", "subjects": ["600519.SH"]},
+    )
+    assert prefs.json() == []

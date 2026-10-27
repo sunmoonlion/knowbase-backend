@@ -525,7 +525,7 @@ async def test_purge_respects_other_holders_unless_personal_info(world):
 
 
 async def test_migration_0011_downgrades_and_upgrades_again():
-    """0011 能退能进：退掉时新表收干净，旧表还在；再进一次照样建起来。"""
+    """0011 起的迁移能退能进：退掉时新表收干净，旧表还在；再进一次照样建起来。"""
     url = os.environ.get("DELIVERY_TEST_DATABASE_URL")
     if not url:
         pytest.skip("set DELIVERY_TEST_DATABASE_URL to a disposable *_tests database")
@@ -539,6 +539,7 @@ async def test_migration_0011_downgrades_and_upgrades_again():
     paths = sorted((ROOT / "alembic/versions").glob("20*.py"))
     target = [p for p in paths if p.name.startswith("20261027_0011")]
     assert len(target) == 1
+    later = [p for p in paths if p.name > target[0].name]
 
     def load(path):
         spec = importlib.util.spec_from_file_location(path.stem, path)
@@ -561,7 +562,8 @@ async def test_migration_0011_downgrades_and_upgrades_again():
                 text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public')
             )
             await c.run_sync(run, upgrade_all)
-            await c.run_sync(run, load(target[0]).downgrade)
+            for path in reversed(later + target):
+                await c.run_sync(run, load(path).downgrade)
             tables = await c.execute(
                 text(
                     "SELECT table_name FROM information_schema.tables"
@@ -571,10 +573,13 @@ async def test_migration_0011_downgrades_and_upgrades_again():
             )
             names = {r[0] for r in tables}
             assert "user_data_run_grant" not in names
+            assert "user_data_resolution" not in names
             assert "user_data_item" in names
-            await c.run_sync(run, load(target[0]).upgrade)
+            for path in target + later:
+                await c.run_sync(run, load(path).upgrade)
         db = make_session_factory(engine)
         assert await sql(db, "SELECT count(*) FROM user_data_run_grant") == 0
+        assert await sql(db, "SELECT count(*) FROM user_data_confirmation") == 0
     finally:
         async with engine.begin() as c:
             await c.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))

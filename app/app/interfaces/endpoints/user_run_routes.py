@@ -23,8 +23,8 @@ from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_grant_test_service,
     require_output_service,
-    require_processing_service,
     require_read_service,
+    require_supply_service,
 )
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
@@ -499,7 +499,7 @@ async def write_output(
 @router.get("/processing/pending", response_model=list[PendingProcessingRead])
 async def pending_processing(
     limit: int = Query(default=50, ge=1, le=200),
-    caller: ServiceCaller = Depends(require_processing_service),
+    caller: ServiceCaller = Depends(require_supply_service),
     service: UserRunService = Depends(get_user_run_service),
 ):
     found = await _call(lambda: service.pending_processing(caller.caller, limit))
@@ -515,7 +515,7 @@ async def pending_processing(
 )
 async def issue_processing(
     payload: ProcessingGrantIn,
-    caller: ServiceCaller = Depends(require_processing_service),
+    caller: ServiceCaller = Depends(require_supply_service),
     service: UserRunService = Depends(get_user_run_service),
 ):
     grant = await _call(
@@ -537,7 +537,7 @@ async def write_rendition(
     request: Request,
     processor_version: str = Query(min_length=1, max_length=40),
     failed_reason: str | None = Query(default=None, max_length=500),
-    caller: ServiceCaller = Depends(require_processing_service),
+    caller: ServiceCaller = Depends(require_supply_service),
     service: UserRunService = Depends(get_user_run_service),
 ):
     """写回读法：请求体是读法内容；没成的不带请求体，给 `failed_reason`。"""

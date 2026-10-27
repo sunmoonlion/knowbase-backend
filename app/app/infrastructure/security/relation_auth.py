@@ -6,7 +6,7 @@ knowmart 成交（user-data-purchase；v1 复制一份，第四版给买家加�
 原来存的资料搬进自己的分区（user-data-import，knowlab）、knowlab 推名下专家的名录
 与交付时冻结绑定（user-data-directory，SDD 0044 第三节）、应用替用户写产出区
 （user-data-output，knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
-领授权与写回读法（user-data-processing，SDD 0043 第 2.7 节）。
+领授权与写回读法、受理前核确认（user-data-supply，SDD 0043 第 2.7、3.3 节）。
 一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
 每个调用方一组 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id，即
 Casdoor 给 client_credentials 令牌的 aud）、`_SUBJECT_ALLOWLIST`
@@ -49,7 +49,7 @@ Relation = Literal[
     "user-data-import",
     "user-data-directory",
     "user-data-output",
-    "user-data-processing",
+    "user-data-supply",
 ]
 
 
@@ -262,11 +262,14 @@ async def require_output_service(
     return await _verify("user-data-output", authorization)
 
 
-async def require_processing_service(
+async def require_supply_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
-    """knowfeed 凭本人的加工依据领授权、写回读法（SDD 0043 第 2.7 节）。"""
-    return await _verify("user-data-processing", authorization)
+    """knowfeed：凭本人的加工依据领授权、写回读法；受理前核确认。
+
+    SDD 0043 第 2.7、3.3 节。
+    """
+    return await _verify("user-data-supply", authorization)
 
 
 async def require_import_service(

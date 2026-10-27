@@ -92,6 +92,8 @@ class VocabularyRead(BaseModel):
     doc_types: dict[str, str]
     formats: dict[str, str]
     subject_kinds: list[str]
+    # 定期报告的报告期末与法定披露截止（声明展开「最近 N 期」按它算）
+    periodic: dict[str, dict[str, str]] = Field(default_factory=dict)
 
 
 # —— 块 1b：展示即同意、账号设置、名下专家、买家使用权 ——

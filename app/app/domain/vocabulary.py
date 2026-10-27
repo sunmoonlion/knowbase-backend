@@ -26,6 +26,22 @@ DOC_TYPES: dict[str, str] = {
     "other_text": "其他文本",
 }
 
+# 定期报告的报告期：一律从年初起算，到报告期末（三季报按「年初至报告期末」）；
+# 描述里的期间、声明展开出的期间都按这个写，才对得上。
+# 值：（报告期末的月、日，法定披露截止：报告期末之后第几年的几月几日）
+PERIODIC: dict[str, tuple[tuple[int, int], tuple[int, int, int]]] = {
+    "annual_report": ((12, 31), (1, 4, 30)),
+    "semiannual_report": ((6, 30), (0, 8, 31)),
+    "q1_report": ((3, 31), (0, 4, 30)),
+    "q3_report": ((9, 30), (0, 10, 31)),
+}
+# 可以按描述去采的：上市证券的定期报告、公告、招股书；机构的政策文件、统计数据。
+# 其余（其他表格、其他文本）是私有资料，采不来，只能本人上传；网页要给网址
+SECURITY_COLLECTABLE: frozenset[str] = frozenset(
+    {*PERIODIC, "announcement", "prospectus"}
+)
+ORG_COLLECTABLE: frozenset[str] = frozenset({"policy", "statistics"})
+
 # 格式：和上传收的内容类型对得上（pdf、Excel、CSV、文本、Markdown），外加网页
 FORMATS: dict[str, str] = {
     "pdf": "PDF",
@@ -93,6 +109,25 @@ def check_period(start: date | None, end: date | None) -> None:
         raise VocabularyError("period", "period starts after it ends")
 
 
+def report_period(doc_type: str, year: int) -> tuple[date, date]:
+    """某年这种定期报告的报告期（年初到报告期末）。"""
+    (month, day), _ = PERIODIC[doc_type]
+    return date(year, 1, 1), date(year, month, day)
+
+
+def disclosure_deadline(doc_type: str, year: int) -> date:
+    _, (later, month, day) = PERIODIC[doc_type]
+    return date(year + later, month, day)
+
+
+def collectable(subject: str, doc_type: str) -> bool:
+    """按描述能不能去采（能不能真采到由 knowfeed 预切合说了算）。"""
+    kind = subject_kind(subject)
+    if kind.endswith("_security"):
+        return doc_type in SECURITY_COLLECTABLE
+    return doc_type in ORG_COLLECTABLE
+
+
 def format_of_media(media_type: str) -> str | None:
     return MEDIA_FORMAT.get(media_type)
 
@@ -104,4 +139,11 @@ def snapshot() -> dict[str, object]:
         "doc_types": dict(DOC_TYPES),
         "formats": dict(FORMATS),
         "subject_kinds": [kind for kind, _ in _SUBJECT_PATTERNS],
+        "periodic": {
+            t: {
+                "period_end": f"{m:02d}-{d:02d}",
+                "deadline": f"+{y}y {dm:02d}-{dd:02d}",
+            }
+            for t, ((m, d), (y, dm, dd)) in PERIODIC.items()
+        },
     }
