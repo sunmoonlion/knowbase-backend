@@ -573,6 +573,45 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
     )
     assert prefs.json() == []
 
+    # 等数据的委托：knowbench 以服务身份看清单、重解析、凭确认续签（所有者 10-27 定）
+    state["service"] = "knowbench"
+    rid = body["resolution_id"]
+    seen = await client.get(
+        f"{BASE}/service/resolutions/{rid}", params={"subject": "alice"}
+    )
+    assert seen.json()["revision"] == 1
+    refreshed = await client.post(
+        f"{BASE}/service/resolutions/{rid}/refresh", params={"subject": "alice"}
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert [i["status"] for i in refreshed.json()["items"]] == ["resolved", "waiting"]
+    chosen = refreshed.json()["items"][0]["chosen"][0]
+    pin = {
+        "material_id": chosen["material_id"],
+        "version_no": chosen["version_no"],
+        "sha256": chosen["sha256"],
+        "basis": "display",
+        "basis_ref": "app:knowbench",
+    }
+    grant = await client.post(
+        f"{BASE}/service/run-grants/by-confirmation",
+        json={
+            "subject": "alice",
+            "confirmation_id": confirmation_id,
+            "resolution_id": rid,
+            "revision": refreshed.json()["revision"],
+            "ref": "knowbench:k-1",
+            "items": [pin],
+        },
+    )
+    # 这张确认没带任务：对不上
+    assert grant.json()["code"] == "confirmation_mismatch"
+    state["service"] = "knowfeed"
+    denied = await client.post(
+        f"{BASE}/service/resolutions/{rid}/refresh", params={"subject": "alice"}
+    )
+    assert denied.json()["code"] == "service_scope_denied"
+
 
 async def test_knowfeed_delivers_public_originals_and_references(api):
     """2b：knowfeed 交公开原件（只存一份）、给提了需求的用户记引用。"""

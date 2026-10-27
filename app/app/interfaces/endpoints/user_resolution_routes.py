@@ -258,6 +258,37 @@ async def add_needs_for_run(
 
 
 @router.post(
+    "/service/resolutions/{resolution_id}/refresh",
+    response_model=ResolutionRead,
+)
+async def refresh_for_run(
+    resolution_id: str,
+    subject: str = Query(min_length=1, max_length=255),
+    caller: ServiceCaller = Depends(require_read_service),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    """数据到了，执行的应用请重解析：已定的不动，没定的重找；没变就回当前修订。"""
+    resolution = await _call(
+        lambda: service.refresh_for_run(caller.caller, subject, resolution_id)
+    )
+    return _resolution(resolution)
+
+
+@router.get("/service/resolutions/{resolution_id}", response_model=ResolutionRead)
+async def get_for_run(
+    resolution_id: str,
+    subject: str = Query(min_length=1, max_length=255),
+    revision: int | None = Query(default=None, ge=1),
+    caller: ServiceCaller = Depends(require_read_service),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    resolution = await _call(
+        lambda: service.get_for_run(caller.caller, subject, resolution_id, revision)
+    )
+    return _resolution(resolution)
+
+
+@router.post(
     "/confirmations",
     response_model=ConfirmationRead,
     status_code=status.HTTP_201_CREATED,

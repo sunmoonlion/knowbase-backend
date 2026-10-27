@@ -36,7 +36,7 @@ from app.application.services.user_run_service import UserRunService
 from app.domain.chart_of_accounts import METRICS
 from app.domain.chart_of_accounts import snapshot as chart_snapshot
 from app.domain.user_data import UserDataError
-from app.domain.user_facts import FactQuery, FactRow, MetricRow
+from app.domain.user_facts import FactQuery, FactRow, MetricRow, split_refs
 from app.domain.user_library import PUBLIC_OWNER
 from app.domain.user_resolution import DescriptionKey
 from app.domain.user_runs import RunGrant
@@ -102,14 +102,17 @@ TOOLS: dict[str, dict[str, Any]] = {
     "query_facts": {
         "description": (
             "Query financial statement facts. scope=run: only the run's pinned "
-            "materials; scope=market: public originals across the whole market "
-            "(screen with value_min/value_max, rank with order). Every row cites "
-            "material, version, reading and page."
+            "materials (in a session: the ones already read); scope=market: public "
+            "originals across the whole market (screen with value_min/value_max, "
+            "rank with order). Every row has a ref (use it as the address of the "
+            "number, and as an input of compute) and cites material, version, "
+            "reading and page."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "run": _RUN,
+                "session": _SESSION,
                 "scope": {"enum": ["run", "market"]},
                 "layer": {"enum": ["standard", "raw"]},
                 **_FILTERS,
@@ -131,11 +134,30 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "metric": {"type": "string"},
                 "run": _RUN,
+                "session": _SESSION,
                 "scope": {"enum": ["run", "market"]},
                 **_FILTERS,
                 "limit": {"type": "integer"},
             },
             "required": ["metric"],
+        },
+    },
+    "read_facts": {
+        "description": (
+            "Read facts by their refs (fact:<id> or raw:<id>, as returned by "
+            "query_facts). scope=run: only the run's pinned materials (in a session: "
+            "the ones already read); scope=market: public originals. Refs that are "
+            "not readable here come back in not_found."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run": _RUN,
+                "session": _SESSION,
+                "scope": {"enum": ["run", "market"]},
+                "refs": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["refs"],
         },
     },
     "describe_items": {
@@ -409,10 +431,38 @@ class DataMcp:
                 token.executor,
                 f"mcp:{token.sandbox}",
                 token.user,
-                _text(args, "run"),
+                await _run_or_session(runs, token, args),
                 query,
             )
         return {"facts": [_fact(r) for r in rows]}
+
+    async def _read_facts(self, token: DataToken, args: dict[str, Any]) -> Any:
+        runs = self.runs()
+        refs = args.get("refs")
+        if not isinstance(refs, list):
+            raise ValueError("refs must be a list")
+        wanted = [str(r) for r in refs]
+        market = args.get("scope") == "market"
+        ref = None if market else await _run_or_session(runs, token, args)
+        rows: list[FactRow] = []
+        for layer, ids in split_refs(wanted).items():
+            query = FactQuery(
+                layer=layer,  # type: ignore[arg-type]
+                ids=ids,
+                consolidation=None,
+                limit=len(ids),
+            )
+            if ref is None:
+                rows += await runs.query_market(query)
+            else:
+                rows += await runs.query_facts(
+                    token.executor, f"mcp:{token.sandbox}", token.user, ref, query
+                )
+        found = {r.ref: r for r in rows}
+        return {
+            "facts": [_fact(found[r]) for r in dict.fromkeys(wanted) if r in found],
+            "not_found": [r for r in dict.fromkeys(wanted) if r not in found],
+        }
 
     async def _query_metric(self, token: DataToken, args: dict[str, Any]) -> Any:
         runs = self.runs()
@@ -427,7 +477,7 @@ class DataMcp:
                 executor_app=token.executor,
                 reader=f"mcp:{token.sandbox}",
                 beneficiary=token.user,
-                run_ref=_text(args, "run"),
+                run_ref=await _run_or_session(runs, token, args),
             )
         definition = METRICS[metric]
         return {
@@ -589,8 +639,21 @@ def _source(material_id: str, version, rendition) -> dict[str, Any]:
     }
 
 
+async def _run_or_session(
+    runs: UserRunService, token: DataToken, args: dict[str, Any]
+) -> str:
+    """查事实按哪件事的授权：委托、测试给 run；会话给 session（先核是他这段会话，
+    会话的小授权以会话编号为 ref）。"""
+    if args.get("session"):
+        session_id = _text(args, "session")
+        await runs.session_grants(token.user, token.executor, session_id)
+        return session_id
+    return _text(args, "run")
+
+
 def _fact(r: FactRow) -> dict[str, Any]:
     return {
+        "ref": r.ref,
         "subject": r.subject,
         "code": r.code,
         "label": r.label,

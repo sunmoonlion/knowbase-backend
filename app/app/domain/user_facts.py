@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -215,9 +216,14 @@ class FactRow:
     rendition_no: int
     page: int | None
     layer: Literal["standard", "raw"]
+    # 这个数的编号：标准化层 `fact:<行>`、原样层 `raw:<行>`；
+    # compute 与数值验收按它回查
+    ref: str = ""
 
 
 MAX_RESULT_ROWS = 2_000
+MAX_FACT_REFS = 200
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 @dataclass(frozen=True)
@@ -237,6 +243,8 @@ class FactQuery:
     value_max: Decimal | None = None
     order: Literal["period", "value_desc", "value_asc"] = "period"
     limit: int = 500
+    # 按编号取（`read_facts`）：只取这几行，仍按同样的范围核
+    ids: tuple[str, ...] = ()
 
     def checked(self) -> FactQuery:
         if self.layer not in ("standard", "raw"):
@@ -259,7 +267,25 @@ class FactQuery:
             raise refused("limit_invalid", f"limit is 1 to {MAX_RESULT_ROWS}")
         if len(self.subjects) > 200 or len(self.codes) > 50 or len(self.labels) > 50:
             raise refused("filter_invalid", "too many filter values")
+        if len(self.ids) > MAX_FACT_REFS or any(
+            not _UUID.fullmatch(i) for i in self.ids
+        ):
+            raise refused("ref_invalid", "a fact ref is invalid")
         return self
+
+
+def split_refs(refs: list[str]) -> dict[str, tuple[str, ...]]:
+    """`fact:<行>`、`raw:<行>` 按层分开；认不出的抛 ref_invalid。"""
+    if not 1 <= len(refs) <= MAX_FACT_REFS:
+        raise refused("refs_invalid", f"give 1 to {MAX_FACT_REFS} refs")
+    out: dict[str, list[str]] = {"standard": [], "raw": []}
+    for ref in refs:
+        prefix, _, row = str(ref).partition(":")
+        layer = {"fact": "standard", "raw": "raw"}.get(prefix)
+        if layer is None or not _UUID.fullmatch(row):
+            raise refused("ref_invalid", "a fact ref is fact:<id> or raw:<id>")
+        out[layer].append(row)
+    return {k: tuple(dict.fromkeys(v)) for k, v in out.items() if v}
 
 
 @dataclass(frozen=True)

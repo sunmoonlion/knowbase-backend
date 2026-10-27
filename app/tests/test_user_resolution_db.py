@@ -411,3 +411,122 @@ async def test_the_runtime_adds_needs_but_cannot_confirm(world):
         ("annual", "resolved"),
         ("older", "to_confirm"),
     ]
+
+
+async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
+    """所有者 10-27 定：等数据的委托数据齐了自动接着跑——执行的应用重解析清单，
+    凭本人那次确认续签；签进去的只能是清单里的候选。"""
+    from app.domain.user_runs import GrantRequestItem, InputPin
+
+    have, have_version = await world.report(ALICE, 2025)
+    first = await world.resolve([annual(count=2)])
+    lacking = next(i for i in first.items if i.status == "to_confirm")
+    confirmation, _ = await world.resolver.confirm(
+        ALICE,
+        "knowbench",
+        "description",
+        [{"key": lacking.key.as_dict(), "need_key": "annual"}],
+        {},
+        task_ref="knowbench:k-1",
+        resolution_id=first.id,
+        revision=first.revision,
+    )
+    # 确认了还没到：那一期读作「等数据」；再刷一次没变就不出新修订
+    waiting = await world.resolver.refresh_for_run("knowbench", ALICE, first.id)
+    assert [i.status for i in waiting.items] == ["resolved", "waiting"]
+    same = await world.resolver.refresh_for_run("knowbench", ALICE, first.id)
+    assert same.revision == waiting.revision == first.revision + 1
+    await refused(
+        world.resolver.refresh_for_run("knowmart", ALICE, first.id),
+        403,
+        "service_scope_denied",
+    )
+    await refused(
+        world.resolver.refresh_for_run("knowbench", BOB, first.id),
+        404,
+        "resolution_not_found",
+    )
+    # 到了（这里用他自己上传代替 knowfeed 交付）：缺的那期定了，已定的原样
+    year = lacking.key.period_end.year
+    got, got_version = await world.report(ALICE, year)
+    fresh = await world.resolver.refresh_for_run("knowbench", ALICE, first.id)
+    assert fresh.revision == waiting.revision + 1
+    assert [i.status for i in fresh.items] == ["resolved", "resolved"]
+    assert fresh.items[0] == first.items[0]
+
+    async def check(**kw):
+        args = {
+            "caller": "knowbench",
+            "subject": ALICE,
+            "confirmation_id": confirmation.id,
+            "ref": "knowbench:k-1",
+            "resolution_id": first.id,
+            "revision": fresh.revision,
+            **kw,
+        }
+        return await world.resolver.confirmed_for_run(**args)
+
+    await refused(check(ref="knowbench:other"), 403, "confirmation_mismatch")
+    await refused(check(subject=BOB), 404, "confirmation_not_found")
+    await refused(check(caller="knowlab"), 404, "confirmation_not_found")
+    resolution = await check()
+
+    def item(material, version, basis="display", ref="app:knowbench"):
+        return GrantRequestItem(
+            InputPin(material.id, version.version_no, version.sha256), basis, ref
+        )
+
+    grant = await world.runs.grant_by_confirmation(
+        "knowbench",
+        ALICE,
+        confirmation.id,
+        "knowbench:k-1",
+        resolution,
+        [item(have, have_version), item(got, got_version)],
+    )
+    assert (grant.process, grant.beneficiary, grant.issued_by) == (
+        "delegation",
+        ALICE,
+        f"confirmation:{confirmation.id}",
+    )
+    assert {i.material_id for i in grant.items} == {have.id, got.id}
+    # 清单外的一份、别的专家版本的绑定：不签
+    other, other_version = await world.report(ALICE, 2019)
+    await refused(
+        world.runs.grant_by_confirmation(
+            "knowbench",
+            ALICE,
+            confirmation.id,
+            "knowbench:k-1",
+            resolution,
+            [item(other, other_version)],
+        ),
+        403,
+        "outside_resolution",
+    )
+    await refused(
+        world.runs.grant_by_confirmation(
+            "knowbench",
+            ALICE,
+            confirmation.id,
+            "knowbench:k-1",
+            resolution,
+            [item(other, other_version, "frozen_binding", "expert:fa-9@1")],
+        ),
+        403,
+        "binding_mismatch",
+    )
+    await refused(
+        world.runs.grant_by_confirmation(
+            "knowlab",
+            ALICE,
+            confirmation.id,
+            "knowbench:k-1",
+            resolution,
+            [item(have, have_version)],
+        ),
+        422,
+        "app_invalid",
+    )
+    world.clock.now += timedelta(days=8)
+    await refused(check(), 403, "confirmation_expired")

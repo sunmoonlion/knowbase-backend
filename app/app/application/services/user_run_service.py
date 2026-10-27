@@ -63,6 +63,7 @@ from app.domain.user_library import (
     processing_use,
     version_object_key,
 )
+from app.domain.user_resolution import Resolution
 from app.domain.user_runs import (
     BASES_OF,
     DISPLAY_APP_OF,
@@ -154,6 +155,58 @@ class UserRunService:
             executor_app=app,
             beneficiary=subject,
             issued_by=subject,
+            ref=ref,
+            items=items,
+            reader_role="app",
+            ttl_seconds=ttl_seconds,
+            appendable=True,
+        )
+
+    async def grant_by_confirmation(
+        self,
+        caller: str,
+        subject: str,
+        confirmation_id: str,
+        ref: str,
+        resolution: Resolution,
+        items: list[GrantRequestItem],
+        ttl_seconds: int | None = None,
+    ) -> RunGrant:
+        """等数据的委托数据齐了：执行的应用凭本人那次确认续签（所有者 10-27 定「自动
+        接着跑」，0043 第 3.4 节）。确认与清单由调用方先核过（`confirmed_for_run`）。
+
+        签进去的只能是这一修订清单里的候选（依据也照清单），或作者交付时冻结给这位
+        专家这一版的绑定；逐项再按本人签时同一套规矩核。
+        """
+        if caller != DISPLAY_APP_OF["delegation"]:
+            raise refused("app_invalid", "a delegation runs in knowbench")
+        offered = {
+            (c.material_id, c.version_no, c.sha256): c
+            for item in resolution.items
+            for c in item.chosen + item.candidates
+        }
+        for request in items:
+            pin = request.pin
+            if request.basis == "frozen_binding":
+                if request.basis_ref != resolution.consumer:
+                    raise denied(
+                        "binding_mismatch", "a binding is for another expert version"
+                    )
+                continue
+            offer = offered.get((pin.material_id, pin.version_no, pin.sha256))
+            if offer is None or offer.basis != request.basis:
+                raise denied("outside_resolution", "an item is not on the list")
+            if pin.rendition_kind is not None and (
+                offer.rendition_kind,
+                offer.rendition_no,
+                offer.rendition_sha256,
+            ) != (pin.rendition_kind, pin.rendition_no, pin.rendition_sha256):
+                raise denied("outside_resolution", "a reading is not on the list")
+        return await self._issue(
+            "delegation",
+            executor_app=caller,
+            beneficiary=subject,
+            issued_by=f"confirmation:{confirmation_id}",
             ref=ref,
             items=items,
             reader_role="app",

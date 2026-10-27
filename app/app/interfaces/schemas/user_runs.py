@@ -47,6 +47,21 @@ class RunGrantIn(BaseModel):
     ttl_seconds: int | None = Field(default=None, gt=0)
 
 
+class ConfirmedRunGrantIn(BaseModel):
+    """执行的应用凭本人的确认续签（等数据的委托数据齐了）：签进去的只能是那一修订
+    清单里的候选，或冻结给这位专家这一版的绑定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=255)
+    confirmation_id: str = Field(min_length=1, max_length=64)
+    resolution_id: str = Field(min_length=1, max_length=64)
+    revision: int = Field(ge=1)
+    ref: str = Field(min_length=1, max_length=255)
+    items: list[GrantItemIn] = Field(min_length=1, max_length=200)
+    ttl_seconds: int | None = Field(default=None, gt=0)
+
+
 class ServiceRunGrantIn(BaseModel):
     """knowlab 签：测试（凭展示依据）、平台过程（凭 `platform:` 依据，运营或机器）。"""
 

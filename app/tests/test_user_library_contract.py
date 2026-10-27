@@ -56,6 +56,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     runs.GrantItemIn,
     runs.RunGrantIn,
     runs.ServiceRunGrantIn,
+    runs.ConfirmedRunGrantIn,
     runs.PinRead,
     runs.GrantItemRead,
     runs.RunGrantRead,

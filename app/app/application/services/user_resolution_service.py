@@ -176,10 +176,80 @@ class UserResolutionService:
             raise not_found("resolution")
         return await self.add_needs(subject, caller, resolution_id, needs)
 
+    async def refresh_for_run(
+        self, caller: str, subject: str, resolution_id: str
+    ) -> Resolution:
+        """数据到了：执行的应用以服务身份请重解析（所有者 10-27 定「等数据后
+        自动接着跑」）。
+
+        已定的条目原样带过去（开跑前列给用户的那一份不变），没定的按当前名下
+        重找，出清单新修订；什么都没变就回当前修订，不出新的。
+        """
+        current = await self._run_resolution(caller, subject, resolution_id, None)
+        fresh = await self._resolve_needs(
+            subject, current.app, current.consumer, list(current.needs), current.params
+        )
+        settled = {
+            (i.need_key, i.key): i for i in current.items if i.status == "resolved"
+        }
+        items = tuple(settled.get((i.need_key, i.key), i) for i in fresh)
+        if items == current.items:
+            return current
+        return await self.repo.add_resolution(
+            Resolution(
+                id=current.id,
+                revision=0,
+                subject=subject,
+                app=current.app,
+                consumer=current.consumer,
+                contract_version=current.contract_version,
+                vocab_version=VOCAB_VERSION,
+                needs=current.needs,
+                params=current.params,
+                items=items,
+                created_at=self.now(),
+                task_ref=current.task_ref,
+            )
+        )
+
+    async def confirmed_for_run(
+        self,
+        caller: str,
+        subject: str,
+        confirmation_id: str,
+        ref: str,
+        resolution_id: str,
+        revision: int,
+    ) -> Resolution:
+        """凭确认续签之前核：确认是这个人在这个应用上点的、7 天内、对的是这件任务
+        和这张清单；回要签的那一修订（签进授权的只能是它的候选）。"""
+        confirmation = await self.repo.confirmation(confirmation_id)
+        if (
+            confirmation is None
+            or confirmation.subject != subject
+            or confirmation.app != caller
+        ):
+            raise not_found("confirmation")
+        if not confirmation.valid(self.now()):
+            raise denied(
+                "confirmation_expired", "the confirmation is older than 7 days"
+            )
+        if confirmation.task_ref != ref or confirmation.resolution_id != resolution_id:
+            raise denied(
+                "confirmation_mismatch", "the confirmation is for another task or list"
+            )
+        return await self._run_resolution(caller, subject, resolution_id, revision)
+
     async def get_resolution(
         self, subject: str, app: str, resolution_id: str, revision: int | None
     ) -> Resolution:
         return await self._own_resolution(subject, app, resolution_id, revision)
+
+    async def get_for_run(
+        self, caller: str, subject: str, resolution_id: str, revision: int | None
+    ) -> Resolution:
+        """执行的应用替在等数据的任务看清单（哪几项定了、哪几项还没）。"""
+        return await self._run_resolution(caller, subject, resolution_id, revision)
 
     async def _resolve_needs(
         self,
@@ -475,6 +545,13 @@ class UserResolutionService:
         if found is None or found.subject != subject or found.app != app:
             raise not_found("resolution")
         return found
+
+    async def _run_resolution(
+        self, caller: str, subject: str, resolution_id: str, revision: int | None
+    ) -> Resolution:
+        if caller not in RESOLVING_APPS:
+            raise denied("service_scope_denied", "only executing apps may do this")
+        return await self._own_resolution(subject, caller, resolution_id, revision)
 
     @staticmethod
     def _resolving_app(app: str) -> None:

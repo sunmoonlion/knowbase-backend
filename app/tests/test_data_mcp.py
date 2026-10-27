@@ -246,3 +246,56 @@ async def test_market_lookup_and_sessions(world):
     assert items["version"] == 1 and any(
         m["key"] == "gross_margin" for m in items["metrics"]
     )
+
+
+async def test_facts_carry_refs_that_read_back_within_the_same_scope(world):
+    material, version = await world.publish()
+    await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "task-2",
+        [
+            GrantRequestItem(
+                InputPin(material.id, 1, version.sha256), "public", PUBLIC_OWNER
+            )
+        ],
+    )
+    facts = (await world.call("query_facts", run="task-2", codes=["IS.REVENUE"]))[
+        "facts"
+    ]
+    ref = facts[0]["ref"]
+    assert ref.startswith("fact:")
+    raw = (await world.call("query_facts", run="task-2", layer="raw"))["facts"]
+    assert all(r["ref"].startswith("raw:") for r in raw)
+    back = await world.call("read_facts", run="task-2", refs=[ref, raw[0]["ref"]])
+    assert [f["ref"] for f in back["facts"]] == [ref, raw[0]["ref"]]
+    assert back["facts"][0]["value"] == "15000000.000000"
+    assert back["not_found"] == []
+    # 别人的同名 run、乱写的编号：读不到，照实回 not_found 或报错
+    other = await world.call(
+        "read_facts", auth=token(sub="bob"), run="task-2", refs=[ref]
+    )
+    assert other == {"facts": [], "not_found": [ref]}
+    bad = await world.call("read_facts", run="task-2", refs=["cell:1"])
+    assert "ref_invalid" in bad["error"]
+    market = await world.call("read_facts", scope="market", refs=[ref])
+    assert [f["ref"] for f in market["facts"]] == [ref]
+
+
+async def test_a_session_queries_facts_of_what_it_has_read(world):
+    material, _ = await world.publish()
+    session = await world.runs.register_session("alice", "knowbench")
+    before = await world.call("query_facts", session=session.id, codes=["IS.REVENUE"])
+    assert before == {"facts": []}
+    await world.call(
+        "read_input", session=session.id, material_id=material.id, what="pages"
+    )
+    after = await world.call("query_facts", session=session.id, codes=["IS.REVENUE"])
+    assert [f["subject"] for f in after["facts"]] == ["600519.SH"]
+    margin = await world.call("query_metric", metric="gross_margin", session=session.id)
+    assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
+    stranger = await world.call(
+        "query_facts", auth=token(sub="bob"), session=session.id, codes=["IS.REVENUE"]
+    )
+    assert "error" in stranger

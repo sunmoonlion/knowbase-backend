@@ -361,6 +361,8 @@ class SqlUserRunRepository:
             )
         if query.subjects:
             stmt = stmt.where(UserDataItem.subject_code.in_(query.subjects))
+        if query.ids:
+            stmt = stmt.where(table.id.in_([uuid.UUID(i) for i in query.ids]))
         if query.layer == "standard":
             if query.codes:
                 stmt = stmt.where(UserDataFact.code.in_(query.codes))
@@ -408,6 +410,7 @@ class SqlUserRunRepository:
                         rendition_no=rendition.rendition_no,
                         page=fact.page,
                         layer=query.layer,
+                        ref=f"{'fact' if standard else 'raw'}:{fact.id}",
                     )
                 )
             return out

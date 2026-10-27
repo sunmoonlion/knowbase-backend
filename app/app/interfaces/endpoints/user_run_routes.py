@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import Owner
 from app.domain.user_library import Rendition
@@ -35,9 +36,13 @@ from app.interfaces.endpoints.user_library_routes import (
     _entry,
     get_user_library_service,
 )
+from app.interfaces.endpoints.user_resolution_routes import (
+    get_user_resolution_service,
+)
 from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_library import ShelfEntryRead
 from app.interfaces.schemas.user_runs import (
+    ConfirmedRunGrantIn,
     ConvertIn,
     GrantedFormatRead,
     GrantItemIn,
@@ -347,6 +352,42 @@ async def end_platform(
 
 
 # —— 执行的应用：凭授权读、交还 ——
+
+
+@router.post(
+    "/service/run-grants/by-confirmation",
+    response_model=RunGrantRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_by_confirmation(
+    payload: ConfirmedRunGrantIn,
+    executor: tuple[str, str] = Depends(require_executor),
+    resolutions: UserResolutionService = Depends(get_user_resolution_service),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """等数据的委托数据齐了，knowbench 凭本人那次确认续签（所有者 10-27 定）。"""
+    resolution = await _call(
+        lambda: resolutions.confirmed_for_run(
+            executor[1],
+            payload.subject,
+            payload.confirmation_id,
+            payload.ref,
+            payload.resolution_id,
+            payload.revision,
+        )
+    )
+    grant = await _call(
+        lambda: service.grant_by_confirmation(
+            executor[1],
+            payload.subject,
+            payload.confirmation_id,
+            payload.ref,
+            resolution,
+            _items(payload.items),
+            payload.ttl_seconds,
+        )
+    )
+    return _grant(grant)
 
 
 @router.get("/run-grants/{grant_id}", response_model=RunGrantView)
