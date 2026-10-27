@@ -14,22 +14,37 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.domain.user_data import MAX_ITEM_BYTES, Owner
-from app.domain.user_library import Description, ShelfEntry
+from app.domain.user_library import Account, Description, ShelfEntry, Use
 from app.domain.vocabulary import snapshot
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
+from app.infrastructure.security.relation_auth import (
+    ServiceCaller,
+    require_directory_service,
+    require_purchase_service,
+)
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
 from app.interfaces.endpoints.user_data_routes import _call
 from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_library import (
+    AccountIn,
+    AccountRead,
+    BulkUseIn,
+    BulkUseRead,
     DescriptionIn,
     DescriptionRead,
+    ExpertIn,
+    ExpertRead,
     HistoryEntryRead,
     HoldingRead,
     LicenseIn,
     MaterialRead,
+    PurchaseIn,
+    PurchaseRead,
     ShelfEntryRead,
+    UseIn,
+    UseRead,
     VersionRead,
     VocabularyRead,
 )
@@ -286,3 +301,187 @@ async def remove(
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     await _call(lambda: service.remove(owner.subject, material_id))
+
+
+# —— 块 1b：展示即同意、账号设置、名下专家 ——
+
+
+def _use(use: Use) -> UseRead:
+    return UseRead(
+        use=use.use,
+        created_at=use.created_at,
+        created_via=use.created_via,
+        version_no=use.version_no,
+    )
+
+
+def _account(account: Account) -> AccountRead:
+    return AccountRead(
+        default_display=account.default_display,
+        seen=account.default_display_seen_at is not None,
+        displays_by_default=account.displays_by_default,
+    )
+
+
+@router.get("/materials/{material_id}/uses", response_model=list[UseRead])
+async def list_uses(
+    material_id: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    return [
+        _use(u) for u in await _call(lambda: service.uses(owner.subject, material_id))
+    ]
+
+
+@router.post(
+    "/materials/{material_id}/uses",
+    response_model=UseRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def show(
+    material_id: str,
+    payload: UseIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """本人点展示按钮（本人的令牌就是同意依据的来源）。"""
+    return _use(
+        await _call(lambda: service.show(owner.subject, material_id, payload.use))
+    )
+
+
+@router.delete("/materials/{material_id}/uses", status_code=status.HTTP_204_NO_CONTENT)
+async def hide(
+    material_id: str,
+    use: str = Query(min_length=3, max_length=80),
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    await _call(lambda: service.hide(owner.subject, material_id, use))
+
+
+@router.post("/uses/bulk", response_model=BulkUseRead)
+async def show_many(
+    payload: BulkUseIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    done = await _call(
+        lambda: service.show_many(
+            owner.subject, payload.material_ids, payload.use, on=payload.on
+        )
+    )
+    return BulkUseRead(done=done)
+
+
+@router.get("/columns/{app}", response_model=list[ShelfEntryRead])
+async def column(
+    app: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """某个应用的知识库栏：只给那个应用自己代办时看（令牌的 azp 就是这个应用）。"""
+    if owner.app != app:
+        raise AppException(
+            code="column_denied",
+            status_code=403,
+            msg="an app reads only its own column",
+        )
+    entries = await _call(lambda: service.column(owner.subject, app))
+    return [_entry(e, owner.subject) for e in entries]
+
+
+@router.get("/account", response_model=AccountRead)
+async def get_account(
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    return _account(await _call(lambda: service.account(owner.subject)))
+
+
+@router.put("/account", response_model=AccountRead)
+async def acknowledge_account(
+    payload: AccountIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    return _account(
+        await _call(
+            lambda: service.acknowledge_default_display(
+                owner.subject, payload.default_display
+            )
+        )
+    )
+
+
+@router.get("/experts", response_model=list[ExpertRead])
+async def my_experts(
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    return [
+        ExpertRead(expert_id=e.expert_id, name=e.name, latest_version=e.latest_version)
+        for e in await _call(lambda: service.experts(owner.subject))
+    ]
+
+
+# —— 服务：knowlab 推名录、knowmart 成交 ——
+
+
+@router.put("/experts/{expert_id}", response_model=ExpertRead)
+async def push_expert(
+    expert_id: str,
+    payload: ExpertIn,
+    caller: ServiceCaller = Depends(require_directory_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowlab 在专家、准专家建版本时推名录；只认 knowlab。"""
+    if caller.caller != "knowlab":
+        raise AppException(
+            code="service_scope_denied",
+            status_code=403,
+            msg="only knowlab pushes the expert directory",
+        )
+    expert = await _call(
+        lambda: service.upsert_expert(
+            expert_id, payload.owner, payload.name, payload.latest_version
+        )
+    )
+    return ExpertRead(
+        expert_id=expert.expert_id,
+        name=expert.name,
+        latest_version=expert.latest_version,
+    )
+
+
+@router.post(
+    "/purchases", response_model=PurchaseRead, status_code=status.HTTP_201_CREATED
+)
+async def purchase(
+    payload: PurchaseIn,
+    caller: ServiceCaller = Depends(require_purchase_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowmart 成交后给买家加使用权（不复制）；同一笔交易重试回已有的那条。"""
+    if caller.caller != "knowmart":
+        raise AppException(
+            code="service_scope_denied",
+            status_code=403,
+            msg="only knowmart records purchases",
+        )
+    holding = await _call(
+        lambda: service.purchase(
+            payload.seller,
+            payload.material_id,
+            payload.buyer,
+            payload.transaction_ref,
+            resale_allowed=payload.resale_allowed,
+        )
+    )
+    return PurchaseRead(
+        material_id=holding.material_id,
+        buyer=holding.subject,
+        version_no=holding.version_no,
+        license=holding.license,
+    )

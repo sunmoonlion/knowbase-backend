@@ -204,6 +204,60 @@ def upgrade() -> None:
     # 第四版的读不再属于某个应用分区：app 记代办这次读的应用，可以为空
     op.alter_column("user_data_read", "app", existing_type=sa.String(16), nullable=True)
 
+    # —— 同意依据（第四版）、账号设置、名下专家影子 ——
+    op.create_table(
+        "user_data_use",
+        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True),
+        sa.Column("subject", sa.String(255), nullable=False),
+        sa.Column(
+            "item_id",
+            postgresql.UUID(as_uuid=True),
+            sa.ForeignKey("user_data_item.id"),
+        ),
+        sa.Column("use", sa.String(160), nullable=False),
+        sa.Column(
+            "scope",
+            postgresql.JSONB(),
+            nullable=False,
+            server_default=sa.text("'{}'::jsonb"),
+        ),
+        sa.Column("version_no", sa.Integer()),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("created_via", sa.String(40), nullable=False),
+        sa.Column("withdrawn_at", sa.DateTime(timezone=True)),
+    )
+    op.create_index(
+        "uq_user_data_use_live",
+        "user_data_use",
+        ["subject", "item_id", "use"],
+        unique=True,
+        postgresql_where=sa.text("withdrawn_at IS NULL AND item_id IS NOT NULL"),
+    )
+    op.create_index(
+        "ix_user_data_use_subject",
+        "user_data_use",
+        ["subject", "use"],
+        postgresql_where=sa.text("withdrawn_at IS NULL"),
+    )
+    op.create_table(
+        "user_data_account",
+        sa.Column("subject", sa.String(255), primary_key=True),
+        sa.Column(
+            "default_display", sa.Boolean(), nullable=False, server_default="true"
+        ),
+        sa.Column("default_display_seen_at", sa.DateTime(timezone=True)),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_table(
+        "user_data_expert",
+        sa.Column("expert_id", sa.String(64), primary_key=True),
+        sa.Column("owner_subject", sa.String(255), nullable=False),
+        sa.Column("name", sa.String(200), nullable=False),
+        sa.Column("latest_version", sa.String(32)),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_index("ix_user_data_expert_owner", "user_data_expert", ["owner_subject"])
+
     # —— 回填：每一行一个第 1 版、所有者一条使用权 ——
     # 版本号用资料编号派生（md5 → uuid），重跑迁移不会生出两份
     op.execute(
@@ -237,6 +291,19 @@ def upgrade() -> None:
         FROM user_data_item
         """
     )
+    # 原来在哪个应用分区，就照原范围展示给那个应用（knowmart 的分区就是交给 knowmart）；
+    # 已删的不建展示，不套「默认全展示」（SDD 0043 第六节）
+    op.execute(
+        """
+        INSERT INTO user_data_use
+            (id, subject, item_id, use, version_no, created_at, created_via)
+        SELECT md5('user_data_use:' || id::text)::uuid, owner_subject, id,
+               CASE app WHEN 'knowmart' THEN 'market' ELSE 'app:' || app END,
+               NULL, created_at, 'migration-0010'
+        FROM user_data_item
+        WHERE deleted_at IS NULL AND app IS NOT NULL
+        """
+    )
 
 
 def downgrade() -> None:
@@ -244,6 +311,12 @@ def downgrade() -> None:
     op.alter_column(
         "user_data_read", "app", existing_type=sa.String(16), nullable=False
     )
+    op.drop_index("ix_user_data_expert_owner", table_name="user_data_expert")
+    op.drop_table("user_data_expert")
+    op.drop_table("user_data_account")
+    op.drop_index("ix_user_data_use_subject", table_name="user_data_use")
+    op.drop_index("uq_user_data_use_live", table_name="user_data_use")
+    op.drop_table("user_data_use")
     op.drop_index("ix_user_data_material_log_item", table_name="user_data_material_log")
     op.drop_table("user_data_material_log")
     op.drop_index("uq_user_data_holding_ref", table_name="user_data_holding")

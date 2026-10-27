@@ -28,13 +28,19 @@ from app.domain.user_data import (
 )
 from app.domain.user_library import (
     CATEGORY_OF_BASIS,
+    COLUMN_USES,
+    DEFAULT_DISPLAY_USES,
+    Account,
     ContentVersion,
     Description,
+    Expert,
     Holding,
     License,
     Material,
     ShelfEntry,
+    Use,
     check_license,
+    check_material_use,
     license_rank,
     version_object_key,
 )
@@ -99,6 +105,10 @@ class UserLibraryService:
             created_at=now,
         )
         saved = await self.repo.add_material(material, version, holding)
+        # 账号级「新数据默认展示给我的全部应用」：本人看过点过才算依据
+        if (await self.repo.account(subject)).displays_by_default:
+            for use in DEFAULT_DISPLAY_USES:
+                await self._add_use(subject, saved.id, use, "default-display")
         return saved, version
 
     async def add_version(
@@ -229,7 +239,148 @@ class UserLibraryService:
         material = await self._owned(subject, material_id)
         await self.repo.remove(material.id, subject, self.now())
 
+    # —— 展示与绑定（同意依据，块 1b） ——
+
+    async def show(self, subject: str, material_id: str, use: str) -> Use:
+        """本人点展示按钮：展示给某个应用、交给 knowmart、绑给名下专家。
+
+        展示给应用、绑给专家：有使用权的都能点（买来的也能给自己的应用、自用专家用）；
+        交给 knowmart：只有所有者能点（上架时 knowmart 再核许可）。
+        """
+        checked = check_material_use(use)
+        material, _ = await self._held(subject, material_id)
+        if checked == "market" and material.owner != subject:
+            raise refused("not_owner", "only the owner can hand material to knowmart")
+        if checked.startswith("expert:"):
+            mine = {e.expert_id for e in await self.repo.experts_of(subject)}
+            if checked.removeprefix("expert:") not in mine:
+                raise not_found("expert")
+        return await self._add_use(subject, material.id, checked, "user")
+
+    async def hide(self, subject: str, material_id: str, use: str) -> None:
+        """撤展示：停新的解析与授权申请；已签的到期或任务结束为止。
+
+        取消「绑给专家」只影响下一版，已冻结的 `expert:<专家>@<版本>` 不撤。
+        """
+        checked = check_material_use(use)
+        material, _ = await self._held(subject, material_id)
+        await self.repo.withdraw_use(subject, material.id, checked, self.now())
+
+    async def show_many(
+        self, subject: str, material_ids: list[str], use: str, *, on: bool
+    ) -> int:
+        """批量勾或批量撤；返回处理了几份（没有使用权的跳过）。"""
+        done = 0
+        for material_id in dict.fromkeys(material_ids):
+            try:
+                if on:
+                    await self.show(subject, material_id, use)
+                else:
+                    await self.hide(subject, material_id, use)
+            except UserDataError as exc:
+                if exc.status != 404:
+                    raise
+                continue
+            done += 1
+        return done
+
+    async def uses(self, subject: str, material_id: str) -> list[Use]:
+        material, _ = await self._held(subject, material_id)
+        return await self.repo.uses_of(subject, material.id)
+
+    async def column(self, subject: str, app: str) -> list[ShelfEntry]:
+        """某个应用的知识库栏：这个用户展示给这个应用、自己还有使用权的资料。"""
+        use = COLUMN_USES.get(app)
+        if use is None:
+            raise refused("column_invalid", "no such column")
+        shown = await self.repo.material_ids_with_use(subject, use)
+        return [e for e in await self.repo.shelf(subject) if e.material.id in shown]
+
+    # —— 账号设置 ——
+
+    async def account(self, subject: str) -> Account:
+        return await self.repo.account(subject)
+
+    async def acknowledge_default_display(
+        self, subject: str, default_display: bool
+    ) -> Account:
+        """第一次进 knowbase web端时把开关亮出来，本人点一下（开或关）就是依据。"""
+        account = Account(
+            subject=subject,
+            default_display=default_display,
+            default_display_seen_at=self.now(),
+        )
+        return await self.repo.save_account(account, self.now())
+
+    # —— 名下专家（knowlab 推来） ——
+
+    async def upsert_expert(
+        self, expert_id: str, owner: str, name: str, latest_version: str | None
+    ) -> Expert:
+        if not expert_id or len(expert_id) > 64 or not name or len(name) > 200:
+            raise refused("expert_invalid", "expert id or name is invalid")
+        return await self.repo.upsert_expert(
+            Expert(
+                expert_id=expert_id,
+                owner=owner,
+                name=name,
+                latest_version=latest_version,
+                updated_at=self.now(),
+            )
+        )
+
+    async def experts(self, subject: str) -> list[Expert]:
+        return await self.repo.experts_of(subject)
+
+    # —— knowmart 成交：给买家加使用权（不复制） ——
+
+    async def purchase(
+        self,
+        seller: str,
+        material_id: str,
+        buyer: str,
+        transaction_ref: str,
+        *,
+        resale_allowed: bool = False,
+    ) -> Holding:
+        """成交后给买家建使用权，只到成交那一个内容版本；同一笔交易重试只建一条。
+
+        卖的资料要「可以出售」；买家的许可继承卖家的转卖设置，不得升档：不许转卖的
+        只许本人用。卖家后来删、下架、改低许可，都不影响这条使用权。
+        """
+        material = await self.repo.get_material(material_id)
+        if material is None or material.owner != seller or not material.live:
+            raise not_found()
+        if material.license != "sale":
+            raise refused("not_for_sale", "this material is not licensed for sale")
+        if not transaction_ref or len(transaction_ref) > 255:
+            raise refused("transaction_ref_invalid", "transaction_ref is invalid")
+        return await self.repo.add_holding(
+            Holding(
+                id=self.new_id(),
+                subject=buyer,
+                material_id=material.id,
+                basis="purchase",
+                license="sale" if resale_allowed else "self",
+                created_at=self.now(),
+                version_no=material.current_version,
+                ref=transaction_ref,
+            )
+        )
+
     # —— 内部 ——
+
+    async def _add_use(self, subject: str, material_id: str, use: str, via: str) -> Use:
+        return await self.repo.add_use(
+            Use(
+                id=self.new_id(),
+                subject=subject,
+                use=use,
+                created_at=self.now(),
+                created_via=via,
+                material_id=material_id,
+            )
+        )
 
     async def _store(
         self,

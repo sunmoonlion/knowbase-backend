@@ -15,17 +15,23 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.user_data import conflict, not_found
 from app.domain.user_library import (
+    Account,
     ContentVersion,
     Description,
+    Expert,
     Holding,
     Material,
     ShelfEntry,
+    Use,
 )
 from app.infrastructure.models.user_data import (
+    UserDataAccount,
+    UserDataExpert,
     UserDataHolding,
     UserDataItem,
     UserDataMaterialLog,
     UserDataRead,
+    UserDataUse,
     UserDataVersion,
 )
 
@@ -428,6 +434,172 @@ class SqlUserLibraryRepository:
                 .values(ended_at=at, end_reason="deleted")
             )
             await session.commit()
+
+    # —— 同意依据（第四版） ——
+
+    async def add_use(self, use: Use) -> Use:
+        """记一条同意依据；同一份资料、同一种用途已有有效的就回已有的那条。"""
+        async with self._sessions()() as session:
+            if use.material_id is not None:
+                existing = await session.scalar(
+                    select(UserDataUse).where(
+                        UserDataUse.subject == use.subject,
+                        UserDataUse.item_id == uuid.UUID(use.material_id),
+                        UserDataUse.use == use.use,
+                        UserDataUse.withdrawn_at.is_(None),
+                    )
+                )
+                if existing is not None:
+                    return _use(existing)
+            session.add(
+                UserDataUse(
+                    id=uuid.UUID(use.id),
+                    subject=use.subject,
+                    item_id=uuid.UUID(use.material_id) if use.material_id else None,
+                    use=use.use,
+                    scope=dict(use.scope),
+                    version_no=use.version_no,
+                    created_at=use.created_at,
+                    created_via=use.created_via,
+                )
+            )
+            await session.commit()
+            return use
+
+    async def withdraw_use(
+        self, subject: str, material_id: str, use: str, at: datetime
+    ) -> bool:
+        """撤这份资料的这种用途；没有有效的回 False。"""
+        async with self._sessions()() as session:
+            result = await session.execute(
+                update(UserDataUse)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.item_id == uuid.UUID(material_id),
+                    UserDataUse.use == use,
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .values(withdrawn_at=at)
+            )
+            await session.commit()
+            return bool(result.rowcount)
+
+    async def uses_of(self, subject: str, material_id: str) -> list[Use]:
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataUse)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.item_id == uuid.UUID(material_id),
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .order_by(UserDataUse.created_at)
+            )
+            return [_use(r) for r in rows.scalars()]
+
+    async def material_ids_with_use(self, subject: str, use: str) -> set[str]:
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataUse.item_id).where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.use == use,
+                    UserDataUse.withdrawn_at.is_(None),
+                    UserDataUse.item_id.is_not(None),
+                )
+            )
+            return {str(r) for r in rows.scalars()}
+
+    # —— 账号设置、名下专家 ——
+
+    async def account(self, subject: str) -> Account:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataAccount, subject)
+            if row is None:
+                return Account(subject=subject)
+            return Account(
+                subject=subject,
+                default_display=row.default_display,
+                default_display_seen_at=row.default_display_seen_at,
+            )
+
+    async def save_account(self, account: Account, at: datetime) -> Account:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataAccount, account.subject)
+            if row is None:
+                row = UserDataAccount(subject=account.subject, updated_at=at)
+                session.add(row)
+            row.default_display = account.default_display
+            row.default_display_seen_at = account.default_display_seen_at
+            row.updated_at = at
+            await session.commit()
+            return account
+
+    async def upsert_expert(self, expert: Expert) -> Expert:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataExpert, expert.expert_id)
+            if row is None:
+                row = UserDataExpert(expert_id=expert.expert_id)
+                session.add(row)
+            elif row.owner_subject != expert.owner:
+                raise conflict("expert_owner_changed", "the expert has another owner")
+            row.owner_subject = expert.owner
+            row.name = expert.name
+            row.latest_version = expert.latest_version
+            row.updated_at = expert.updated_at
+            await session.commit()
+            return expert
+
+    async def experts_of(self, subject: str) -> list[Expert]:
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataExpert)
+                .where(UserDataExpert.owner_subject == subject)
+                .order_by(UserDataExpert.name)
+            )
+            return [
+                Expert(
+                    expert_id=r.expert_id,
+                    owner=r.owner_subject,
+                    name=r.name,
+                    latest_version=r.latest_version,
+                    updated_at=r.updated_at,
+                )
+                for r in rows.scalars()
+            ]
+
+    # —— 买家的使用权 ——
+
+    async def add_holding(self, holding: Holding) -> Holding:
+        """记一条使用权；同一人、同一份、同一个交易编号已有有效的就回已有的那条。"""
+        async with self._sessions()() as session:
+            if holding.ref is not None:
+                existing = await session.scalar(
+                    select(UserDataHolding).where(
+                        UserDataHolding.subject == holding.subject,
+                        UserDataHolding.item_id == uuid.UUID(holding.material_id),
+                        UserDataHolding.ref == holding.ref,
+                        UserDataHolding.ended_at.is_(None),
+                    )
+                )
+                if existing is not None:
+                    return _holding(existing)
+            session.add(_holding_row(holding))
+            await session.commit()
+            return holding
+
+
+def _use(row: UserDataUse) -> Use:
+    return Use(
+        id=str(row.id),
+        subject=row.subject,
+        use=row.use,
+        created_at=row.created_at,
+        created_via=row.created_via,
+        material_id=str(row.item_id) if row.item_id else None,
+        version_no=row.version_no,
+        scope=dict(row.scope or {}),
+        withdrawn_at=row.withdrawn_at,
+    )
 
 
 def _version_row(version: ContentVersion) -> UserDataVersion:

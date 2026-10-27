@@ -27,6 +27,7 @@ from app.infrastructure.models.user_data import (
     UserDataHolding,
     UserDataItem,
     UserDataRead,
+    UserDataUse,
     UserDataVersion,
 )
 
@@ -105,6 +106,20 @@ class SqlUserDataRepository:
                     version_no=1 if item.origin == "purchase" else None,
                     ref=item.origin_ref if item.origin == "purchase" else None,
                     created_at=item.created_at,
+                )
+            )
+            # 兼容期：v1 传进哪个分区，就展示给那个应用
+            # （knowmart 的分区 = 交给 knowmart）
+            session.add(
+                UserDataUse(
+                    id=uuid.uuid4(),
+                    subject=item.owner.subject,
+                    item_id=row.id,
+                    use="market"
+                    if item.owner.app == "knowmart"
+                    else f"app:{item.owner.app}",
+                    created_at=item.created_at,
+                    created_via="user-data-v1",
                 )
             )
             await session.flush()

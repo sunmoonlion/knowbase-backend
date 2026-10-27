@@ -90,3 +90,78 @@ class VocabularyRead(BaseModel):
     doc_types: dict[str, str]
     formats: dict[str, str]
     subject_kinds: list[str]
+
+
+# —— 块 1b：展示即同意、账号设置、名下专家、买家使用权 ——
+
+
+class UseIn(BaseModel):
+    """展示给 `app:knowbench` / `app:knowlab`、交给 `market`、绑给 `expert:<专家>`。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    use: str = Field(min_length=3, max_length=80)
+
+
+class UseRead(BaseModel):
+    use: str
+    created_at: datetime
+    created_via: str
+    version_no: int | None
+
+
+class BulkUseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_ids: list[str] = Field(min_length=1, max_length=200)
+    use: str = Field(min_length=3, max_length=80)
+    on: bool
+
+
+class BulkUseRead(BaseModel):
+    done: int
+
+
+class AccountIn(BaseModel):
+    """本人第一次进 knowbase web端看过开关、点了一下：开或关都算依据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_display: bool
+
+
+class AccountRead(BaseModel):
+    default_display: bool
+    seen: bool
+    displays_by_default: bool
+
+
+class ExpertIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    owner: str = Field(min_length=1, max_length=255)
+    name: str = Field(min_length=1, max_length=200)
+    latest_version: str | None = Field(default=None, max_length=32)
+
+
+class ExpertRead(BaseModel):
+    expert_id: str
+    name: str
+    latest_version: str | None
+
+
+class PurchaseIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seller: str = Field(min_length=1, max_length=255)
+    material_id: str = Field(min_length=1, max_length=64)
+    buyer: str = Field(min_length=1, max_length=255)
+    transaction_ref: str = Field(min_length=1, max_length=255)
+    resale_allowed: bool = False
+
+
+class PurchaseRead(BaseModel):
+    material_id: str
+    buyer: str
+    version_no: int | None
+    license: LicenseName

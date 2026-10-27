@@ -30,6 +30,16 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.LicenseIn,
     models.HistoryEntryRead,
     models.VocabularyRead,
+    models.UseIn,
+    models.UseRead,
+    models.BulkUseIn,
+    models.BulkUseRead,
+    models.AccountIn,
+    models.AccountRead,
+    models.ExpertIn,
+    models.ExpertRead,
+    models.PurchaseIn,
+    models.PurchaseRead,
 )
 
 

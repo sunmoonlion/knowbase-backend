@@ -347,6 +347,14 @@ async def test_migration_backfills_old_rows():
             )
             == 1
         )
+        # 原来的分区照原范围展示；已删的不建展示
+        assert (
+            await sql(
+                db,
+                "SELECT count(*) FROM user_data_use WHERE use = 'app:knowbench'",
+            )
+            == 2
+        )
         shelf = await SqlUserLibraryRepository(lambda: db).shelf("alice")
         assert sorted(e.material.name for e in shelf) == ["bought.csv", "kept.csv"]
         assert all(e.material.legacy_app == "knowbench" for e in shelf)
@@ -354,3 +362,83 @@ async def test_migration_backfills_old_rows():
         async with engine.begin() as c:
             await c.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await engine.dispose()
+
+
+# —— 块 1b：展示即同意、账号默认、名下专家、买家使用权 ——
+
+
+async def test_columns_follow_the_display_buttons(db):
+    lib = library(db)
+    material, _ = await lib.upload(ALICE, "table.csv", CSV)
+    assert await lib.column(ALICE, "knowbench") == []
+    await lib.show(ALICE, material.id, "app:knowbench")
+    await lib.show(ALICE, material.id, "app:knowbench")  # 再点一次不多出一条
+    assert [e.material.id for e in await lib.column(ALICE, "knowbench")] == [
+        material.id
+    ]
+    assert await lib.column(ALICE, "knowlab") == []
+    assert [u.use for u in await lib.uses(ALICE, material.id)] == ["app:knowbench"]
+    await lib.hide(ALICE, material.id, "app:knowbench")
+    assert await lib.column(ALICE, "knowbench") == []
+    await refused(lib.show(ALICE, material.id, "app:other"), 422, "use_invalid")
+    await refused(lib.column(ALICE, "nowhere"), 422, "column_invalid")
+    await refused(lib.show(BOB, material.id, "app:knowlab"), 404, "item_not_found")
+
+
+async def test_default_display_needs_the_owner_to_have_seen_it(db):
+    lib = library(db)
+    first, _ = await lib.upload(ALICE, "a.csv", CSV)
+    assert (await lib.account(ALICE)).displays_by_default is False
+    assert await lib.uses(ALICE, first.id) == []
+    seen = await lib.acknowledge_default_display(ALICE, True)
+    assert seen.displays_by_default
+    second, _ = await lib.upload(ALICE, "b.csv", CSV)
+    assert sorted(u.use for u in await lib.uses(ALICE, second.id)) == [
+        "app:knowbench",
+        "app:knowlab",
+    ]
+    await lib.acknowledge_default_display(ALICE, False)
+    third, _ = await lib.upload(ALICE, "c.csv", CSV)
+    assert await lib.uses(ALICE, third.id) == []
+
+
+async def test_market_is_for_owners_and_experts_must_be_pushed_first(db):
+    lib = library(db)
+    material, _ = await lib.upload(ALICE, "table.csv", CSV, license_="sale")
+    await refused(lib.show(ALICE, material.id, "expert:fa-1"), 404, "expert_not_found")
+    await lib.upsert_expert("fa-1", ALICE, "财务分析与预测", "2")
+    await lib.show(ALICE, material.id, "expert:fa-1")
+    await lib.show(ALICE, material.id, "market")
+    await refused(
+        lib.upsert_expert("fa-1", BOB, "别人的", None), 409, "expert_owner_changed"
+    )
+    # 买家：能展示给自己的应用，不能交给 knowmart
+    holding = await lib.purchase(ALICE, material.id, BOB, "tx-7")
+    assert (holding.version_no, holding.license) == (1, "self")
+    await lib.show(BOB, material.id, "app:knowlab")
+    await refused(lib.show(BOB, material.id, "market"), 422, "not_owner")
+
+
+async def test_purchase_is_one_holding_per_transaction_and_needs_sale(db):
+    lib = library(db)
+    private, _ = await lib.upload(ALICE, "mine.csv", CSV)
+    await refused(lib.purchase(ALICE, private.id, BOB, "tx-1"), 422, "not_for_sale")
+    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale")
+    first = await lib.purchase(ALICE, selling.id, BOB, "tx-2", resale_allowed=True)
+    again = await lib.purchase(ALICE, selling.id, BOB, "tx-2", resale_allowed=True)
+    assert first.id == again.id and first.license == "sale"
+    await refused(lib.purchase(BOB, selling.id, ALICE, "tx-3"), 404, "item_not_found")
+    # 卖家改低许可、删掉：买家照旧有交易那一版
+    await lib.set_license(ALICE, selling.id, "self", attest=False)
+    await lib.remove(ALICE, selling.id)
+    entry = await lib.get(BOB, selling.id)
+    assert (entry.category, entry.holding.license) == ("purchased", "sale")
+
+
+async def test_v1_uploads_are_shown_to_their_old_app(db):
+    v1 = UserDataService(SqlUserDataRepository(lambda: db), MemoryObjects(), prefix="p")
+    lab = await v1.upload(Owner(ALICE, "knowlab"), "lab.csv", CSV)
+    mart = await v1.upload(Owner(ALICE, "knowmart"), "mart.csv", CSV)
+    lib = library(db)
+    assert [e.material.id for e in await lib.column(ALICE, "knowlab")] == [lab.id]
+    assert [e.material.id for e in await lib.column(ALICE, "knowmart")] == [mart.id]

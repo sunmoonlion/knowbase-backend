@@ -359,3 +359,86 @@ class UserDataMaterialLog(Base):
         ),
         Index("ix_user_data_material_log_item", "item_id", "at"),
     )
+
+
+class UserDataUse(Base):
+    """同意依据（第四版）：用户本人同意一份资料给哪种用途（SDD 0043 第 2.3 节）。
+
+    `use` 的写法：`app:knowbench`、`app:knowlab`（展示给这个应用）、
+    `market`（交给 knowmart
+    待上架）、`expert:<专家>`（绑给名下这位专家，下一版用）、`expert:<专家>@<版本>`（交付时
+    冻结）、`platform:<应用>:<过程>`、`subscription:<订阅>@<修订>`、`processing:<内容版本>`。
+    按资料的那几种 `item_id` 有值；订阅这类按范围的 `item_id` 为空、范围在 `scope`。
+    """
+
+    __tablename__ = "user_data_use"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id")
+    )
+    use: Mapped[str] = mapped_column(String(160), nullable=False)
+    scope: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    version_no: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_via: Mapped[str] = mapped_column(String(40), nullable=False)
+    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index(
+            "uq_user_data_use_live",
+            "subject",
+            "item_id",
+            "use",
+            unique=True,
+            postgresql_where=text("withdrawn_at IS NULL AND item_id IS NOT NULL"),
+        ),
+        Index(
+            "ix_user_data_use_subject",
+            "subject",
+            "use",
+            postgresql_where=text("withdrawn_at IS NULL"),
+        ),
+    )
+
+
+class UserDataAccount(Base):
+    """账号级设置：新数据默认展示给全部应用（SDD 0043 第 2.3 节）。
+
+    `default_display_seen_at` 是用户第一次进 knowbase web端看过这个开关、
+    点了一下的时间：
+    点过才算同意依据，没点过的不自动展示。
+    """
+
+    __tablename__ = "user_data_account"
+
+    subject: Mapped[str] = mapped_column(String(255), primary_key=True)
+    default_display: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    default_display_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class UserDataExpert(Base):
+    """名下专家的只读影子：knowlab 建版本时推来，绑定时只认这里有的。
+
+    SDD 0044 第三节。
+    """
+
+    __tablename__ = "user_data_expert"
+
+    expert_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    latest_version: Mapped[str | None] = mapped_column(String(32))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (Index("ix_user_data_expert_owner", "owner_subject"),)

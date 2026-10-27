@@ -1,9 +1,11 @@
 """按关系校验其他应用的服务令牌（SDD 0042，做法同 knowmart、knowlab 的 relation_auth）。
 
-knowbase 的用户资料接口接受四种关系：knowlab 签测试授权（user-data-grant-test）、
-运行方凭授权读（user-data-read，现在只有 knowbench）、knowmart 成交复制
-（user-data-purchase）、应用把自己原来存的资料搬进自己的分区（user-data-import，
-knowlab）。一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
+knowbase 的用户资料接口接受五种关系：knowlab 签测试授权（user-data-grant-test）、
+运行方凭授权读（user-data-read，现在只有 knowbench）、knowmart 成交
+（user-data-purchase；v1 复制一份，第四版给买家加使用权）、应用把自己原来存的资料
+搬进自己的分区（user-data-import，knowlab）、knowlab 推名下专家的名录
+（user-data-directory，SDD 0044 第三节）。
+一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
 每个调用方一组 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id，即
 Casdoor 给 client_credentials 令牌的 aud）、`_SUBJECT_ALLOWLIST`
 （`admin/<调用方服务应用>`）、`_REQUIRED_SCOPE`（`knowbase:<关系>`），都由部署从
@@ -39,7 +41,11 @@ from app.infrastructure.security.oidc import OidcProviderClient
 from core.config import Settings, get_settings
 
 Relation = Literal[
-    "user-data-grant-test", "user-data-read", "user-data-purchase", "user-data-import"
+    "user-data-grant-test",
+    "user-data-read",
+    "user-data-purchase",
+    "user-data-import",
+    "user-data-directory",
 ]
 
 
@@ -236,6 +242,13 @@ async def require_purchase_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
     return await _verify("user-data-purchase", authorization)
+
+
+async def require_directory_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    """knowlab 推名下专家的名录（SDD 0044 第三节）。"""
+    return await _verify("user-data-directory", authorization)
 
 
 async def require_import_service(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -32,6 +33,10 @@ def api(db):
     overrides[user_library_routes.internal_host_only] = lambda: None
     overrides[user_library_routes.require_user_owner] = lambda: state["owner"]
     overrides[user_library_routes.get_user_library_service] = lambda: service
+    state["service"] = "knowlab"
+    caller = lambda: SimpleNamespace(caller=state["service"])  # noqa: E731
+    overrides[user_library_routes.require_directory_service] = caller
+    overrides[user_library_routes.require_purchase_service] = caller
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
     )
@@ -114,3 +119,124 @@ async def test_bad_descriptions_are_named(api):
         f"{BASE}/materials", params={"name": "a.csv", "subject": "茅台"}, content=CSV
     )
     assert (refused.status_code, refused.json()["code"]) == (422, "subject_invalid")
+
+
+async def _upload(client, name="营收.csv") -> str:
+    created = await client.post(f"{BASE}/materials", params={"name": name}, content=CSV)
+    assert created.status_code == 201, created.text
+    return created.json()["material"]["material_id"]
+
+
+async def test_show_hide_columns_and_account(api):
+    """块 1b：展示即同意；默认展示要本人看过开关；应用只看自己那一栏。"""
+    client, state = api
+    account = (await client.get(f"{BASE}/account")).json()
+    assert account == {
+        "default_display": True,
+        "seen": False,
+        "displays_by_default": False,
+    }
+    quiet = await _upload(client, "没看过开关.csv")
+    assert (await client.get(f"{BASE}/materials/{quiet}/uses")).json() == []
+
+    account = await client.put(f"{BASE}/account", json={"default_display": True})
+    assert account.json()["displays_by_default"] is True
+    shown = await _upload(client, "看过以后.csv")
+    uses = (await client.get(f"{BASE}/materials/{shown}/uses")).json()
+    assert sorted(u["use"] for u in uses) == ["app:knowbench", "app:knowlab"]
+    assert [
+        e["material"]["material_id"]
+        for e in (await client.get(f"{BASE}/columns/knowbench")).json()
+    ] == [shown]
+
+    made = await client.post(
+        f"{BASE}/materials/{quiet}/uses", json={"use": "app:knowbench"}
+    )
+    assert made.status_code == 201 and made.json()["use"] == "app:knowbench"
+    column = (await client.get(f"{BASE}/columns/knowbench")).json()
+    assert sorted(e["material"]["material_id"] for e in column) == sorted(
+        [quiet, shown]
+    )
+    bad = await client.post(f"{BASE}/materials/{quiet}/uses", json={"use": "app:x"})
+    assert (bad.status_code, bad.json()["code"]) == (422, "use_invalid")
+
+    gone = await client.delete(
+        f"{BASE}/materials/{shown}/uses", params={"use": "app:knowbench"}
+    )
+    assert gone.status_code == 204
+    column = (await client.get(f"{BASE}/columns/knowbench")).json()
+    assert [e["material"]["material_id"] for e in column] == [quiet]
+
+    bulk = await client.post(
+        f"{BASE}/uses/bulk",
+        json={"material_ids": [quiet, shown, "nope"], "use": "market", "on": True},
+    )
+    assert bulk.json() == {"done": 2}
+    denied = await client.get(f"{BASE}/columns/knowmart")
+    assert (denied.status_code, denied.json()["code"]) == (403, "column_denied")
+    state["owner"] = Owner("alice", "knowmart")
+    assert len((await client.get(f"{BASE}/columns/knowmart")).json()) == 2
+
+    state["owner"] = Owner("bob", "knowbench")  # 别人的资料点不了
+    other = await client.post(
+        f"{BASE}/materials/{quiet}/uses", json={"use": "app:knowbench"}
+    )
+    assert other.status_code == 404
+
+
+async def test_purchase_and_expert_directory(api):
+    """服务接口：knowmart 记成交（不复制、只到成交那一版），knowlab 推名录。"""
+    client, state = api
+    material_id = await _upload(client)
+    await client.put(
+        f"{BASE}/materials/{material_id}/license",
+        json={"license": "sale", "attest": True},
+    )
+    deal = {
+        "seller": "alice",
+        "material_id": material_id,
+        "buyer": "bob",
+        "transaction_ref": "T-1",
+    }
+    state["service"] = "knowlab"
+    wrong = await client.post(f"{BASE}/purchases", json=deal)
+    assert (wrong.status_code, wrong.json()["code"]) == (403, "service_scope_denied")
+    state["service"] = "knowmart"
+    bought = await client.post(f"{BASE}/purchases", json=deal)
+    assert bought.status_code == 201, bought.text
+    assert bought.json() == {
+        "material_id": material_id,
+        "buyer": "bob",
+        "version_no": 1,
+        "license": "self",
+    }
+    again = await client.post(f"{BASE}/purchases", json=deal)
+    assert again.status_code == 201
+    state["owner"] = Owner("bob", "knowbench")
+    shelf = (
+        await client.get(f"{BASE}/materials", params={"category": "purchased"})
+    ).json()
+    assert [e["material"]["material_id"] for e in shelf] == [material_id]
+
+    state["service"] = "knowmart"
+    wrong = await client.put(
+        f"{BASE}/experts/e1", json={"owner": "bob", "name": "茅台分析"}
+    )
+    assert wrong.status_code == 403
+    state["service"] = "knowlab"
+    pushed = await client.put(
+        f"{BASE}/experts/e1",
+        json={"owner": "bob", "name": "茅台分析", "latest_version": "1.0"},
+    )
+    assert pushed.json() == {
+        "expert_id": "e1",
+        "name": "茅台分析",
+        "latest_version": "1.0",
+    }
+    moved = await client.put(f"{BASE}/experts/e1", json={"owner": "carol", "name": "x"})
+    assert (moved.status_code, moved.json()["code"]) == (409, "expert_owner_changed")
+    assert [e["expert_id"] for e in (await client.get(f"{BASE}/experts")).json()] == [
+        "e1"
+    ]
+    state["owner"] = Owner("alice", "knowbench")
+    assert (await client.get(f"{BASE}/experts")).json() == []

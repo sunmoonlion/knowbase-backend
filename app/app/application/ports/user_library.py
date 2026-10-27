@@ -6,11 +6,14 @@ from datetime import datetime
 from typing import Protocol
 
 from app.domain.user_library import (
+    Account,
     ContentVersion,
     Description,
+    Expert,
     Holding,
     Material,
     ShelfEntry,
+    Use,
 )
 
 
@@ -68,3 +71,29 @@ class UserLibraryRepository(Protocol):
     ) -> None: ...
 
     async def remove(self, material_id: str, subject: str, at: datetime) -> None: ...
+
+    async def add_use(self, use: Use) -> Use:
+        """同一份资料、同一种用途已有有效的就回已有的那条。"""
+        ...
+
+    async def withdraw_use(
+        self, subject: str, material_id: str, use: str, at: datetime
+    ) -> bool: ...
+
+    async def uses_of(self, subject: str, material_id: str) -> list[Use]: ...
+
+    async def material_ids_with_use(self, subject: str, use: str) -> set[str]: ...
+
+    async def account(self, subject: str) -> Account: ...
+
+    async def save_account(self, account: Account, at: datetime) -> Account: ...
+
+    async def upsert_expert(self, expert: Expert) -> Expert:
+        """专家换了所有者就 409 `expert_owner_changed`。"""
+        ...
+
+    async def experts_of(self, subject: str) -> list[Expert]: ...
+
+    async def add_holding(self, holding: Holding) -> Holding:
+        """同一人、同一份、同一个交易编号已有有效的就回已有的那条。"""
+        ...

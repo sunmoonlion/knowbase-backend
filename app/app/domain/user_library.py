@@ -13,6 +13,7 @@ v1 的表照旧用：资料就是 `user_data_item` 的一行（v1 的那几栏�
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Literal
@@ -233,3 +234,73 @@ def version_object_key(
     digest = hashlib.sha256(subject.encode("utf-8")).hexdigest()
     root = f"{prefix.rstrip('/')}/{digest[:2]}/{digest}"
     return f"{root}/library/{material_id}/v{version_no}"
+
+
+# 公开原件层的保留所有者：不是任何用户，也不是平台账号。公开披露存一份在它名下，
+# 用户名下的第二区引用就是一条取得依据为「引用」的使用权（SDD 0043 第 2.2、2.4 节）
+PUBLIC_OWNER = "public:disclosure"
+
+# 总栏里的展示按钮对应的用途；knowmart 那一栏就是「交给 knowmart 待上架」
+COLUMN_USES: dict[str, str] = {
+    "knowbench": "app:knowbench",
+    "knowlab": "app:knowlab",
+    "knowmart": "market",
+}
+DEFAULT_DISPLAY_USES: tuple[str, ...] = ("app:knowbench", "app:knowlab")
+_EXPERT_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_VERSION_LABEL = re.compile(r"^[0-9][0-9.]{0,31}$")
+
+
+def check_material_use(use: str) -> str:
+    """按资料点的那几种用途：展示给应用、交给 knowmart、绑给专家（下一版）。"""
+    if use in ("app:knowbench", "app:knowlab", "market"):
+        return use
+    if use.startswith("expert:") and _EXPERT_ID.fullmatch(use.removeprefix("expert:")):
+        return use
+    raise refused("use_invalid", "use is invalid")
+
+
+def frozen_expert_use(expert_id: str, version: str) -> str:
+    if not _EXPERT_ID.fullmatch(expert_id) or not _VERSION_LABEL.fullmatch(version):
+        raise refused("expert_invalid", "expert or version is invalid")
+    return f"expert:{expert_id}@{version}"
+
+
+@dataclass(frozen=True)
+class Use:
+    """一条同意依据（第四版）。"""
+
+    id: str
+    subject: str
+    use: str
+    created_at: datetime
+    created_via: str
+    material_id: str | None = None
+    version_no: int | None = None
+    scope: dict[str, object] = field(default_factory=dict)
+    withdrawn_at: datetime | None = None
+
+    @property
+    def live(self) -> bool:
+        return self.withdrawn_at is None
+
+
+@dataclass(frozen=True)
+class Account:
+    subject: str
+    default_display: bool = True
+    default_display_seen_at: datetime | None = None
+
+    @property
+    def displays_by_default(self) -> bool:
+        """开关开着、而且本人看过点过，才自动展示给全部应用。"""
+        return self.default_display and self.default_display_seen_at is not None
+
+
+@dataclass(frozen=True)
+class Expert:
+    expert_id: str
+    owner: str
+    name: str
+    latest_version: str | None
+    updated_at: datetime
