@@ -45,11 +45,20 @@ _LICENSE_RANK: dict[str, int] = {"self": 0, "via_expert": 1, "sale": 2}
 DescriptionStatus = Literal["unconfirmed", "confirmed", "checked"]
 RESOLVABLE: tuple[DescriptionStatus, ...] = ("confirmed", "checked")
 
-# 取得依据：用户凭什么有这份资料；总栏按它分类（0043 第 2.1 节）
-Basis = Literal["upload", "collect", "purchase", "reference", "output"]
-BASES: tuple[Basis, ...] = ("upload", "collect", "purchase", "reference", "output")
+# 取得依据：用户凭什么有这份资料；总栏按它分类（0043 第 2.1 节）。
+# convert：本人把一份产出「转为数据」，进第一区、能被解析，归「我上传的」一栏
+Basis = Literal["upload", "collect", "purchase", "reference", "output", "convert"]
+BASES: tuple[Basis, ...] = (
+    "upload",
+    "collect",
+    "purchase",
+    "reference",
+    "output",
+    "convert",
+)
 CATEGORY_OF_BASIS: dict[Basis, str] = {
     "upload": "uploaded",
+    "convert": "uploaded",
     "collect": "collected",
     "reference": "collected",
     "purchase": "purchased",
@@ -141,10 +150,25 @@ class Material:
     disabled_at: datetime | None = None
     # v1 时代的应用分区；第四版新传的为空
     legacy_app: str | None = None
+    # 出处：产出、转为数据才有
+    provenance: dict[str, object] | None = None
+    purged_at: datetime | None = None
 
     @property
     def live(self) -> bool:
         return self.deleted_at is None and self.disabled_at is None
+
+    @property
+    def readable(self) -> bool:
+        """凭授权、凭使用权还能读：没禁用、没清除（所有者删了买家照旧能读）。"""
+        return self.disabled_at is None and self.purged_at is None
+
+    @property
+    def in_output_zone(self) -> bool:
+        """产出区的不参与解析；转为数据的另是一份（内容来源也是产出，但带转来的出处）。"""
+        return self.content_origin == "output" and not (self.provenance or {}).get(
+            "converted_from"
+        )
 
     def with_description(self, description: Description) -> Material:
         return replace(self, description=description)

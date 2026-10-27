@@ -1,10 +1,12 @@
 """按关系校验其他应用的服务令牌（SDD 0042，做法同 knowmart、knowlab 的 relation_auth）。
 
-knowbase 的用户资料接口接受五种关系：knowlab 签测试授权（user-data-grant-test）、
-运行方凭授权读（user-data-read，现在只有 knowbench）、knowmart 成交
-（user-data-purchase；v1 复制一份，第四版给买家加使用权）、应用把自己原来存的资料
-搬进自己的分区（user-data-import，knowlab）、knowlab 推名下专家的名录
-（user-data-directory，SDD 0044 第三节）。
+knowbase 的用户资料接口接受七种关系：knowlab 签测试授权（user-data-grant-test；
+第四版也签平台过程的授权）、运行方凭授权读（user-data-read，现在只有 knowbench）、
+knowmart 成交（user-data-purchase；v1 复制一份，第四版给买家加使用权）、应用把自己
+原来存的资料搬进自己的分区（user-data-import，knowlab）、knowlab 推名下专家的名录
+与交付时冻结绑定（user-data-directory，SDD 0044 第三节）、应用替用户写产出区
+（user-data-output，knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
+领授权与写回读法（user-data-processing，SDD 0043 第 2.7 节）。
 一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
 每个调用方一组 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id，即
 Casdoor 给 client_credentials 令牌的 aud）、`_SUBJECT_ALLOWLIST`
@@ -46,6 +48,8 @@ Relation = Literal[
     "user-data-purchase",
     "user-data-import",
     "user-data-directory",
+    "user-data-output",
+    "user-data-processing",
 ]
 
 
@@ -249,6 +253,20 @@ async def require_directory_service(
 ) -> ServiceCaller:
     """knowlab 推名下专家的名录（SDD 0044 第三节）。"""
     return await _verify("user-data-directory", authorization)
+
+
+async def require_output_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    """knowbench、knowlab 替用户往产出区写（SDD 0043 第 2.6 节）。"""
+    return await _verify("user-data-output", authorization)
+
+
+async def require_processing_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    """knowfeed 凭本人的加工依据领授权、写回读法（SDD 0043 第 2.7 节）。"""
+    return await _verify("user-data-processing", authorization)
 
 
 async def require_import_service(

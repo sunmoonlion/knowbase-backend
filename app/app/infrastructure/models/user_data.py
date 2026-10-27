@@ -65,6 +65,11 @@ class UserDataItem(TimestampMixin, Base):
         String(16), nullable=False, default="unconfirmed"
     )
     vocab_version: Mapped[int | None] = mapped_column(Integer)
+    # 出处：产出（哪个应用、哪件任务、哪次运行、用了哪组输入）、
+    # 转为数据（从哪份产出转来）
+    provenance: Mapped[dict | None] = mapped_column(JSONB)
+    # 依法清除：内容、读法、描述都删了，只留编号级留痕
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(f"app IN {_APPS}", name="ck_user_data_item_app"),
@@ -206,12 +211,16 @@ class UserDataRead(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     reader: Mapped[str] = mapped_column(String(255), nullable=False)
     operation: Mapped[str] = mapped_column(String(20), nullable=False)
+    # v1 的授权或第四版的运行授权
     grant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    # 第四版：受益人（请专家的人；专家绑定的数据所有者是作者）与读的一方是谁
+    beneficiary: Mapped[str | None] = mapped_column(String(255))
+    reader_role: Mapped[str | None] = mapped_column(String(16))
 
     __table_args__ = (
         CheckConstraint(
             "operation IN ('owner-download', 'content', 'format', 'purchase-copy',"
-            " 'check')",
+            " 'check', 'rendition', 'process')",
             name="ck_user_data_read_operation",
         ),
         Index("ix_user_data_read_at", "at"),
@@ -308,7 +317,8 @@ class UserDataHolding(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "basis IN ('upload', 'collect', 'purchase', 'reference', 'output')",
+            "basis IN ('upload', 'collect', 'purchase', 'reference', 'output',"
+            " 'convert')",
             name="ck_user_data_holding_basis",
         ),
         CheckConstraint(
@@ -450,3 +460,171 @@ class UserDataExpert(Base):
     )
 
     __table_args__ = (Index("ix_user_data_expert_owner", "owner_subject"),)
+
+
+class UserDataOutput(Base):
+    """产出区的一份：哪个应用替谁、哪件任务哪次运行写的（SDD 0043 第 2.6 节）。"""
+
+    __tablename__ = "user_data_output"
+
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id"), primary_key=True
+    )
+    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    caller: Mapped[str] = mapped_column(String(64), nullable=False)
+    task_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    run_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # 测试证据：只增不改
+    evidence: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_subject",
+            "caller",
+            "task_ref",
+            "run_ref",
+            "name",
+            name="uq_user_data_output_run",
+        ),
+    )
+
+
+class UserDataInputSet(Base):
+    """钉住的输入组合：内容版本、读法版本、各自摘要（第 2.9 节）。
+
+    编号就是组合的摘要。
+    """
+
+    __tablename__ = "user_data_input_set"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    pins: Mapped[list] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint("id ~ '^[0-9a-f]{64}$'", name="ck_user_data_input_set_id"),
+    )
+
+
+class UserDataRunGrant(Base):
+    """运行授权（第四版）：外层记过程、执行主体、受益人（SDD 0043 第 2.7 节）。
+
+    同一件事（执行应用 + `ref`）运行中追加的数据新签一条，`revision` 往上加，
+    已签的不扩大。平台过程的授权记下凭的是哪条 `platform:` 依据，撤回时一并撤。
+    """
+
+    __tablename__ = "user_data_run_grant"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    process: Mapped[str] = mapped_column(String(16), nullable=False)
+    executor_app: Mapped[str] = mapped_column(String(16), nullable=False)
+    beneficiary: Mapped[str] = mapped_column(String(255), nullable=False)
+    issued_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    reader_role: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    input_set_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("user_data_input_set.id"), nullable=False
+    )
+    platform_use: Mapped[str | None] = mapped_column(String(160))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(40))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "executor_app", "ref", "revision", name="uq_user_data_run_grant_revision"
+        ),
+        CheckConstraint(
+            "process IN ('test', 'delegation', 'session', 'incubation', 'platform',"
+            " 'processing')",
+            name="ck_user_data_run_grant_process",
+        ),
+        CheckConstraint(
+            "reader_role IN ('app', 'operator', 'machine', 'system')",
+            name="ck_user_data_run_grant_reader_role",
+        ),
+        CheckConstraint(
+            "scope IN ('content', 'format')", name="ck_user_data_run_grant_scope"
+        ),
+        CheckConstraint("revision >= 1", name="ck_user_data_run_grant_revision"),
+        Index("ix_user_data_run_grant_beneficiary", "beneficiary", "issued_at"),
+        Index(
+            "ix_user_data_run_grant_platform",
+            "beneficiary",
+            "platform_use",
+            postgresql_where=text("platform_use IS NOT NULL AND revoked_at IS NULL"),
+        ),
+    )
+
+
+class UserDataRunGrantItem(Base):
+    """授权的一项：哪份资料哪一版，凭什么依据，内容归谁。"""
+
+    __tablename__ = "user_data_run_grant_item"
+
+    grant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_run_grant.id"), primary_key=True
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id"), primary_key=True
+    )
+    version_no: Mapped[int] = mapped_column(Integer, primary_key=True)
+    basis: Mapped[str] = mapped_column(String(16), nullable=False)
+    basis_ref: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_owner: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "basis IN ('display', 'frozen_binding', 'platform', 'processing',"
+            " 'reference')",
+            name="ck_user_data_run_grant_item_basis",
+        ),
+        Index("ix_user_data_run_grant_item_item", "item_id"),
+    )
+
+
+class UserDataDeletion(Base):
+    """删除事件：对象、动作、原因；真删要等各处回执（SDD 0043 第 2.8 节）。
+
+    `relation`：撤某个人的关系（不删仍被别人合法引用的内容）；`disable`：禁用、
+    违规处置；`purge`：注销、依法删除，`pending` 列还在等谁的回执（如 RAGFlow）。
+    """
+
+    __tablename__ = "user_data_deletion"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    item_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id")
+    )
+    action: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    actor: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(16), nullable=False)
+    pending: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint(
+            "action IN ('relation', 'disable', 'purge')",
+            name="ck_user_data_deletion_action",
+        ),
+        CheckConstraint(
+            "state IN ('processing', 'done')", name="ck_user_data_deletion_state"
+        ),
+        Index("ix_user_data_deletion_subject", "subject", "requested_at"),
+    )

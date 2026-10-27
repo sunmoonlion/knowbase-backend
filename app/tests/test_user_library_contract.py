@@ -1,6 +1,6 @@
 """资料库接口的跨应用契约 `user-data/v2`（SDD 0043，数据第四版）。
 
-真源是 `app/interfaces/schemas/user_library.py` 的 pydantic 模型；
+真源是 `app/interfaces/schemas/user_library.py`、`user_runs.py` 的 pydantic 模型；
 契约文件由它生成，逐字一致。
 改了模型就跑：`UPDATE_CONTRACTS=1 uv run pytest tests/test_user_library_contract.py`，
 再看 diff（只加不改；改了已有字段要开 v3）。
@@ -16,6 +16,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.interfaces.schemas import user_library as models
+from app.interfaces.schemas import user_runs as runs
 
 CONTRACT_DIR = Path(__file__).resolve().parents[3] / "contracts/user-data/v2"
 SCHEMA = CONTRACT_DIR / "user-data.schema.json"
@@ -44,6 +45,24 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.PlatformConsentIn,
     models.SubscriptionScopeIn,
     models.SubscriptionRead,
+    models.FreezeIn,
+    runs.GrantItemIn,
+    runs.RunGrantIn,
+    runs.ServiceRunGrantIn,
+    runs.SessionReadsIn,
+    runs.PinRead,
+    runs.GrantItemRead,
+    runs.RunGrantRead,
+    runs.RunGrantView,
+    runs.SessionReadsRead,
+    runs.PlatformEndIn,
+    runs.ConvertIn,
+    runs.ReadEventRead,
+    runs.RenditionRead,
+    runs.GrantedFormatRead,
+    runs.OutputWritten,
+    runs.PendingProcessingRead,
+    runs.ProcessingGrantIn,
 )
 
 

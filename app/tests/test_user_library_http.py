@@ -12,9 +12,11 @@ from test_durable_delivery_db import db as db
 from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import Owner
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
-from app.interfaces.endpoints import user_library_routes
+from app.infrastructure.repositories.user_runs import SqlUserRunRepository
+from app.interfaces.endpoints import user_library_routes, user_run_routes
 from app.interfaces.errors.exception_handlers import register_exception_handlers
 
 BASE = "/api/internal/v2/user-data"
@@ -22,21 +24,40 @@ BASE = "/api/internal/v2/user-data"
 
 @pytest.fixture
 def api(db):
+    objects, clock = MemoryObjects(), Clock()
     service = UserLibraryService(
-        SqlUserLibraryRepository(lambda: db), MemoryObjects(), prefix="p", clock=Clock()
+        SqlUserLibraryRepository(lambda: db), objects, prefix="p", clock=clock
+    )
+    runs = UserRunService(
+        SqlUserLibraryRepository(lambda: db),
+        SqlUserRunRepository(lambda: db),
+        objects,
+        prefix="p",
+        clock=clock,
     )
     app = FastAPI()
     register_exception_handlers(app)
     app.include_router(user_library_routes.router, prefix="/api")
+    app.include_router(user_run_routes.router, prefix="/api")
     state = {"owner": Owner("alice", "knowbench")}
     overrides = app.dependency_overrides
     overrides[user_library_routes.internal_host_only] = lambda: None
     overrides[user_library_routes.require_user_owner] = lambda: state["owner"]
     overrides[user_library_routes.get_user_library_service] = lambda: service
+    overrides[user_run_routes.get_user_run_service] = lambda: runs
     state["service"] = "knowlab"
     caller = lambda: SimpleNamespace(caller=state["service"])  # noqa: E731
     overrides[user_library_routes.require_directory_service] = caller
     overrides[user_library_routes.require_purchase_service] = caller
+    for need in (
+        user_run_routes.require_grant_test_service,
+        user_run_routes.require_output_service,
+        user_run_routes.require_processing_service,
+        user_run_routes.require_read_service,
+    ):
+        overrides[need] = lambda: SimpleNamespace(
+            caller=state["service"], principal=SimpleNamespace(subject="svc-1")
+        )
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
     )
@@ -238,6 +259,16 @@ async def test_purchase_and_expert_directory(api):
     assert [e["expert_id"] for e in (await client.get(f"{BASE}/experts")).json()] == [
         "e1"
     ]
+    # 交付时冻结：作者绑给 e1 的每份钉在当时那一版
+    bound = await _upload(client, "绑定.csv")
+    await client.post(f"{BASE}/materials/{bound}/uses", json={"use": "expert:e1"})
+    frozen = await client.post(
+        f"{BASE}/experts/e1/versions/1.0/freeze", json={"author": "bob"}
+    )
+    assert frozen.status_code == 201, frozen.text
+    assert [(u["use"], u["material_id"], u["version_no"]) for u in frozen.json()] == [
+        ("expert:e1@1.0", bound, 1)
+    ]
     state["owner"] = Owner("alice", "knowbench")
     assert (await client.get(f"{BASE}/experts")).json() == []
 
@@ -307,3 +338,134 @@ async def test_platform_subscription_and_processing(api):
     assert [u["use"].split(":")[0] for u in uses] == ["processing"]
     later = await client.post(f"{BASE}/materials/{material_id}/versions/1/processing")
     assert later.status_code == 201 and later.json()["version_no"] == 1
+
+
+async def test_run_grants_reads_outputs_and_processing(api):
+    """块 1c：本人签委托、执行方凭授权读与交还；产出区写入与转为数据；加工写回读法。"""
+    client, state = api
+    created = await client.post(
+        f"{BASE}/materials", params={"name": "in.csv", "process": "true"}, content=CSV
+    )
+    body = created.json()
+    material_id, sha = body["material"]["material_id"], body["version"]["sha256"]
+    await client.post(
+        f"{BASE}/materials/{material_id}/uses", json={"use": "app:knowbench"}
+    )
+    ask = {
+        "material_id": material_id,
+        "version_no": 1,
+        "sha256": sha,
+        "basis": "display",
+        "basis_ref": "app:knowbench",
+    }
+    grant = await client.post(
+        f"{BASE}/run-grants",
+        json={"process": "delegation", "ref": "task-1", "items": [ask]},
+    )
+    assert grant.status_code == 201, grant.text
+    grant_id = grant.json()["grant_id"]
+    assert grant.json()["items"][0]["content_owner"] == "alice"
+
+    state["service"] = "knowbench"
+    view = await client.get(f"{BASE}/run-grants/{grant_id}")
+    assert view.json()["pins"][0]["sha256"] == sha
+    content = await client.get(
+        f"{BASE}/run-grants/{grant_id}/materials/{material_id}/content"
+    )
+    assert content.content == CSV and content.headers["X-Content-SHA256"] == sha
+    state["service"] = "knowmart"
+    denied = await client.get(f"{BASE}/run-grants/{grant_id}")
+    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
+    state["service"] = "knowbench"
+    assert (await client.post(f"{BASE}/runs/task-1/release")).status_code == 204
+    gone = await client.get(
+        f"{BASE}/run-grants/{grant_id}/materials/{material_id}/content"
+    )
+    assert (gone.status_code, gone.json()["code"]) == (403, "grant_inactive")
+    reads = (await client.get(f"{BASE}/materials/{material_id}/reads")).json()
+    assert [(r["operation"], r["beneficiary"]) for r in reads] == [("content", "alice")]
+
+    written = await client.post(
+        f"{BASE}/outputs",
+        params={
+            "beneficiary": "alice",
+            "task_ref": "task-1",
+            "run_ref": "run-1",
+            "name": "report.md",
+            "input_set_id": grant.json()["input_set_id"],
+        },
+        content=b"# done\n",
+    )
+    assert written.status_code == 201, written.text
+    output_id = written.json()["material_id"]
+    converted = await client.post(f"{BASE}/materials/{output_id}/convert", json={})
+    assert converted.status_code == 201, converted.text
+    assert converted.json()["category"] == "uploaded"
+    assert converted.json()["material"]["provenance"]["converted_from"] == output_id
+
+    state["service"] = "knowfeed"
+    pending = (await client.get(f"{BASE}/processing/pending")).json()
+    assert pending == [{"owner": "alice", "material_id": material_id, "version_no": 1}]
+    processing = await client.post(
+        f"{BASE}/processing/grants",
+        json={"owner": "alice", "material_id": material_id, "version_no": 1},
+    )
+    processing_id = processing.json()["grant_id"]
+    text = await client.post(
+        f"{BASE}/processing/grants/{processing_id}/renditions/text",
+        params={"processor_version": "0.1"},
+        content=b"plain",
+    )
+    assert text.status_code == 201 and text.json()["status"] == "ready"
+    failed = await client.post(
+        f"{BASE}/processing/grants/{processing_id}/renditions/table",
+        params={"processor_version": "0.1", "failed_reason": "no tables"},
+    )
+    assert failed.json()["detail"] == {"reason": "no tables"}
+    listed = await client.get(f"{BASE}/materials/{material_id}/versions/1/renditions")
+    assert [(r["kind"], r["status"]) for r in listed.json()] == [
+        ("table", "failed"),
+        ("text", "ready"),
+    ]
+
+
+async def test_knowlab_platform_grants_end_with_the_process(api):
+    client, state = api
+    state["owner"] = Owner("alice", "knowlab")
+    material_id = await _upload(client)
+    entry = (await client.get(f"{BASE}/materials/{material_id}")).json()
+    await client.post(
+        f"{BASE}/platform-consents",
+        json={"kind": "test", "ref": "t-9", "items": [{"material_id": material_id}]},
+    )
+    state["service"] = "knowlab"
+    machine = await client.post(
+        f"{BASE}/service/run-grants",
+        json={
+            "process": "platform",
+            "beneficiary": "alice",
+            "ref": "t-9/machine",
+            "reader_role": "machine",
+            "items": [
+                {
+                    "material_id": material_id,
+                    "version_no": 1,
+                    "sha256": entry["version"]["sha256"],
+                    "basis": "platform",
+                    "basis_ref": "platform:knowlab:test:t-9",
+                }
+            ],
+        },
+    )
+    assert machine.status_code == 201, machine.text
+    grant_id = machine.json()["grant_id"]
+    ended = await client.post(
+        f"{BASE}/service/platform-processes/test/t-9/end",
+        json={"subject": "alice", "reason": "finished"},
+    )
+    assert ended.status_code == 204
+    read = await client.get(
+        f"{BASE}/run-grants/{grant_id}/materials/{material_id}/content"
+    )
+    assert (read.status_code, read.json()["code"]) == (403, "grant_inactive")
+    assert (await client.get(f"{BASE}/platform-consents/test/t-9")).json() == []

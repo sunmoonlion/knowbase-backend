@@ -446,7 +446,12 @@ def describe_format(item: Item, content: bytes) -> FormatView:
 
     PDF、xls 只给类型与大小（在 Item 上）。
     """
-    if item.media_type.startswith(
+    return format_view(item.media_type, content)
+
+
+def format_view(media_type: str, content: bytes) -> FormatView:
+    """按内容类型给格式（第四版的读法也用它）。"""
+    if media_type.startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml"
     ):
         try:
@@ -456,7 +461,7 @@ def describe_format(item: Item, content: bytes) -> FormatView:
             return FormatView(sheets=(), header=None)
         names = tuple(m.decode("utf-8", "replace") for m in _SHEET.findall(workbook))
         return FormatView(sheets=names[:50], header=None)
-    if item.media_type.startswith("text/"):
+    if media_type.startswith("text/"):
         first = content.split(b"\n", 1)[0][:500].decode("utf-8", "replace").strip()
         return FormatView(sheets=(), header=first or None)
     return FormatView(sheets=(), header=None)

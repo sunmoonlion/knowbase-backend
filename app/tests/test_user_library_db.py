@@ -19,10 +19,12 @@ from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.user_data_service import UserDataService
 from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import Owner, UserDataError
 from app.domain.user_library import Description
 from app.infrastructure.repositories.user_data import SqlUserDataRepository
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
+from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.storage.postgres import make_session_factory
 
 ALICE = "alice"
@@ -274,6 +276,8 @@ async def test_migration_backfills_old_rows():
     before = [p for p in paths if p.name < "20261026_0010"]
     target = [p for p in paths if p.name.startswith("20261026_0010")]
     assert len(target) == 1
+    # 之后的迁移也跑上：仓储按现在的表结构写
+    after = [p for p in paths if p.name > target[0].name]
 
     def run(connection, chosen):
         with Operations.context(MigrationContext.configure(connection)):
@@ -316,7 +320,7 @@ async def test_migration_backfills_old_rows():
                         "deleted": deleted,
                     },
                 )
-            await c.run_sync(run, target)
+            await c.run_sync(run, target + after)
         db = make_session_factory(engine)
         versions = await sql(db, "SELECT count(*) FROM user_data_version")
         assert versions == 3
@@ -471,7 +475,14 @@ async def test_platform_consent_is_per_process_and_pins_versions(db):
     )
     assert other[0].version_no == 2
     # 撤 d-1 不碰 d-10（编号前缀相同也不碰）
-    assert await lib.withdraw_platform(ALICE, "knowlab", "rerun", "d-1") == 1
+    runner = UserRunService(
+        SqlUserLibraryRepository(lambda: db),
+        SqlUserRunRepository(lambda: db),
+        MemoryObjects(),
+        prefix="user-data",
+        clock=Clock(),
+    )
+    assert await runner.withdraw_platform(ALICE, "knowlab", "rerun", "d-1") == 1
     assert await lib.platform_consents(ALICE, "knowlab", "rerun", "d-1") == []
     assert len(await lib.platform_consents(ALICE, "knowlab", "rerun", "d-10")) == 1
     await refused(

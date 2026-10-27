@@ -26,6 +26,7 @@ from app.domain.user_library import (
 )
 from app.infrastructure.models.user_data import (
     UserDataAccount,
+    UserDataDeletion,
     UserDataExpert,
     UserDataHolding,
     UserDataItem,
@@ -41,6 +42,7 @@ ORIGIN_OF_BASIS = {
     "purchase": "purchase",
     "reference": "collect",
     "output": "upload",
+    "convert": "upload",
 }
 
 
@@ -77,6 +79,8 @@ def _material(row: UserDataItem) -> Material:
         deleted_at=row.deleted_at,
         disabled_at=row.disabled_at,
         legacy_app=row.app,
+        provenance=dict(row.provenance) if row.provenance is not None else None,
+        purged_at=row.purged_at,
     )
 
 
@@ -120,6 +124,38 @@ def _apply_description(row: UserDataItem, description: Description) -> None:
     row.vocab_version = description.vocab_version
 
 
+async def insert_material(
+    session: AsyncSession, material: Material, version: ContentVersion, holding: Holding
+) -> Material:
+    """在调用方的事务里写资料、第 1 版与所有者的使用权（产出区写入也用它）。"""
+    row = UserDataItem(
+        id=uuid.UUID(material.id),
+        owner_subject=material.owner,
+        app=material.legacy_app,
+        name=material.name,
+        media_type=version.media_type,
+        size_bytes=version.size_bytes,
+        sha256=version.sha256,
+        origin=ORIGIN_OF_BASIS[holding.basis],
+        origin_ref=None,
+        object_key=version.object_key,
+        created_at=material.created_at,
+        no_resale=False,
+        content_origin=material.content_origin,
+        license=material.license,
+        current_version=1,
+        provenance=material.provenance,
+    )
+    _apply_description(row, material.description)
+    session.add(row)
+    await session.flush()
+    session.add(_version_row(version))
+    session.add(_holding_row(holding))
+    await session.flush()
+    await session.refresh(row)
+    return _material(row)
+
+
 class SqlUserLibraryRepository:
     def __init__(
         self, sessions: Callable[[], async_sessionmaker[AsyncSession]]
@@ -131,31 +167,7 @@ class SqlUserLibraryRepository:
     ) -> Material:
         """一个事务里记资料、第 1 版与所有者的使用权。"""
         async with self._sessions()() as session:
-            row = UserDataItem(
-                id=uuid.UUID(material.id),
-                owner_subject=material.owner,
-                app=material.legacy_app,
-                name=material.name,
-                media_type=version.media_type,
-                size_bytes=version.size_bytes,
-                sha256=version.sha256,
-                origin=ORIGIN_OF_BASIS[holding.basis],
-                origin_ref=None,
-                object_key=version.object_key,
-                created_at=material.created_at,
-                no_resale=False,
-                content_origin=material.content_origin,
-                license=material.license,
-                current_version=1,
-            )
-            _apply_description(row, material.description)
-            session.add(row)
-            await session.flush()
-            session.add(_version_row(version))
-            session.add(_holding_row(holding))
-            await session.flush()
-            await session.refresh(row)
-            entity = _material(row)
+            entity = await insert_material(session, material, version, holding)
             await session.commit()
             return entity
 
@@ -432,6 +444,21 @@ class SqlUserLibraryRepository:
                     UserDataHolding.ended_at.is_(None),
                 )
                 .values(ended_at=at, end_reason="deleted")
+            )
+            # 删除事件写明对象与原因：撤所有者的关系，内容不删（0043 第 2.8 节）
+            session.add(
+                UserDataDeletion(
+                    id=uuid.uuid4(),
+                    subject=subject,
+                    item_id=key,
+                    action="relation",
+                    reason="owner-removed",
+                    actor=subject,
+                    requested_at=at,
+                    state="done",
+                    pending=[],
+                    done_at=at,
+                )
             )
             await session.commit()
 

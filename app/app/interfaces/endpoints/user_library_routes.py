@@ -42,6 +42,7 @@ from app.interfaces.schemas.user_library import (
     DescriptionRead,
     ExpertIn,
     ExpertRead,
+    FreezeIn,
     HistoryEntryRead,
     HoldingRead,
     LicenseIn,
@@ -126,6 +127,7 @@ def _entry(entry: ShelfEntry, subject: str) -> ShelfEntryRead:
             created_at=m.created_at,
             deleted=m.deleted_at is not None,
             legacy_app=m.legacy_app,
+            provenance=m.provenance,
         ),
         holding=HoldingRead(basis=h.basis, license=h.license, version_no=h.version_no),
         version=VersionRead(
@@ -513,18 +515,6 @@ async def platform_consents(
     return [_use(u) for u in uses]
 
 
-@router.delete(
-    "/platform-consents/{kind}/{ref}", status_code=status.HTTP_204_NO_CONTENT
-)
-async def withdraw_platform(
-    kind: str,
-    ref: str,
-    owner: Owner = Depends(require_user_owner),
-    service: UserLibraryService = Depends(get_user_library_service),
-):
-    await _call(lambda: service.withdraw_platform(owner.subject, owner.app, kind, ref))
-
-
 @router.get("/subscriptions", response_model=list[SubscriptionRead])
 async def subscriptions(
     owner: Owner = Depends(require_user_owner),
@@ -627,6 +617,31 @@ async def push_expert(
         name=expert.name,
         latest_version=expert.latest_version,
     )
+
+
+@router.post(
+    "/experts/{expert_id}/versions/{version}/freeze",
+    response_model=list[UseRead],
+    status_code=status.HTTP_201_CREATED,
+)
+async def freeze_binding(
+    expert_id: str,
+    version: str,
+    payload: FreezeIn,
+    caller: ServiceCaller = Depends(require_directory_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowlab 交付时冻结作者绑给这位专家的数据：每份钉在当时那一版。"""
+    if caller.caller != "knowlab":
+        raise AppException(
+            code="service_scope_denied",
+            status_code=403,
+            msg="only knowlab freezes bindings",
+        )
+    uses = await _call(
+        lambda: service.freeze_binding(payload.author, expert_id, version)
+    )
+    return [_use(u) for u in uses]
 
 
 @router.post(

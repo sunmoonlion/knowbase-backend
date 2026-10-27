@@ -56,10 +56,12 @@ class MaterialRead(BaseModel):
     created_at: datetime
     deleted: bool
     legacy_app: str | None
+    # 出处：产出（哪个应用、任务、运行、输入组合）、转为数据（从哪份产出转来）
+    provenance: dict[str, object] | None = None
 
 
 class HoldingRead(BaseModel):
-    basis: Literal["upload", "collect", "purchase", "reference", "output"]
+    basis: Literal["upload", "collect", "purchase", "reference", "output", "convert"]
     license: LicenseName
     version_no: int | None
 
@@ -213,3 +215,11 @@ class SubscriptionRead(BaseModel):
     topic: str | None
     pick_each_round: bool
     created_at: datetime
+
+
+class FreezeIn(BaseModel):
+    """交付时冻结谁的绑定（专家的作者）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    author: str = Field(min_length=1, max_length=255)

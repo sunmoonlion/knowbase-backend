@@ -43,6 +43,7 @@ from app.domain.user_library import (
     Use,
     check_license,
     check_material_use,
+    frozen_expert_use,
     license_rank,
     platform_use,
     processing_use,
@@ -129,8 +130,13 @@ class UserLibraryService:
         *,
         process: bool = False,
     ) -> tuple[Material, ContentVersion]:
-        """所有者传这份资料的新内容版本；旧版本照旧留着，钉住旧版的照旧读旧的。"""
+        """所有者传这份资料的新内容版本；旧版本照旧留着，钉住旧版的照旧读旧的。
+
+        产出区的不改（测试证据只增不改）；要改先转为数据。
+        """
         material = await self._owned(subject, material_id)
+        if material.in_output_zone:
+            raise refused("output_immutable", "outputs are not revised")
         media_type = kind_of(clean_name(name or material.name), content)
         check_size(len(content), await self.repo.bytes_used(subject))
         version = await self._store(
@@ -362,14 +368,6 @@ class UserLibraryService:
         use = platform_use(app, kind, ref)
         return [u for u in await self.repo.named(subject, use) if u.use == use]
 
-    async def withdraw_platform(
-        self, subject: str, app: str, kind: str, ref: str
-    ) -> int:
-        """本人撤回这次平台过程的依据（每份一并撤）；块 1c 起同时撤相关授权。"""
-        return await self.repo.withdraw_named(
-            subject, platform_use(app, kind, ref), self.now()
-        )
-
     async def subscribe(
         self,
         subject: str,
@@ -457,6 +455,39 @@ class UserLibraryService:
 
     async def experts(self, subject: str) -> list[Expert]:
         return await self.repo.experts_of(subject)
+
+    async def freeze_binding(
+        self, author: str, expert_id: str, version: str
+    ) -> list[Use]:
+        """交付时把「绑给专家」冻结成 `expert:<专家>@<版本>`，每份钉在当时那一版。
+
+        knowlab 交付那一刻调；以后作者取消绑定、传新版，都只影响下一版。同一版重放
+        回已有的那几条。
+        """
+        frozen = frozen_expert_use(expert_id, version)
+        if expert_id not in {e.expert_id for e in await self.repo.experts_of(author)}:
+            raise not_found("expert")
+        made: list[Use] = []
+        bound = await self.repo.material_ids_with_use(author, f"expert:{expert_id}")
+        for material_id in sorted(bound):
+            material, holding = await self._held(author, material_id)
+            made.append(
+                await self.repo.add_use(
+                    Use(
+                        id=self.new_id(),
+                        subject=author,
+                        use=frozen,
+                        created_at=self.now(),
+                        created_via="knowlab-delivery",
+                        material_id=material.id,
+                        version_no=holding.version_no or material.current_version,
+                        # 交付那一刻的许可：给别人用要「可以经专家给别人用」以上，
+                        # 作者后来改低只影响新的销售（0043 第 2.2 节）
+                        scope={"license": holding.license},
+                    )
+                )
+            )
+        return made
 
     # —— knowmart 成交：给买家加使用权（不复制） ——
 
