@@ -225,3 +225,32 @@ class FreezeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     author: str = Field(min_length=1, max_length=255)
+
+
+class PublicOriginalRead(BaseModel):
+    """knowfeed 交来的公开原件存下的那一份：资料、交来的那一版。"""
+
+    material_id: str
+    version_no: int
+    sha256: str
+    created: bool
+
+
+class ReferenceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=255)
+    ref: str = Field(min_length=1, max_length=255)
+
+
+class ReferencesIn(BaseModel):
+    """给提了需求的用户记引用：谁、凭哪条需求依据（0045 第 2.3 节）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version_no: int = Field(ge=1)
+    references: list[ReferenceIn] = Field(min_length=1, max_length=500)
+
+
+class ReferencesRead(BaseModel):
+    recorded: int

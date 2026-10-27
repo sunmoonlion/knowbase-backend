@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.user_data import conflict, not_found
 from app.domain.user_library import (
+    PUBLIC_OWNER,
     Account,
     ContentVersion,
     Description,
@@ -191,6 +192,18 @@ class SqlUserLibraryRepository:
             entity = _material(row)
             await session.commit()
             return entity
+
+    async def find_public(self, channel: str, channel_doc_id: str) -> Material | None:
+        """公开原件按「渠道 × 渠道里的编号」认，同一份只存一份。"""
+        async with self._sessions()() as session:
+            row = await session.scalar(
+                select(UserDataItem).where(
+                    UserDataItem.owner_subject == PUBLIC_OWNER,
+                    UserDataItem.provenance["channel"].astext == channel,
+                    UserDataItem.provenance["channel_doc_id"].astext == channel_doc_id,
+                )
+            )
+            return _material(row) if row is not None else None
 
     async def get_material(self, material_id: str) -> Material | None:
         key = _uuid(material_id)

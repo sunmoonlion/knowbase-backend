@@ -341,6 +341,9 @@ class Candidate:
     shown: bool
     data_format: str | None = None
     usable: bool = True
+    # 开跑时凭什么签：display（他放开给这个应用的）、reference（他名下的引用）、
+    # public（公开原件层，开关开着时谁都能读）
+    basis: str = "display"
     rendition_kind: str | None = None
     rendition_no: int | None = None
     rendition_sha256: str | None = None
@@ -442,6 +445,7 @@ def candidate_dict(c: Candidate) -> dict[str, object]:
         "shown": c.shown,
         "data_format": c.data_format,
         "usable": c.usable,
+        "basis": c.basis,
         "rendition_kind": c.rendition_kind,
         "rendition_no": c.rendition_no,
         "rendition_sha256": c.rendition_sha256,
@@ -460,6 +464,7 @@ def candidate_from(data: dict[str, object]) -> Candidate:
         shown=bool(data["shown"]),
         data_format=data.get("data_format"),  # type: ignore[arg-type]
         usable=bool(data.get("usable", True)),
+        basis=str(data.get("basis") or "display"),
         rendition_kind=data.get("rendition_kind"),  # type: ignore[arg-type]
         rendition_no=data.get("rendition_no"),  # type: ignore[arg-type]
         rendition_sha256=data.get("rendition_sha256"),  # type: ignore[arg-type]

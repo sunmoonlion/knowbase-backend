@@ -51,6 +51,7 @@ from app.interfaces.schemas.user_resolution import (
     ResultItemRead,
     TaskParamsIn,
 )
+from core.config import get_settings
 
 router = APIRouter(
     prefix="/internal/v2/user-data",
@@ -67,6 +68,7 @@ def get_user_resolution_service() -> UserResolutionService:
         SqlUserResolutionRepository(sessions),
         SqlUserLibraryRepository(sessions),
         SqlUserRunRepository(sessions),
+        public_access=get_settings().public_access_enabled,
     )
 
 
@@ -108,6 +110,7 @@ def _params(p: TaskParamsIn) -> TaskParams:
 def _candidate(c: Candidate) -> CandidateRead:
     return CandidateRead(
         material_id=c.material_id,
+        basis=c.basis,
         version_no=c.version_no,
         sha256=c.sha256,
         content_origin=c.content_origin,

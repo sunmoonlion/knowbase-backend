@@ -12,7 +12,10 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
-from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_library_service import (
+    MAX_PUBLIC_BYTES,
+    UserLibraryService,
+)
 from app.domain.user_data import MAX_ITEM_BYTES, Owner
 from app.domain.user_library import (
     Account,
@@ -27,6 +30,7 @@ from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_directory_service,
     require_purchase_service,
+    require_supply_service,
 )
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
@@ -48,8 +52,11 @@ from app.interfaces.schemas.user_library import (
     LicenseIn,
     MaterialRead,
     PlatformConsentIn,
+    PublicOriginalRead,
     PurchaseIn,
     PurchaseRead,
+    ReferencesIn,
+    ReferencesRead,
     ShelfEntryRead,
     SubscriptionRead,
     SubscriptionScopeIn,
@@ -642,6 +649,95 @@ async def freeze_binding(
         lambda: service.freeze_binding(payload.author, expert_id, version)
     )
     return [_use(u) for u in uses]
+
+
+@router.post(
+    "/service/public-originals",
+    response_model=PublicOriginalRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def deliver_public(
+    request: Request,
+    channel: str = Query(min_length=2, max_length=40),
+    channel_doc_id: str = Query(min_length=1, max_length=200),
+    name: str = Query(min_length=1, max_length=200),
+    subject: str = Query(min_length=1, max_length=64),
+    doc_type: str = Query(min_length=1, max_length=32),
+    period_start: date | None = None,
+    period_end: date | None = None,
+    disclosed_on: date | None = None,
+    source_url: str | None = Query(default=None, max_length=2000),
+    caller: ServiceCaller = Depends(require_supply_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowfeed 交一份公开披露（请求体就是文件）：同一渠道同一编号只存一份。"""
+    content = await _public_body(request)
+    before = await _call(lambda: _existing_version(service, channel, channel_doc_id))
+    material, version, _ = await _call(
+        lambda: service.deliver_public(
+            caller.caller,
+            channel,
+            channel_doc_id,
+            name,
+            content,
+            Description(
+                subject=subject,
+                doc_type=doc_type,
+                period_start=period_start,
+                period_end=period_end,
+                disclosed_on=disclosed_on,
+            ),
+            source_url=source_url,
+        )
+    )
+    return PublicOriginalRead(
+        material_id=material.id,
+        version_no=version.version_no,
+        sha256=version.sha256,
+        created=before != (material.id, version.version_no),
+    )
+
+
+@router.post(
+    "/service/public-originals/{material_id}/references",
+    response_model=ReferencesRead,
+)
+async def add_public_references(
+    material_id: str,
+    payload: ReferencesIn,
+    caller: ServiceCaller = Depends(require_supply_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """给提了需求的用户各记一条可用的引用（取得依据「引用」）。"""
+    made = await _call(
+        lambda: service.add_public_references(
+            caller.caller,
+            material_id,
+            payload.version_no,
+            [(r.subject, r.ref) for r in payload.references],
+        )
+    )
+    return ReferencesRead(recorded=len(made))
+
+
+async def _existing_version(
+    service: UserLibraryService, channel: str, channel_doc_id: str
+) -> tuple[str, int] | None:
+    found = await service.repo.find_public(channel, channel_doc_id)
+    return (found.id, found.current_version) if found is not None else None
+
+
+async def _public_body(request: Request) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_PUBLIC_BYTES:
+            raise AppException(
+                code="too_large", status_code=413, msg="file is larger than 200 MB"
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 @router.post(

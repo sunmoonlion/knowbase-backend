@@ -594,7 +594,7 @@ class UserDataRunGrantItem(Base):
     __table_args__ = (
         CheckConstraint(
             "basis IN ('display', 'frozen_binding', 'platform', 'processing',"
-            " 'reference')",
+            " 'reference', 'public')",
             name="ck_user_data_run_grant_item_basis",
         ),
         Index("ix_user_data_run_grant_item_item", "item_id"),

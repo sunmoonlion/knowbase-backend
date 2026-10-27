@@ -570,3 +570,44 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
         params={"consumer": "expert:fa-1@2", "subjects": ["600519.SH"]},
     )
     assert prefs.json() == []
+
+
+async def test_knowfeed_delivers_public_originals_and_references(api):
+    """2b：knowfeed 交公开原件（只存一份）、给提了需求的用户记引用。"""
+    client, state = api
+    params = {
+        "channel": "cninfo",
+        "channel_doc_id": "1219876543",
+        "name": "贵州茅台2025年年度报告.csv",
+        "subject": "600519.SH",
+        "doc_type": "annual_report",
+        "period_start": "2025-01-01",
+        "period_end": "2025-12-31",
+        "disclosed_on": "2026-03-28",
+    }
+    state["service"] = "knowbench"
+    denied = await client.post(
+        f"{BASE}/service/public-originals", params=params, content=CSV
+    )
+    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
+    state["service"] = "knowfeed"
+    made = await client.post(
+        f"{BASE}/service/public-originals", params=params, content=CSV
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()["created"] is True and made.json()["version_no"] == 1
+    again = await client.post(
+        f"{BASE}/service/public-originals", params=params, content=CSV
+    )
+    assert again.json()["created"] is False
+    assert again.json()["material_id"] == made.json()["material_id"]
+    refs = await client.post(
+        f"{BASE}/service/public-originals/{made.json()['material_id']}/references",
+        json={"version_no": 1, "references": [{"subject": "alice", "ref": "basis-1"}]},
+    )
+    assert refs.json() == {"recorded": 1}
+    shelf = (
+        await client.get(f"{BASE}/materials", params={"category": "collected"})
+    ).json()
+    assert [e["material"]["material_id"] for e in shelf] == [made.json()["material_id"]]
+    assert shelf[0]["material"]["content_origin"] == "disclosure"

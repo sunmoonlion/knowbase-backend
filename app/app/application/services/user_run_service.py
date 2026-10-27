@@ -37,6 +37,7 @@ from app.domain.user_data import (
 )
 from app.domain.user_library import (
     PLATFORM_KINDS,
+    PUBLIC_OWNER,
     ContentVersion,
     Description,
     Holding,
@@ -193,16 +194,28 @@ class UserRunService:
         if material is None or not material.readable:
             raise not_found()
         holdings = await self.library.holdings_of(subject, material.id)
-        if not holdings:
-            raise not_found()
-        holding = next((h for h in holdings if h.version_no is None), holdings[0])
-        version = await self.library.version(
-            material.id, holding.version_no or material.current_version
-        )
+        if material.owner == PUBLIC_OWNER:
+            # 公开原件：他名下有引用就凭引用，否则开关开着时凭「公开」读当前版
+            reference = next((h for h in holdings if h.basis == "reference"), None)
+            if reference is None and not self.public_access:
+                raise denied("public_access_closed", "public access is closed")
+            number = (reference.version_no if reference else None) or (
+                material.current_version
+            )
+            basis, basis_ref = (
+                ("reference", "reference") if reference else ("public", PUBLIC_OWNER)
+            )
+        else:
+            if not holdings:
+                raise not_found()
+            holding = next((h for h in holdings if h.version_no is None), holdings[0])
+            number = holding.version_no or material.current_version
+            if not await self.runs.has_use(subject, material.id, session.scope_use):
+                raise denied("not_shown", f"not shown to {app}")
+            basis, basis_ref = "display", session.scope_use
+        version = await self.library.version(material.id, number)
         if version is None:
             raise not_found("version")
-        if not await self.runs.has_use(subject, material.id, session.scope_use):
-            raise denied("not_shown", f"not shown to {app}")
         remaining = int((session.expires_at - now).total_seconds())
         grant = await self._issue(
             "session",
@@ -213,8 +226,8 @@ class UserRunService:
             items=[
                 GrantRequestItem(
                     pin=InputPin(material.id, version.version_no, version.sha256),
-                    basis="display",
-                    basis_ref=session.scope_use,
+                    basis=basis,  # type: ignore[arg-type]
+                    basis_ref=basis_ref,
                 )
             ],
             reader_role="app",
@@ -922,9 +935,23 @@ class UserRunService:
                 raise refused("basis_ref_invalid", "processing names this version")
             if not await self.runs.has_use(material.owner, material.id, ref):
                 raise denied("no_processing_consent", "the owner has not consented")
+        elif basis == "reference":
+            # 第二区引用：他名下有一条可用的引用覆盖这一版（开关关着也能读）
+            holdings = await self.library.holdings_of(beneficiary, material.id)
+            if material.owner != PUBLIC_OWNER or not any(
+                h.basis == "reference" and h.covers(pin.version_no) for h in holdings
+            ):
+                raise denied("no_reference", "no usable reference to this original")
+            ref = "reference"
+        elif basis == "public":
+            # 公开原件层全市场可读，平台总开关管（0047 第 2.2 节）
+            if material.owner != PUBLIC_OWNER:
+                raise refused("basis_ref_invalid", "only public originals are public")
+            if not self.public_access:
+                raise denied("public_access_closed", "public access is closed")
+            ref = PUBLIC_OWNER
         else:
-            # 第二区引用的存法待定（待你决定第 1 条）
-            raise refused("basis_unsupported", "this basis is not available yet")
+            raise refused("basis_unsupported", "this basis is not available")
         return GrantItem(
             material_id=material.id,
             version_no=pin.version_no,

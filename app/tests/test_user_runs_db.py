@@ -595,7 +595,7 @@ async def test_migration_0011_downgrades_and_upgrades_again():
                 text('CREATE EXTENSION IF NOT EXISTS "uuid-ossp" WITH SCHEMA public')
             )
             await c.run_sync(run, upgrade_all)
-            for path in reversed(later + target):
+            for path in reversed(target + later):
                 await c.run_sync(run, load(path).downgrade)
             tables = await c.execute(
                 text(

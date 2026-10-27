@@ -16,7 +16,12 @@ from app.domain.user_resolution import (
 
 class ResolutionRepository(Protocol):
     async def candidates(
-        self, subject: str, app: str, key: DescriptionKey
+        self,
+        subject: str,
+        app: str,
+        key: DescriptionKey,
+        *,
+        public_access: bool = False,
     ) -> list[Candidate]: ...
 
     async def add_resolution(self, resolution: Resolution) -> Resolution: ...

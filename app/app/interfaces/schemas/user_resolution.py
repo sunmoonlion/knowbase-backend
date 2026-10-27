@@ -66,6 +66,8 @@ class DescriptionKeyModel(BaseModel):
 
 class CandidateRead(BaseModel):
     material_id: str
+    # 开跑时凭什么签：display、reference、public
+    basis: str = "display"
     version_no: int
     sha256: str
     content_origin: str
@@ -101,7 +103,7 @@ class LookupRead(BaseModel):
     unusable 在、不能用，absent 他名下没有。"""
 
     status: Literal["shown", "held", "unusable", "absent"]
-    zone: Literal["own"] | None
+    zone: Literal["own", "public"] | None
 
 
 class ConfirmItemIn(BaseModel):

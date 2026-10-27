@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
@@ -31,6 +32,7 @@ from app.domain.user_library import (
     CATEGORY_OF_BASIS,
     COLUMN_USES,
     DEFAULT_DISPLAY_USES,
+    PUBLIC_OWNER,
     Account,
     ContentVersion,
     Description,
@@ -51,6 +53,17 @@ from app.domain.user_library import (
     version_object_key,
 )
 from app.domain.vocabulary import VOCAB_VERSION, format_of_media
+
+# 公开原件不算谁的空间；招股书这类比用户上传的上限（50 MB）大
+MAX_PUBLIC_BYTES = 200 * 1024 * 1024
+_CHANNEL = re.compile(r"^[a-z][a-z0-9_-]{1,39}$")
+_CHANNEL_DOC = re.compile(r"^[A-Za-z0-9._:/-]{1,200}$")
+
+
+def denied_scope() -> UserDataError:
+    return UserDataError(
+        403, "service_scope_denied", "only knowfeed delivers originals"
+    )
 
 
 class UserLibraryService:
@@ -484,6 +497,135 @@ class UserLibraryService:
                         # 交付那一刻的许可：给别人用要「可以经专家给别人用」以上，
                         # 作者后来改低只影响新的销售（0043 第 2.2 节）
                         scope={"license": holding.license},
+                    )
+                )
+            )
+        return made
+
+    # —— 公开原件：knowfeed 交来，只存一份（0047 第二节） ——
+
+    async def deliver_public(
+        self,
+        caller: str,
+        channel: str,
+        channel_doc_id: str,
+        name: str,
+        content: bytes,
+        description: Description,
+        *,
+        source_url: str | None = None,
+        references: list[tuple[str, str]] | None = None,
+    ) -> tuple[Material, ContentVersion, list[Holding]]:
+        """knowfeed 交一份公开披露：同一渠道同一编号只存一份，内容变了记新版本；
+        给提了需求的用户各记一条可用的引用（取得依据「引用」，ref 记需求依据编号）。
+
+        描述按入库质检过算（参与解析）；许可由系统定为「可以经专家给别人用」。
+        """
+        if caller not in ("knowfeed",):
+            raise denied_scope()
+        if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(
+            channel_doc_id
+        ):
+            raise refused("channel_invalid", "channel or document id is invalid")
+        if source_url is not None and not source_url.startswith(
+            ("https://", "http://")
+        ):
+            raise refused("url_invalid", "source url is invalid")
+        filename = clean_name(name)
+        media_type = kind_of(filename, content)
+        if not 0 < len(content) <= MAX_PUBLIC_BYTES:
+            raise UserDataError(413, "too_large", "public originals are at most 200 MB")
+        checked = replace(
+            description,
+            data_format=description.data_format or format_of_media(media_type),
+            status="checked",
+            vocab_version=VOCAB_VERSION,
+        ).checked()
+        sha = hashlib.sha256(content).hexdigest()
+        material = await self.repo.find_public(channel, channel_doc_id)
+        now = self.now()
+        if material is None:
+            material_id = self.new_id()
+            version = await self._store(
+                PUBLIC_OWNER, material_id, 1, media_type, content, now
+            )
+            material = await self.repo.add_material(
+                Material(
+                    id=material_id,
+                    owner=PUBLIC_OWNER,
+                    name=filename,
+                    content_origin="disclosure",
+                    license="via_expert",
+                    description=checked,
+                    current_version=1,
+                    created_at=now,
+                    provenance={
+                        "channel": channel,
+                        "channel_doc_id": channel_doc_id,
+                        "source_url": source_url,
+                    },
+                ),
+                version,
+                Holding(
+                    id=self.new_id(),
+                    subject=PUBLIC_OWNER,
+                    material_id=material_id,
+                    basis="collect",
+                    license="via_expert",
+                    created_at=now,
+                ),
+            )
+        else:
+            latest = await self.repo.version(material.id, material.current_version)
+            assert latest is not None
+            if latest.sha256 == sha:
+                version = latest
+            else:
+                # 更正版：同一份资料的新内容版本，旧版照旧留着
+                version = await self._store(
+                    PUBLIC_OWNER,
+                    material.id,
+                    material.current_version + 1,
+                    media_type,
+                    content,
+                    now,
+                )
+                material = await self.repo.add_version(version)
+        made = await self.add_public_references(
+            caller, material.id, version.version_no, references or []
+        )
+        return material, version, made
+
+    async def add_public_references(
+        self,
+        caller: str,
+        material_id: str,
+        version_no: int,
+        references: list[tuple[str, str]],
+    ) -> list[Holding]:
+        """给提了需求的用户各记一条可用的引用，到交来的那一版；同一需求依据只记一条。"""
+        if caller not in ("knowfeed",):
+            raise denied_scope()
+        material = await self.repo.get_material(material_id)
+        if material is None or material.owner != PUBLIC_OWNER:
+            raise not_found()
+        if await self.repo.version(material.id, version_no) is None:
+            raise not_found("version")
+        made: list[Holding] = []
+        for subject, ref in dict.fromkeys(references):
+            if not subject or subject == PUBLIC_OWNER or not ref or len(ref) > 255:
+                raise refused("reference_invalid", "reference needs a user and a ref")
+            made.append(
+                await self.repo.add_holding(
+                    Holding(
+                        id=self.new_id(),
+                        subject=subject,
+                        material_id=material.id,
+                        basis="reference",
+                        license="via_expert",
+                        created_at=self.now(),
+                        version_no=version_no,
+                        ref=ref,
                     )
                 )
             )

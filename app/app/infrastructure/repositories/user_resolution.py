@@ -10,7 +10,7 @@ from sqlalchemy import and_, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.domain.user_library import RESOLVABLE
+from app.domain.user_library import PUBLIC_OWNER, RESOLVABLE
 from app.domain.user_resolution import (
     Candidate,
     Confirmation,
@@ -75,7 +75,12 @@ class SqlUserResolutionRepository:
         self._sessions = sessions
 
     async def candidates(
-        self, subject: str, app: str, key: DescriptionKey
+        self,
+        subject: str,
+        app: str,
+        key: DescriptionKey,
+        *,
+        public_access: bool = False,
     ) -> list[Candidate]:
         """请的人名下、描述对得上这一条的资料（确认过的描述、当前词表；产出区的不算）。
 
@@ -121,7 +126,9 @@ class SqlUserResolutionRepository:
         async with self._sessions()() as session:
             rows = await session.execute(query)
             seen: dict[str, Candidate] = {}
-            for _holding, item, version, is_shown in rows.all():
+            for holding, item, version, is_shown in rows.all():
+                # 他名下的公开原件引用：他的应用都能读，不用另外放开
+                reference = holding.basis == "reference"
                 found = Candidate(
                     material_id=str(item.id),
                     version_no=version.version_no,
@@ -129,13 +136,47 @@ class SqlUserResolutionRepository:
                     content_origin=item.content_origin,
                     disclosed_on=item.disclosed_on,
                     created_at=item.created_at,
-                    shown=bool(is_shown),
+                    shown=bool(is_shown) or reference,
                     data_format=item.data_format,
                     usable=item.disabled_at is None,
+                    basis="reference" if reference else "display",
                 )
                 # 同一份有两条使用权（自己的、买的）时取不限版本的那条
-                if found.material_id not in seen or _holding.version_no is None:
+                if found.material_id not in seen or holding.version_no is None:
                     seen[found.material_id] = found
+            if public_access:
+                # 公开原件层全市场可读（0047 第 2.2 节）：
+                # 他没有引用的也算候选，凭「公开」
+                public = await session.execute(
+                    _matching(
+                        select(UserDataItem, UserDataVersion)
+                        .join(
+                            UserDataVersion,
+                            and_(
+                                UserDataVersion.item_id == UserDataItem.id,
+                                UserDataVersion.version_no
+                                == UserDataItem.current_version,
+                            ),
+                        )
+                        .where(UserDataItem.owner_subject == PUBLIC_OWNER),
+                        key,
+                    )
+                )
+                for item, version in public.all():
+                    if str(item.id) in seen:
+                        continue
+                    seen[str(item.id)] = Candidate(
+                        material_id=str(item.id),
+                        version_no=version.version_no,
+                        sha256=version.sha256,
+                        content_origin=item.content_origin,
+                        disclosed_on=item.disclosed_on,
+                        created_at=item.created_at,
+                        shown=True,
+                        data_format=item.data_format,
+                        usable=item.disabled_at is None,
+                        basis="public",
+                    )
             return list(seen.values())
 
     # —— 解析清单 ——
@@ -299,3 +340,20 @@ class SqlUserResolutionRepository:
             )
             await session.commit()
             return preference
+
+
+def _matching(query, key: DescriptionKey):
+    """描述对得上这一条：主体、类型、报告期；确认过的描述、当前词表；没清除。"""
+    query = query.where(
+        UserDataItem.subject_code == key.subject,
+        UserDataItem.doc_type == key.doc_type,
+        UserDataItem.description_status.in_(RESOLVABLE),
+        UserDataItem.vocab_version == VOCAB_VERSION,
+        UserDataItem.purged_at.is_(None),
+    )
+    if key.period_end is not None:
+        query = query.where(
+            UserDataItem.period_start == key.period_start,
+            UserDataItem.period_end == key.period_end,
+        )
+    return query

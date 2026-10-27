@@ -38,7 +38,9 @@ SERVICE_PROCESSES: tuple[Process, ...] = ("test", "platform")
 
 ReaderRole = Literal["app", "operator", "machine", "system"]
 Scope = Literal["content", "format"]
-GrantBasis = Literal["display", "frozen_binding", "platform", "processing", "reference"]
+GrantBasis = Literal[
+    "display", "frozen_binding", "platform", "processing", "reference", "public"
+]
 RenditionKind = Literal["text", "pages", "table", "index", "parse"]
 
 # 时限：测试、委托 7 天，会话 24 小时，孵化 6 小时照旧；加工给 knowfeed 3 天
@@ -65,11 +67,12 @@ SCOPE_OF: dict[str, Scope] = {
     "processing": "content",
 }
 # 每种过程认哪几种权利依据
+# 公开原件：有可用的引用就凭引用（开关关着也行），开关开着时谁都能凭「公开」读
 BASES_OF: dict[str, tuple[GrantBasis, ...]] = {
-    "test": ("display", "frozen_binding"),
-    "delegation": ("display", "frozen_binding"),
-    "session": ("display", "frozen_binding"),
-    "incubation": ("display",),
+    "test": ("display", "frozen_binding", "reference", "public"),
+    "delegation": ("display", "frozen_binding", "reference", "public"),
+    "session": ("display", "frozen_binding", "reference", "public"),
+    "incubation": ("display", "reference", "public"),
     "platform": ("platform",),
     "processing": ("processing",),
 }

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 RenditionKindName = Literal["text", "pages", "table", "index", "parse"]
 GrantBasisName = Literal[
-    "display", "frozen_binding", "platform", "processing", "reference"
+    "display", "frozen_binding", "platform", "processing", "reference", "public"
 ]
 
 

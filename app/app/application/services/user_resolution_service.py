@@ -22,6 +22,7 @@ from app.application.ports.user_resolution import ResolutionRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.application.services.call_rate import RateLimiter
 from app.domain.user_data import UserDataError, not_found, refused
+from app.domain.user_library import Holding
 from app.domain.user_resolution import (
     CONFIRMATION_TTL,
     CONTRACT_VERSION,
@@ -61,6 +62,7 @@ class UserResolutionService:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         limiter: RateLimiter | None = None,
+        public_access: bool = True,
     ) -> None:
         self.repo = repo
         self.library = library
@@ -68,21 +70,28 @@ class UserResolutionService:
         self.now = clock
         self.new_id = new_id
         self.limiter = limiter or _lookups
+        # 平台总开关（0047 第 5.2 节）：开着时公开原件层全市场可读，算候选
+        self.public_access = public_access
 
     # —— 按描述查 ——
 
     async def lookup(
         self, subject: str, app: str, key: DescriptionKey
     ) -> tuple[str, str | None]:
-        """（在不在，在哪个范围）。shown：在、放开给这个应用了；held：在、没放开；
-        unusable：在、不能用；absent：他名下没有。范围现在只有第一区（own）。"""
+        """（在不在，在哪个范围）。shown：能用（放开给这个应用的、他名下的引用、
+        开关开着时的公开原件）；held：在、没放开；unusable：在、不能用；absent：没有。
+        范围：own（他名下的）、public（公开原件层）。"""
         key.checked()
         if not self.limiter.allow(f"lookup:{subject}"):
             raise UserDataError(429, "too_many_lookups", "slow down")
-        found = await self.repo.candidates(subject, app, key)
+        found = await self.repo.candidates(
+            subject, app, key, public_access=self.public_access
+        )
         usable = [c for c in found if c.usable]
-        if any(c.shown for c in usable):
-            return "shown", "own"
+        shown = [c for c in usable if c.shown]
+        if shown:
+            own = [c for c in shown if c.basis != "public"]
+            return "shown", "own" if own else "public"
         if usable:
             return "held", "own"
         if found:
@@ -221,7 +230,9 @@ class UserResolutionService:
         key = wanted.key
         found = [
             c
-            for c in await self.repo.candidates(subject, app, key)
+            for c in await self.repo.candidates(
+                subject, app, key, public_access=self.public_access
+            )
             if c.data_format in need.formats
             and (not need.sources or c.content_origin in need.sources)
         ]
@@ -360,14 +371,46 @@ class UserResolutionService:
         for item in cleaned:
             branch = "supply"
             if kind == "description":
-                key = DescriptionKey.from_dict(item["key"])  # type: ignore[arg-type]
-                found = await self.repo.candidates(subject, app, key)
-                if any(c.usable and c.shown for c in found) and (
-                    item.get("reading") in (None, "original")
-                ):
-                    branch = "ready"
+                branch = await self._entry_branch(subject, app, confirmation, item)
             branches.append({"item_id": str(item["item_id"]), "branch": branch})
         return confirmation, branches
+
+    async def _entry_branch(
+        self,
+        subject: str,
+        app: str,
+        confirmation: Confirmation,
+        item: dict[str, object],
+    ) -> str:
+        """入口分支（0043 第 3.3 节第 4 条）：他已经能用、读法也齐 → ready；他还没有、
+        但公开原件层这一份与要的读法都齐 → 当场按这次确认记一条引用，立即完成（ready）；
+        否则交 knowfeed（supply）。"""
+        key = DescriptionKey.from_dict(item["key"])  # type: ignore[arg-type]
+        reading = str(item.get("reading") or "original")
+        found = await self.repo.candidates(subject, app, key, public_access=True)
+        for candidate in [c for c in found if c.usable and c.shown]:
+            ready = (
+                candidate
+                if reading == "original"
+                else await self._with_reading(candidate, reading)
+            )
+            if ready is None:
+                continue
+            if candidate.basis == "public":
+                await self.library.add_holding(
+                    Holding(
+                        id=self.new_id(),
+                        subject=subject,
+                        material_id=candidate.material_id,
+                        basis="reference",
+                        license="via_expert",
+                        created_at=self.now(),
+                        version_no=candidate.version_no,
+                        ref=f"confirmation:{confirmation.id}:{item['item_id']}",
+                    )
+                )
+            return "ready"
+        return "supply"
 
     async def check_confirmation(
         self, caller: str, confirmation_id: str, subject: str
