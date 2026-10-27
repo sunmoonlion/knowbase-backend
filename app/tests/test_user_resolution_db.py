@@ -82,6 +82,20 @@ def test_latest_periods_hold_back_the_one_not_yet_due():
     ]
 
 
+def test_tables_are_for_tabular_data_only():
+    with pytest.raises(UserDataError) as caught:
+        annual(tables=((None, ("营业收入",)),)).checked()
+    assert caught.value.code == "tables_invalid"
+    ok = NeedSpec(
+        **{
+            **annual().__dict__,
+            "formats": ("excel",),
+            "tables": (("利润表", ("营业收入",)),),
+        }
+    ).checked()
+    assert ok.as_dict()["tables"] == [{"sheet": "利润表", "columns": ["营业收入"]}]
+
+
 class World:
     def __init__(self, db) -> None:
         self.clock = Clock()

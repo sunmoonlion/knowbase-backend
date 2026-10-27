@@ -89,6 +89,7 @@ def _need(n: NeedSpecIn) -> NeedSpec:
         reading=n.reading,
         sources=tuple(n.sources),
         priority=n.priority,
+        tables=tuple((t.sheet, tuple(t.columns)) for t in n.tables),
         caliber=n.caliber,
         description=n.description,
     )

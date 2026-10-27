@@ -1,6 +1,6 @@
 """按描述查、解析、确认、偏好的模型（契约 `user-data/v2` 的一部分，SDD 0043 第三节）。
 
-`NeedSpecIn` 就是 `knowbot-manifest/v2` 里的数据需求声明（只定义这一处）。
+声明的模型在 `data_needs.py`（契约 `knowbot-data-needs/v2`）。
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.interfaces.schemas.data_needs import DataNeed, PeriodRule
 
 Status = Literal[
     "resolved",
@@ -21,40 +23,9 @@ Status = Literal[
 ]
 
 
-class PeriodRuleIn(BaseModel):
-    """固定期间（start、end），最近 N 个完整的报告期（count，可加截至任务日期已披露），
-    或不限期间（none，只给不是定期报告的）。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    kind: Literal["fixed", "latest", "none"]
-    start: date | None = None
-    end: date | None = None
-    count: int | None = Field(default=None, ge=1, le=10)
-    disclosed_by_task_date: bool = False
-
-
-class NeedSpecIn(BaseModel):
-    """声明模板里的一样：类型、期间规则、格式、份数、必填、要的读法、来源限制、
-    多候选时的优先策略；口径与说明只展示。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
-    name: str = Field(min_length=1, max_length=80)
-    doc_type: str = Field(min_length=1, max_length=32)
-    period: PeriodRuleIn
-    formats: list[str] = Field(min_length=1, max_length=6)
-    required: bool = True
-    min_count: int = Field(default=1, ge=1, le=200)
-    max_count: int = Field(default=1, ge=1, le=200)
-    reading: Literal["original", "text", "pages", "table"] = "original"
-    sources: list[Literal["disclosure", "collected", "upload", "output"]] = Field(
-        default_factory=list, max_length=4
-    )
-    priority: Literal["public_first", "upload_first", "newest"] | None = None
-    caliber: str | None = Field(default=None, max_length=200)
-    description: str = Field(default="", max_length=500)
+# 声明的模型只有一份：契约 `knowbot-data-needs/v2`
+PeriodRuleIn = PeriodRule
+NeedSpecIn = DataNeed
 
 
 class TaskParamsIn(BaseModel):

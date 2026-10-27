@@ -44,6 +44,7 @@ READINGS: tuple[Reading, ...] = ("original", "text", "pages", "table")
 Priority = Literal["public_first", "upload_first", "newest"]
 PRIORITIES: tuple[Priority, ...] = ("public_first", "upload_first", "newest")
 SOURCES: tuple[str, ...] = ("disclosure", "collected", "upload", "output")
+TABULAR = frozenset({"excel", "csv"})
 # 解析时公开原件优先于上传（0043 第 3.2 节）；产出转来的排最后
 _PUBLIC_FIRST = {"disclosure": 0, "collected": 1, "upload": 2, "output": 3}
 _UPLOAD_FIRST = {"upload": 0, "output": 1, "disclosure": 2, "collected": 3}
@@ -107,6 +108,8 @@ class NeedSpec:
     reading: Reading = "original"
     sources: tuple[str, ...] = ()  # 空：不限来源
     priority: Priority | None = None
+    # 表格类的表与列：（表名或空，几列）；解析不按它挑，开跑前按它核
+    tables: tuple[tuple[str | None, tuple[str, ...]], ...] = ()
     caliber: str | None = None  # 口径：只展示，不参与匹配
     description: str = ""
 
@@ -129,6 +132,12 @@ class NeedSpec:
             raise refused("sources_invalid", "source restriction is invalid")
         if self.priority is not None and self.priority not in PRIORITIES:
             raise refused("priority_invalid", "priority is invalid")
+        if self.tables and not set(self.formats) <= TABULAR:
+            raise refused("tables_invalid", "tables are for Excel or CSV data")
+        if len(self.tables) > 20 or any(
+            not columns or len(columns) > 50 for _, columns in self.tables
+        ):
+            raise refused("tables_invalid", "1 to 50 columns per table, 20 tables")
         if self.caliber is not None and len(self.caliber) > 200:
             raise refused("caliber_invalid", "caliber is too long")
         return self
@@ -152,6 +161,10 @@ class NeedSpec:
             "reading": self.reading,
             "sources": list(self.sources),
             "priority": self.priority,
+            "tables": [
+                {"sheet": sheet, "columns": list(columns)}
+                for sheet, columns in self.tables
+            ],
             "caliber": self.caliber,
             "description": self.description,
         }
@@ -496,6 +509,10 @@ def need_from(data: dict[str, object]) -> NeedSpec:
         reading=data["reading"],  # type: ignore[arg-type]
         sources=tuple(data.get("sources") or ()),  # type: ignore[arg-type]
         priority=data.get("priority"),  # type: ignore[arg-type]
+        tables=tuple(
+            (t.get("sheet"), tuple(t["columns"]))
+            for t in data.get("tables") or ()  # type: ignore[union-attr]
+        ),
         caliber=data.get("caliber"),  # type: ignore[arg-type]
         description=str(data.get("description") or ""),
     )
