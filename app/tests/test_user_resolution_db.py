@@ -337,8 +337,8 @@ async def test_new_needs_make_a_revision_and_keep_the_rest(world):
     first = await world.resolve([annual(count=1)])
     policy = NeedSpec(
         key="policy",
-        name="政策",
-        doc_type="policy",
+        name="法律",
+        doc_type="law",
         period=PeriodRule("none"),
         formats=("pdf",),
         required=False,
@@ -351,7 +351,7 @@ async def test_new_needs_make_a_revision_and_keep_the_rest(world):
     second = await world.resolver.add_needs(ALICE, "knowbench", first.id, [policy])
     assert (second.id, second.revision) == (first.id, 2)
     assert second.items[0] == first.items[0]
-    # 上市公司的政策文件不按描述采
+    # 法律不按上市公司的主体采（政策法规大类里只有监管函件能按证券代码采）
     assert (second.items[1].need_key, second.items[1].status) == (
         "policy",
         "not_collectable",
@@ -530,3 +530,115 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
     )
     world.clock.now += timedelta(days=8)
     await refused(check(), 403, "confirmation_expired")
+
+
+def test_vocabulary_v2_classes_and_dimensions():
+    """SDD 0049：大类按发布者、细类是文献类型，编码不重名；大类展开成细类。"""
+    from app.domain import vocabulary as v
+
+    assert not set(v.DOC_TYPES) & set(v.DOC_CLASSES)
+    assert v.types_of("annual_report") == ("annual_report",)
+    assert set(v.types_of("news")) == {
+        "financial_news",
+        "recommended_news",
+        "negative_news",
+    }
+    assert v.class_of("regulatory_letter") == "policy"
+    # 政策法规大类里只有监管函件能按证券代码采；研报、资讯采不来
+    assert v.collectable(MAOTAI, "policy") and not v.collectable(MAOTAI, "law")
+    assert not v.collectable(MAOTAI, "research") and not v.collectable(MAOTAI, "news")
+    assert v.collectable("org:kb-pbc", "law")
+    v.check_attributes(
+        "research_company",
+        {"institution": "中信证券", "forecast": ["initiation"], "market": "cn"},
+    )
+    for doc_type, attrs in (
+        ("interim_announcement", {"institution": "x"}),
+        ("research_company", {"forecast": ["buy"]}),
+        ("research_company", {"color": "red"}),
+    ):
+        with pytest.raises(v.VocabularyError):
+            v.check_attributes(doc_type, attrs)
+
+
+async def test_announcements_match_by_disclosure_window_topics_and_class(world):
+    """非定期报告按披露日落在窗里匹配；事项缩小范围；声明写大类就是这个发布者的都行。"""
+
+    async def announce(name, disclosed, topics, doc_type="interim_announcement"):
+        material, _ = await world.lib.upload(
+            ALICE,
+            name,
+            CSV + name.encode(),
+            description=Description(
+                subject=MAOTAI,
+                doc_type=doc_type,
+                disclosed_on=disclosed,
+                topics=topics,
+            ),
+            confirm=True,
+        )
+        await world.lib.show(ALICE, material.id, "app:knowbench")
+        return material
+
+    buyback = await announce("回购.csv", date(2027, 1, 10), ("equity",))
+    await announce("分红.csv", date(2026, 12, 1), ("dividend",))
+    await announce("老回购.csv", date(2025, 6, 1), ("equity",))
+    recent = NeedSpec(
+        key="buyback",
+        name="近一年回购",
+        doc_type="interim_announcement",
+        period=PeriodRule("recent", months=12),
+        formats=("csv",),
+        min_count=1,
+        max_count=10,
+        topics=("equity",),
+    )
+    result = await world.resolve([recent])
+    item = result.items[0]
+    assert (item.status, item.key.period_start, item.key.period_end) == (
+        "resolved",
+        date(2026, 3, 15),
+        TASK_DAY,
+    )
+    assert [c.material_id for c in item.chosen] == [buyback.id]
+    # 大类「公告」：窗里的公告都算（回购、分红两份），老的不算
+    whole = NeedSpec(
+        **{**recent.__dict__, "key": "all", "doc_type": "disclosure", "topics": ()}
+    )
+    assert len((await world.resolve([whole])).items[0].chosen) == 2
+    # recent 只给非定期报告；定期报告用 latest
+    await refused(
+        world.resolve(
+            [
+                NeedSpec(
+                    **{**annual().__dict__, "period": PeriodRule("recent", months=3)}
+                )
+            ]
+        ),
+        422,
+        "period_invalid",
+    )
+
+
+async def test_edition_is_part_of_the_key(world):
+    """版本形态进键：要全文的不拿摘要充数。"""
+    await world.lib.upload(
+        ALICE,
+        "maotai-2025-summary.csv",
+        CSV + b"summary",
+        description=Description(
+            subject=MAOTAI,
+            doc_type="annual_report",
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 12, 31),
+            disclosed_on=date(2026, 4, 1),
+            edition="summary",
+        ),
+        confirm=True,
+    )
+    full = await world.resolve([annual(count=1)])
+    assert full.items[0].status == "to_confirm"  # 只有摘要：全文还要去采
+    summary = await world.resolve(
+        [NeedSpec(**{**annual(count=1).__dict__, "edition": "summary"})]
+    )
+    assert summary.items[0].status == "not_shown"  # 摘要在、没放开给 knowbench

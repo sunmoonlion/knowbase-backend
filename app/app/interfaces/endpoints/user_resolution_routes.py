@@ -84,6 +84,7 @@ def _need(n: NeedSpecIn) -> NeedSpec:
             end=p.end,
             count=p.count,
             disclosed_by_task_date=p.disclosed_by_task_date,
+            months=p.months,
         ),
         formats=tuple(n.formats),
         required=n.required,
@@ -95,6 +96,9 @@ def _need(n: NeedSpecIn) -> NeedSpec:
         tables=tuple((t.sheet, tuple(t.columns)) for t in n.tables),
         caliber=n.caliber,
         description=n.description,
+        edition=n.edition,
+        topics=tuple(n.topics),
+        industry=n.industry,
     )
 
 
@@ -136,7 +140,9 @@ def _resolution(r: Resolution) -> ResolutionRead:
         items=[
             ResultItemRead(
                 need_key=i.need_key,
-                key=DescriptionKeyModel(**i.key.__dict__),
+                key=DescriptionKeyModel(
+                    **{**i.key.__dict__, "topics": list(i.key.topics)}
+                ),
                 status=i.status,
                 chosen=[_candidate(c) for c in i.chosen],
                 candidates=[_candidate(c) for c in i.candidates],
@@ -170,11 +176,12 @@ async def lookup(
     doc_type: str = Query(min_length=1, max_length=32),
     period_start: date | None = None,
     period_end: date | None = None,
+    edition: str = Query(default="full", max_length=16),
     owner: Owner = Depends(require_user_owner),
     service: UserResolutionService = Depends(get_user_resolution_service),
 ):
-    """按描述查：只认精确的键；不列、不浏览、不模糊搜。"""
-    key = DescriptionKey(subject, doc_type, period_start, period_end)
+    """按描述查：只认进键的维度；不列、不浏览、不模糊搜。"""
+    key = DescriptionKey(subject, doc_type, period_start, period_end, edition=edition)
     found, zone = await _call(lambda: service.lookup(owner.subject, owner.app, key))
     return LookupRead(status=found, zone=zone)
 

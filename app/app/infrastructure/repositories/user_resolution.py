@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from sqlalchemy import and_, exists, func, or_, select, text
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import array, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.user_library import PUBLIC_OWNER, RESOLVABLE
@@ -22,7 +22,7 @@ from app.domain.user_resolution import (
     need_from,
     params_from,
 )
-from app.domain.vocabulary import VOCAB_VERSION
+from app.domain.vocabulary import VOCAB_VERSION, is_periodic, types_of
 from app.infrastructure.models.user_data import (
     UserDataConfirmation,
     UserDataHolding,
@@ -106,8 +106,6 @@ class SqlUserResolutionRepository:
             .where(
                 UserDataHolding.subject == subject,
                 UserDataHolding.ended_at.is_(None),
-                UserDataItem.subject_code == key.subject,
-                UserDataItem.doc_type == key.doc_type,
                 UserDataItem.description_status.in_(RESOLVABLE),
                 UserDataItem.vocab_version == VOCAB_VERSION,
                 UserDataItem.purged_at.is_(None),
@@ -115,14 +113,10 @@ class SqlUserResolutionRepository:
                     UserDataItem.content_origin != "output",
                     UserDataItem.provenance.has_key("converted_from"),
                 ),
+                *_key_conditions(key),
             )
             .order_by(UserDataItem.created_at, UserDataItem.id)
         )
-        if key.period_end is not None:
-            query = query.where(
-                UserDataItem.period_start == key.period_start,
-                UserDataItem.period_end == key.period_end,
-            )
         async with self._sessions()() as session:
             rows = await session.execute(query)
             seen: dict[str, Candidate] = {}
@@ -349,17 +343,36 @@ class SqlUserResolutionRepository:
 
 
 def _matching(query, key: DescriptionKey):
-    """描述对得上这一条：主体、类型、报告期；确认过的描述、当前词表；没清除。"""
-    query = query.where(
-        UserDataItem.subject_code == key.subject,
-        UserDataItem.doc_type == key.doc_type,
+    """描述对得上这一条；确认过的描述、当前词表；没清除。"""
+    return query.where(
         UserDataItem.description_status.in_(RESOLVABLE),
         UserDataItem.vocab_version == VOCAB_VERSION,
         UserDataItem.purged_at.is_(None),
+        *_key_conditions(key),
     )
+
+
+def _key_conditions(key: DescriptionKey) -> list:
+    """一条描述在资料表上的条件（SDD 0049）：主体；类型（大类展开成它的细类）；
+    版本形态；定期报告按报告期，其余按披露日落在披露时间窗里；事项任一对上；行业。"""
+    conditions = [
+        UserDataItem.subject_code == key.subject,
+        UserDataItem.doc_type.in_(types_of(key.doc_type)),
+        UserDataItem.doc_edition == key.edition,
+    ]
     if key.period_end is not None:
-        query = query.where(
-            UserDataItem.period_start == key.period_start,
-            UserDataItem.period_end == key.period_end,
-        )
-    return query
+        if is_periodic(key.doc_type):
+            conditions += [
+                UserDataItem.period_start == key.period_start,
+                UserDataItem.period_end == key.period_end,
+            ]
+        else:
+            conditions += [
+                UserDataItem.disclosed_on >= key.period_start,
+                UserDataItem.disclosed_on <= key.period_end,
+            ]
+    if key.topics:
+        conditions.append(UserDataItem.topics.has_any(array(list(key.topics))))
+    if key.industry is not None:
+        conditions.append(UserDataItem.industry == key.industry)
+    return conditions

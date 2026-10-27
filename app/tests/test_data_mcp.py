@@ -299,3 +299,45 @@ async def test_a_session_queries_facts_of_what_it_has_read(world):
         "query_facts", auth=token(sub="bob"), session=session.id, codes=["IS.REVENUE"]
     )
     assert "error" in stranger
+
+
+async def test_search_evidence_narrows_by_description_dimensions(world):
+    """先圈后找：圈的那一步按描述的维度（所有者 10-27「保证到时可以按维度过滤
+    检索」）。"""
+    material, version = await world.publish()
+    await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "task-3",
+        [
+            GrantRequestItem(
+                InputPin(material.id, 1, version.sha256), "public", PUBLIC_OWNER
+            )
+        ],
+    )
+    everything = await world.call("search_evidence", run="task-3", query="渠道库存")
+    assert everything["materials_searched"] == 1 and everything["passages"]
+    for kept in (
+        {"doc_type": "annual_report"},
+        {"doc_type": "disclosure"},
+        {"subjects": ["600519.SH"], "period_from": "2025-12-31"},
+    ):
+        found = await world.call(
+            "search_evidence", run="task-3", query="渠道库存", **kept
+        )
+        assert found["materials_searched"] == 1, kept
+    for dropped in (
+        {"doc_type": "research"},
+        {"subjects": ["000001.SZ"]},
+        {"edition": "summary"},
+        {"topics": ["dividend"]},
+    ):
+        found = await world.call(
+            "search_evidence", run="task-3", query="渠道库存", **dropped
+        )
+        assert (found["materials_searched"], found["passages"]) == (0, []), dropped
+    bad = await world.call("search_evidence", run="task-3", query="x", industry="白酒")
+    assert "industry_invalid" in bad["error"]
+    items = await world.call("describe_items")
+    assert items["vocabulary"]["doc_classes"]["research"]["name"] == "研报"

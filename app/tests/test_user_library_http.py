@@ -91,7 +91,7 @@ async def test_upload_describe_version_download_and_remove(api):
         params={
             "name": "营收.csv",
             "subject": "600519.SH",
-            "doc_type": "statistics",
+            "doc_type": "statistical_data",
             "confirm": "true",
         },
         content=CSV,
@@ -149,9 +149,16 @@ async def test_upload_describe_version_download_and_remove(api):
 async def test_vocabulary(api):
     client, _ = api
     vocab = (await client.get(f"{BASE}/vocabulary")).json()
-    assert vocab["version"] == 1
-    assert vocab["doc_types"]["annual_report"] == "年报"
+    assert vocab["version"] == 2
+    assert vocab["doc_types"]["annual_report"] == {
+        "name": "年报",
+        "class": "disclosure",
+    }
+    assert vocab["doc_classes"]["disclosure"]["publisher"] == "上市公司及信披义务人"
+    assert vocab["topics"]["dividend"] == "分红"
+    assert len(vocab["industries"]) == 29
     assert "cn_security" in vocab["subject_kinds"]
+    assert "interim_announcement" in vocab["collectable"]["security"]
 
 
 async def test_bad_descriptions_are_named(api):
@@ -160,6 +167,51 @@ async def test_bad_descriptions_are_named(api):
         f"{BASE}/materials", params={"name": "a.csv", "subject": "茅台"}, content=CSV
     )
     assert (refused.status_code, refused.json()["code"]) == (422, "subject_invalid")
+
+
+async def test_research_reports_carry_their_dimensions(api):
+    """SDD 0049：研报的几维照 Wind 研报平台；只有研报能带；描述读出带大类。"""
+    client, _ = api
+    material_id = await _upload(client, "中信-茅台点评.csv")
+    described = await client.put(
+        f"{BASE}/materials/{material_id}/description",
+        json={
+            "subject": "600519.SH",
+            "doc_type": "research_company",
+            "industry": "食品饮料",
+            "topics": ["results"],
+            "language": "zh",
+            "attributes": {
+                "institution": "中信证券",
+                "analysts": ["张三"],
+                "rating": "买入",
+                "forecast": ["rating_change"],
+                "depth": "regular",
+            },
+            "confirm": True,
+        },
+    )
+    assert described.status_code == 200, described.text
+    d = described.json()["material"]["description"]
+    assert (d["doc_type"], d["doc_class"], d["industry"]) == (
+        "research_company",
+        "research",
+        "食品饮料",
+    )
+    assert d["attributes"]["institution"] == "中信证券"
+    for bad, code in (
+        ({"doc_type": "research"}, "doc_type_invalid"),  # 描述只记细类
+        (
+            {"doc_type": "annual_report", "attributes": {"rating": "买入"}},
+            "attributes_invalid",
+        ),
+        ({"doc_type": "research_company", "industry": "白酒"}, "industry_invalid"),
+        ({"doc_type": "research_company", "topics": ["gossip"]}, "topics_invalid"),
+    ):
+        refused = await client.put(
+            f"{BASE}/materials/{material_id}/description", json=bad
+        )
+        assert (refused.status_code, refused.json()["code"]) == (422, code), bad
 
 
 async def _upload(client, name="营收.csv") -> str:

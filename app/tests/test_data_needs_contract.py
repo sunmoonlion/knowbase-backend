@@ -76,8 +76,14 @@ def manifest_for(schema_text: str, vocabulary_text: str, chart_text: str) -> str
 
 
 def test_enumerations_follow_the_vocabulary():
-    assert set(get_args(data_needs.DocType)) == set(vocabulary.DOC_TYPES)
+    assert set(get_args(data_needs.DocType)) == set(vocabulary.DOC_TYPES) | set(
+        vocabulary.DOC_CLASSES
+    )
+    assert not set(vocabulary.DOC_TYPES) & set(vocabulary.DOC_CLASSES)
     assert set(get_args(data_needs.DataFormat)) == set(vocabulary.FORMATS)
+    assert set(get_args(data_needs.Edition)) == set(vocabulary.EDITIONS)
+    assert set(get_args(data_needs.Topic)) == set(vocabulary.TOPICS)
+    assert get_args(data_needs.Industry) == vocabulary.INDUSTRIES
 
 
 def test_contract_files_are_generated_from_the_models():

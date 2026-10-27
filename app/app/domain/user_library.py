@@ -4,7 +4,7 @@
 - 资料不再按应用分区：一份资料归一个用户，出现在哪个应用由同意依据（展示）管；
 - 资料有内容版本（内容的替换）与读法（同一版本的派生形态，读法也有版本）；
 - 内容来源挂在资料上，用户取得它的依据（上传、采集、购买、引用、产出）挂在使用权上；
-- 描述用统一词表（`vocabulary.py`），带确认状态，只有确认过的参与解析。
+- 描述用统一词表（`vocabulary.py`，SDD 0049），带确认状态，只有确认过的参与解析。
 
 v1 的表照旧用：资料就是 `user_data_item` 的一行（v1 的那几栏缓存当前版本），旧行在迁移时
 回填了第 1 版、所有者的使用权与「展示给原来那个应用」。
@@ -20,12 +20,20 @@ from typing import Literal
 
 from app.domain.user_data import UserDataError, refused
 from app.domain.vocabulary import (
+    RESEARCH_CLOSED,
     VOCAB_VERSION,
     VocabularyError,
+    check_attributes,
     check_doc_type,
+    check_doc_type_or_class,
+    check_edition,
     check_format,
+    check_industry,
+    check_language,
     check_period,
+    check_topics,
     subject_kind,
+    types_of,
 )
 
 ContentOrigin = Literal["disclosure", "collected", "upload", "output"]
@@ -88,7 +96,11 @@ def check_license(license_: str) -> License:
 
 @dataclass(frozen=True)
 class Description:
-    """是什么：主体、类型、报告期间、披露时间、格式；外加确认状态与词表版本。"""
+    """是什么（SDD 0049）：进键的类型（细类）、主体、期间、版本形态；筛选的事项、
+    行业、语言、格式、研报的几维；外加披露时间、确认状态与词表版本。
+
+    期间：定期报告是报告期；其余类型可以记内容覆盖的期间，解析按披露时间匹配。
+    """
 
     subject: str | None = None
     doc_type: str | None = None
@@ -98,6 +110,11 @@ class Description:
     data_format: str | None = None
     status: DescriptionStatus = "unconfirmed"
     vocab_version: int = VOCAB_VERSION
+    edition: str = "full"
+    topics: tuple[str, ...] = ()
+    industry: str | None = None
+    language: str | None = None
+    attributes: dict[str, object] = field(default_factory=dict)
 
     def checked(self) -> Description:
         """按词表核每一栏；不认得的拒（422 带是哪一栏）。"""
@@ -109,6 +126,13 @@ class Description:
             if self.data_format is not None:
                 check_format(self.data_format)
             check_period(self.period_start, self.period_end)
+            check_edition(self.edition)
+            check_topics(self.topics)
+            if self.industry is not None:
+                check_industry(self.industry)
+            if self.language is not None:
+                check_language(self.language)
+            check_attributes(self.doc_type, self.attributes)
         except VocabularyError as exc:
             raise UserDataError(422, f"{exc.field}_invalid", str(exc)) from None
         return self
@@ -131,7 +155,92 @@ class Description:
             "data_format": self.data_format,
             "status": self.status,
             "vocab_version": self.vocab_version,
+            "edition": self.edition,
+            "topics": list(self.topics),
+            "industry": self.industry,
+            "language": self.language,
+            "attributes": dict(self.attributes),
         }
+
+
+@dataclass(frozen=True)
+class DescriptionFilter:
+    """按描述的维度圈（SDD 0049；检索「先圈后找」的圈）：写了的都要对上，事项任一
+    对上即可；类型可以写细类或大类。期间按报告期末筛，披露时间按披露日筛。"""
+
+    doc_type: str | None = None
+    subjects: tuple[str, ...] = ()
+    period_from: date | None = None
+    period_to: date | None = None
+    disclosed_from: date | None = None
+    disclosed_to: date | None = None
+    edition: str | None = None
+    topics: tuple[str, ...] = ()
+    industry: str | None = None
+    language: str | None = None
+    # 研报的封闭几维：盈利预测任一对上，其余相等
+    research: dict[str, str] = field(default_factory=dict)
+
+    def checked(self) -> DescriptionFilter:
+        try:
+            if self.doc_type is not None:
+                check_doc_type_or_class(self.doc_type)
+            for subject in self.subjects:
+                subject_kind(subject)
+            if self.edition is not None:
+                check_edition(self.edition)
+            check_topics(self.topics)
+            if self.industry is not None:
+                check_industry(self.industry)
+            if self.language is not None:
+                check_language(self.language)
+            for key, value in self.research.items():
+                closed = RESEARCH_CLOSED.get(key)
+                if closed is None or value not in closed:
+                    raise VocabularyError("research", f"{key} is not a closed value")
+        except VocabularyError as exc:
+            raise UserDataError(422, f"{exc.field}_invalid", str(exc)) from None
+        if len(self.subjects) > 200:
+            raise refused("filter_invalid", "too many subjects")
+        return self
+
+    @property
+    def empty(self) -> bool:
+        return self == DescriptionFilter()
+
+    def matches(self, d: Description) -> bool:
+        if self.doc_type is not None and d.doc_type not in types_of(self.doc_type):
+            return False
+        if self.subjects and d.subject not in self.subjects:
+            return False
+        if not _within(d.period_end, self.period_from, self.period_to):
+            return False
+        if not _within(d.disclosed_on, self.disclosed_from, self.disclosed_to):
+            return False
+        if self.edition is not None and d.edition != self.edition:
+            return False
+        if self.topics and not set(self.topics) & set(d.topics):
+            return False
+        if self.industry is not None and d.industry != self.industry:
+            return False
+        if self.language is not None and d.language != self.language:
+            return False
+        for key, value in self.research.items():
+            got = d.attributes.get(key)
+            if key == "forecast":
+                if not isinstance(got, list) or value not in got:
+                    return False
+            elif got != value:
+                return False
+        return True
+
+
+def _within(day: date | None, start: date | None, end: date | None) -> bool:
+    if start is None and end is None:
+        return True
+    if day is None:
+        return False
+    return (start is None or day >= start) and (end is None or day <= end)
 
 
 @dataclass(frozen=True)
@@ -401,7 +510,7 @@ class SubscriptionScope:
             for subject in self.subjects:
                 subject_kind(subject)
             for doc_type in self.doc_types:
-                check_doc_type(doc_type)
+                check_doc_type_or_class(doc_type)
         except VocabularyError as exc:
             raise UserDataError(422, f"{exc.field}_invalid", str(exc)) from None
         wanted = {

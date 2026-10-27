@@ -22,16 +22,29 @@ class DescriptionIn(BaseModel):
     period_end: date | None = None
     disclosed_on: date | None = None
     data_format: str | None = Field(default=None, max_length=16)
+    # 词表第 2 版的几维（SDD 0049）：版本形态进键；事项、行业、语言、研报的几维只筛选
+    edition: str = Field(default="full", max_length=16)
+    topics: list[str] = Field(default_factory=list, max_length=12)
+    industry: str | None = Field(default=None, max_length=16)
+    language: str | None = Field(default=None, max_length=8)
+    attributes: dict[str, object] = Field(default_factory=dict)
     confirm: bool = False
 
 
 class DescriptionRead(BaseModel):
     subject: str | None
     doc_type: str | None
+    # 细类所属的大类（发布者），由词表推出
+    doc_class: str | None = None
     period_start: date | None
     period_end: date | None
     disclosed_on: date | None
     data_format: str | None
+    edition: str = "full"
+    topics: list[str] = Field(default_factory=list)
+    industry: str | None = None
+    language: str | None = None
+    attributes: dict[str, object] = Field(default_factory=dict)
     status: Literal["unconfirmed", "confirmed", "checked"]
     vocab_version: int
     resolvable: bool
@@ -88,12 +101,22 @@ class HistoryEntryRead(BaseModel):
 
 
 class VocabularyRead(BaseModel):
+    """整份词表（SDD 0049）：类型的大类与细类，各封闭维度的取值清单，开放维度的格式。"""
+
     version: int
-    doc_types: dict[str, str]
+    doc_classes: dict[str, dict[str, str]]
+    doc_types: dict[str, dict[str, str]]
+    editions: dict[str, str]
+    topics: dict[str, str]
+    industries: list[str]
+    languages: dict[str, str]
+    research: dict[str, object]
     formats: dict[str, str]
     subject_kinds: list[str]
     # 定期报告的报告期末与法定披露截止（声明展开「最近 N 期」按它算）
     periodic: dict[str, dict[str, str]] = Field(default_factory=dict)
+    # 按描述能采的细类：上市证券的、机构编号的
+    collectable: dict[str, list[str]] = Field(default_factory=dict)
 
 
 # —— 块 1b：展示即同意、账号设置、名下专家、买家使用权 ——

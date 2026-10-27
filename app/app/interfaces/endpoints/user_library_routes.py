@@ -24,7 +24,7 @@ from app.domain.user_library import (
     SubscriptionScope,
     Use,
 )
-from app.domain.vocabulary import snapshot
+from app.domain.vocabulary import class_of, snapshot
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
@@ -105,6 +105,11 @@ def _description(given: DescriptionIn) -> Description:
         period_end=given.period_end,
         disclosed_on=given.disclosed_on,
         data_format=given.data_format,
+        edition=given.edition,
+        topics=tuple(given.topics),
+        industry=given.industry,
+        language=given.language,
+        attributes=dict(given.attributes),
     )
 
 
@@ -122,10 +127,16 @@ def _entry(entry: ShelfEntry, subject: str) -> ShelfEntryRead:
             description=DescriptionRead(
                 subject=d.subject,
                 doc_type=d.doc_type,
+                doc_class=class_of(d.doc_type) if d.doc_type else None,
                 period_start=d.period_start,
                 period_end=d.period_end,
                 disclosed_on=d.disclosed_on,
                 data_format=d.data_format,
+                edition=d.edition,
+                topics=list(d.topics),
+                industry=d.industry,
+                language=d.language,
+                attributes=dict(d.attributes),
                 status=d.status,
                 vocab_version=d.vocab_version,
                 resolvable=d.resolvable,
@@ -163,6 +174,10 @@ async def upload_material(
     period_start: date | None = None,
     period_end: date | None = None,
     disclosed_on: date | None = None,
+    edition: str = Query(default="full", max_length=16),
+    topics: list[str] = Query(default_factory=list, max_length=12),
+    industry: str | None = Query(default=None, max_length=16),
+    language: str | None = Query(default=None, max_length=8),
     confirm: bool = False,
     license: str = Query(default="self", max_length=16),
     process: bool = False,
@@ -170,6 +185,7 @@ async def upload_material(
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     """请求体就是文件本身；描述放在查询参数里，勾了 `confirm` 才算用户确认过。
+    研报的几维（来源机构、研究员等）上传后经改描述填。
 
     `process`：本人按页面说明采用加工（交 knowfeed 加工这一版）。
     """
@@ -180,6 +196,10 @@ async def upload_material(
         period_start=period_start,
         period_end=period_end,
         disclosed_on=disclosed_on,
+        edition=edition,
+        topics=tuple(topics),
+        industry=industry,
+        language=language,
     )
     material, _ = await _call(
         lambda: service.upload(
@@ -666,6 +686,8 @@ async def deliver_public(
     period_start: date | None = None,
     period_end: date | None = None,
     disclosed_on: date | None = None,
+    edition: str = Query(default="full", max_length=16),
+    topics: list[str] = Query(default_factory=list, max_length=12),
     source_url: str | None = Query(default=None, max_length=2000),
     caller: ServiceCaller = Depends(require_supply_service),
     service: UserLibraryService = Depends(get_user_library_service),
@@ -686,6 +708,8 @@ async def deliver_public(
                 period_start=period_start,
                 period_end=period_end,
                 disclosed_on=disclosed_on,
+                edition=edition,
+                topics=tuple(topics),
             ),
             source_url=source_url,
         )

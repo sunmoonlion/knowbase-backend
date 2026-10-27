@@ -10,7 +10,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.interfaces.schemas.data_needs import DataNeed, PeriodRule
+from app.interfaces.schemas.data_needs import (
+    DataNeed,
+    Edition,
+    Industry,
+    PeriodRule,
+    Topic,
+)
 
 Status = Literal[
     "resolved",
@@ -56,12 +62,18 @@ class AddNeedsIn(BaseModel):
 
 
 class DescriptionKeyModel(BaseModel):
+    """一条描述（SDD 0049）：类型可以是细类或大类；定期报告的期间是报告期，其余类型
+    是披露时间窗；版本形态进键，事项与行业只缩小范围。"""
+
     model_config = ConfigDict(extra="forbid")
 
     subject: str = Field(min_length=1, max_length=64)
     doc_type: str = Field(min_length=1, max_length=32)
     period_start: date | None = None
     period_end: date | None = None
+    edition: Edition = "full"
+    topics: list[Topic] = Field(default_factory=list, max_length=12)
+    industry: Industry | None = None
 
 
 class CandidateRead(BaseModel):

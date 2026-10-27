@@ -154,7 +154,7 @@ async def test_describe_logs_and_does_not_make_a_version(db):
     described = await lib.describe(
         ALICE,
         material.id,
-        Description(subject="000001.SZ", doc_type="statistics"),
+        Description(subject="000001.SZ", doc_type="statistical_data"),
         confirm=True,
     )
     assert described.description.subject == "000001.SZ"

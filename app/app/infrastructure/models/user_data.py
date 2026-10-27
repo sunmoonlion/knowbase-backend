@@ -67,6 +67,18 @@ class UserDataItem(TimestampMixin, Base):
         String(16), nullable=False, default="unconfirmed"
     )
     vocab_version: Mapped[int | None] = mapped_column(Integer)
+    # 词表第 2 版的几维（SDD 0049）：进键的版本形态；筛选的事项、行业、语言、研报的几维
+    doc_edition: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="full", server_default="full"
+    )
+    topics: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    industry: Mapped[str | None] = mapped_column(String(16))
+    language: Mapped[str | None] = mapped_column(String(8))
+    attributes: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
     # 出处：产出（哪个应用、哪件任务、哪次运行、用了哪组输入）、
     # 转为数据（从哪份产出转来）
     provenance: Mapped[dict | None] = mapped_column(JSONB)
@@ -93,6 +105,17 @@ class UserDataItem(TimestampMixin, Base):
         CheckConstraint(
             "description_status IN ('unconfirmed', 'confirmed', 'checked')",
             name="ck_user_data_item_description_status",
+        ),
+        CheckConstraint(
+            "doc_edition IN ('full', 'summary', 'english')",
+            name="ck_user_data_item_doc_edition",
+        ),
+        Index(
+            "ix_user_data_item_disclosed",
+            "subject_code",
+            "doc_type",
+            "disclosed_on",
+            postgresql_where=text("subject_code IS NOT NULL"),
         ),
         CheckConstraint("current_version >= 1", name="ck_user_data_item_version"),
         CheckConstraint(

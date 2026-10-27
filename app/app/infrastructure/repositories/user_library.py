@@ -64,6 +64,11 @@ def _description(row: UserDataItem) -> Description:
         data_format=row.data_format,
         status=row.description_status,  # type: ignore[arg-type]
         vocab_version=row.vocab_version or 0,
+        edition=row.doc_edition or "full",
+        topics=tuple(row.topics or ()),
+        industry=row.industry,
+        language=row.language,
+        attributes=dict(row.attributes or {}),
     )
 
 
@@ -123,6 +128,11 @@ def _apply_description(row: UserDataItem, description: Description) -> None:
     row.data_format = description.data_format
     row.description_status = description.status
     row.vocab_version = description.vocab_version
+    row.doc_edition = description.edition
+    row.topics = list(description.topics)
+    row.industry = description.industry
+    row.language = description.language
+    row.attributes = dict(description.attributes)
 
 
 async def insert_material(

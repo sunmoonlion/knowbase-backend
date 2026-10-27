@@ -37,9 +37,10 @@ from app.domain.chart_of_accounts import METRICS
 from app.domain.chart_of_accounts import snapshot as chart_snapshot
 from app.domain.user_data import UserDataError
 from app.domain.user_facts import FactQuery, FactRow, MetricRow, split_refs
-from app.domain.user_library import PUBLIC_OWNER
+from app.domain.user_library import PUBLIC_OWNER, DescriptionFilter
 from app.domain.user_resolution import DescriptionKey
 from app.domain.user_runs import RunGrant
+from app.domain.vocabulary import snapshot as vocabulary_snapshot
 from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
@@ -64,6 +65,24 @@ _FILTERS = {
     "period_to": {"type": "string", "format": "date"},
     "duration": {"enum": ["year", "half", "quarter", "ytd", "instant"]},
     "consolidation": {"enum": ["consolidated", "parent"]},
+}
+
+# 按描述的维度圈（SDD 0049）：取值见 describe_items 里的词表
+_DIMENSIONS = {
+    "doc_type": {"type": "string", "description": "A type or a class."},
+    "subjects": {"type": "array", "items": {"type": "string"}},
+    "period_from": {"type": "string", "format": "date"},
+    "period_to": {"type": "string", "format": "date"},
+    "disclosed_from": {"type": "string", "format": "date"},
+    "disclosed_to": {"type": "string", "format": "date"},
+    "edition": {"enum": ["full", "summary", "english"]},
+    "topics": {"type": "array", "items": {"type": "string"}},
+    "industry": {"type": "string"},
+    "language": {"enum": ["zh", "en", "other"]},
+    "research": {
+        "type": "object",
+        "description": "forecast, market, depth or frequency values.",
+    },
 }
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -162,13 +181,18 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "describe_items": {
         "description": "The chart of accounts (codes, names, statements, company "
-        "types) and the metric definitions.",
+        "types), the metric definitions, and the vocabulary of material "
+        "descriptions (types and classes, topics, industries, editions).",
         "inputSchema": {"type": "object", "properties": {}},
     },
     "search_evidence": {
         "description": (
             "Find passages in this run's pinned materials (or, in a session, the ones "
-            "already read). Returns page snippets with sources."
+            "already read). Narrow the materials first by their description: doc_type "
+            "(a type such as annual_report, or a class such as disclosure or "
+            "research), subjects, report period, disclosure dates, edition, topics, "
+            "industry, language, research dimensions. Returns page snippets with "
+            "sources."
         ),
         "inputSchema": {
             "type": "object",
@@ -177,14 +201,17 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "session": _SESSION,
                 "query": {"type": "string"},
                 "top_k": {"type": "integer"},
+                **_DIMENSIONS,
             },
             "required": ["query"],
         },
     },
     "lookup": {
         "description": (
-            "Is this exact document there (subject, doc_type, report period)? "
-            "Answers shown/held/unusable/absent and where (own or public)."
+            "Is this exact document there (subject, doc_type, report period, "
+            "edition full/summary/english)? doc_type is a type from the vocabulary, "
+            "e.g. annual_report. Answers shown/held/unusable/absent and where (own or "
+            "public)."
         ),
         "inputSchema": {
             "type": "object",
@@ -193,6 +220,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "doc_type": {"type": "string"},
                 "period_start": {"type": "string", "format": "date"},
                 "period_end": {"type": "string", "format": "date"},
+                "edition": {"enum": ["full", "summary", "english"]},
             },
             "required": ["subject", "doc_type"],
         },
@@ -490,6 +518,7 @@ class DataMcp:
     async def _describe_items(self, token: DataToken, args: dict[str, Any]) -> Any:
         return {
             **chart_snapshot(),
+            "vocabulary": vocabulary_snapshot(),
             "metrics": [
                 {"key": m.key, "name": m.name, "kind": m.kind, "formula": m.description}
                 for m in METRICS.values()
@@ -504,6 +533,7 @@ class DataMcp:
         if not terms:
             raise ToolError("query is empty")
         top_k = min(max(_int(args, "top_k") or 5, 1), 20)
+        narrow = _dimension_filter(args)
         if args.get("session"):
             grants = await runs.session_grants(
                 token.user, token.executor, _text(args, "session")
@@ -514,8 +544,14 @@ class DataMcp:
             )
         hits: list[tuple[int, dict[str, Any]]] = []
         reader = f"mcp:{token.sandbox}"
+        searched = 0
         for grant in grants:
             for item in grant.items:
+                if not narrow.empty:
+                    material = await runs.library.get_material(item.material_id)
+                    if material is None or not narrow.matches(material.description):
+                        continue
+                searched += 1
                 try:
                     got, rendition = await runs.read_reading(
                         token.executor,
@@ -545,7 +581,11 @@ class DataMcp:
                             )
                         )
         hits.sort(key=lambda h: -h[0])
-        return {"method": "keyword", "passages": [h for _, h in hits[:top_k]]}
+        return {
+            "method": "keyword",
+            "materials_searched": searched,
+            "passages": [h for _, h in hits[:top_k]],
+        }
 
     async def _lookup(self, token: DataToken, args: dict[str, Any]) -> Any:
         key = DescriptionKey(
@@ -553,6 +593,7 @@ class DataMcp:
             _text(args, "doc_type"),
             _date(args, "period_start"),
             _date(args, "period_end"),
+            edition=str(args.get("edition") or "full"),
         )
         status, zone = await self.resolver().lookup(token.user, token.executor, key)
         return {"status": status, "zone": zone}
@@ -682,6 +723,31 @@ def _metric(m: MetricRow) -> dict[str, Any]:
         "value": m.value,
         "inputs": [_fact(i) for i in m.inputs],
     }
+
+
+def _dimension_filter(args: dict[str, Any]) -> DescriptionFilter:
+    def strings(key: str) -> tuple[str, ...]:
+        value = args.get(key) or []
+        if not isinstance(value, list):
+            raise ValueError(f"{key} must be a list")
+        return tuple(str(v) for v in value)
+
+    research = args.get("research") or {}
+    if not isinstance(research, dict):
+        raise ValueError("research must be an object")
+    return DescriptionFilter(
+        doc_type=str(args["doc_type"]) if args.get("doc_type") else None,
+        subjects=strings("subjects"),
+        period_from=_date(args, "period_from"),
+        period_to=_date(args, "period_to"),
+        disclosed_from=_date(args, "disclosed_from"),
+        disclosed_to=_date(args, "disclosed_to"),
+        edition=str(args["edition"]) if args.get("edition") else None,
+        topics=strings("topics"),
+        industry=str(args["industry"]) if args.get("industry") else None,
+        language=str(args["language"]) if args.get("language") else None,
+        research={str(k): str(v) for k, v in research.items()},
+    ).checked()
 
 
 def _query(args: dict[str, Any]) -> FactQuery:
