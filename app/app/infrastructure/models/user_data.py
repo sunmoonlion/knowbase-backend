@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -730,3 +732,67 @@ class UserDataSession(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_user_data_session_subject", "subject", "created_at"),)
+
+
+class UserDataFactRaw(Base):
+    """原样层（SDD 0047 第 4.1 节）：报表上印的每个数一行，只增不改。"""
+
+    __tablename__ = "user_data_fact_raw"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    rendition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_rendition.id"), nullable=False
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id"), nullable=False
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    value: Mapped[Decimal | None] = mapped_column(Numeric(30, 6))
+    unit: Mapped[str] = mapped_column(String(8), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    period_end: Mapped[date | None] = mapped_column(Date)
+    duration: Mapped[str | None] = mapped_column(String(8))
+    consolidation: Mapped[str | None] = mapped_column(String(16))
+    statement_label: Mapped[str | None] = mapped_column(String(100))
+    page: Mapped[int | None] = mapped_column(Integer)
+    row_no: Mapped[int | None] = mapped_column(Integer)
+    sheet: Mapped[str | None] = mapped_column(String(100))
+    cell: Mapped[str | None] = mapped_column(String(20))
+
+    __table_args__ = (
+        UniqueConstraint("rendition_id", "ordinal", name="uq_user_data_fact_raw"),
+    )
+
+
+class UserDataFact(Base):
+    """标准化层：对到科目编码、换算到元；记由原样层哪几行得来、用的哪条对照规则。"""
+
+    __tablename__ = "user_data_fact"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    rendition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_rendition.id"), nullable=False
+    )
+    item_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_item.id"), nullable=False
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    subject_code: Mapped[str | None] = mapped_column(String(64))
+    chart_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    code: Mapped[str] = mapped_column(String(64), nullable=False)
+    value: Mapped[Decimal] = mapped_column(Numeric(30, 6), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    period_end: Mapped[date] = mapped_column(Date, nullable=False)
+    duration: Mapped[str] = mapped_column(String(8), nullable=False)
+    consolidation: Mapped[str] = mapped_column(String(16), nullable=False)
+    derived_from: Mapped[list] = mapped_column(JSONB, nullable=False)
+    rule: Mapped[str] = mapped_column(String(80), nullable=False)
+    page: Mapped[int | None] = mapped_column(Integer)
+
+    __table_args__ = (
+        Index("ix_user_data_fact_rendition", "rendition_id"),
+        Index("ix_user_data_fact_subject_code", "subject_code", "code", "period_end"),
+        Index("ix_user_data_fact_code_period", "code", "period_end"),
+    )

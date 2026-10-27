@@ -22,6 +22,7 @@ from app.infrastructure.repositories.user_resolution import (
 )
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.interfaces.endpoints import (
+    user_fact_routes,
     user_library_routes,
     user_resolution_routes,
     user_run_routes,
@@ -56,6 +57,7 @@ def api(db):
     app.include_router(user_library_routes.router, prefix="/api")
     app.include_router(user_run_routes.router, prefix="/api")
     app.include_router(user_resolution_routes.router, prefix="/api")
+    app.include_router(user_fact_routes.router, prefix="/api")
     state = {"owner": Owner("alice", "knowbench")}
     overrides = app.dependency_overrides
     overrides[user_library_routes.internal_host_only] = lambda: None
@@ -611,3 +613,104 @@ async def test_knowfeed_delivers_public_originals_and_references(api):
     ).json()
     assert [e["material"]["material_id"] for e in shelf] == [made.json()["material_id"]]
     assert shelf[0]["material"]["content_origin"] == "disclosure"
+
+
+async def test_facts_written_by_knowfeed_and_queried_by_run_and_market(api):
+    """2c：knowfeed 写回抽好的表；执行的应用按运行查；本人跨全市场排名；科目表。"""
+    client, state = api
+    params = {
+        "channel": "cninfo",
+        "channel_doc_id": "ar-600519-2025",
+        "name": "maotai-2025.csv",
+        "subject": "600519.SH",
+        "doc_type": "annual_report",
+        "period_start": "2025-01-01",
+        "period_end": "2025-12-31",
+    }
+    state["service"] = "knowfeed"
+    made = (
+        await client.post(
+            f"{BASE}/service/public-originals", params=params, content=CSV
+        )
+    ).json()
+    grant = await client.post(
+        f"{BASE}/processing/grants",
+        json={
+            "owner": "public:disclosure",
+            "material_id": made["material_id"],
+            "version_no": 1,
+        },
+    )
+    assert grant.status_code == 201, grant.text
+    written = await client.post(
+        f"{BASE}/processing/grants/{grant.json()['grant_id']}/facts",
+        json={
+            "processor_version": "ar-0.1",
+            "raw": [
+                {
+                    "label": "营业收入",
+                    "value": "1500",
+                    "unit": "万元",
+                    "period_end": "2025-12-31",
+                    "duration": "year",
+                    "consolidation": "consolidated",
+                    "page": 88,
+                }
+            ],
+            "standard": [
+                {
+                    "code": "IS.REVENUE",
+                    "value": "15000000",
+                    "period_end": "2025-12-31",
+                    "duration": "year",
+                    "consolidation": "consolidated",
+                    "derived_from": [0],
+                    "rule": "chart-v1:alias",
+                    "page": 88,
+                }
+            ],
+        },
+    )
+    assert written.status_code == 201, written.text
+    assert written.json()["kind"] == "table"
+
+    market = await client.post(f"{BASE}/market-facts", json={"codes": ["IS.REVENUE"]})
+    assert market.status_code == 200, market.text
+    assert [(r["subject"], r["page"]) for r in market.json()] == [("600519.SH", 88)]
+    chart = (await client.get(f"{BASE}/chart")).json()
+    assert chart["version"] == 1 and "gross_margin" in {
+        m["key"] for m in chart["metrics"]
+    }
+
+    # 公开原件不在他的总栏里，经授权或查事实读
+    hidden = await client.get(f"{BASE}/materials/{made['material_id']}")
+    assert hidden.status_code == 404
+    signed = await client.post(
+        f"{BASE}/run-grants",
+        json={
+            "process": "delegation",
+            "ref": "task-facts",
+            "items": [
+                {
+                    "material_id": made["material_id"],
+                    "version_no": 1,
+                    "sha256": made["sha256"],
+                    "basis": "public",
+                    "basis_ref": "public:disclosure",
+                }
+            ],
+        },
+    )
+    assert signed.status_code == 201, signed.text
+    state["service"] = "knowbench"
+    run = await client.post(
+        f"{BASE}/run-facts",
+        json={"run_ref": "task-facts", "beneficiary": "alice", "codes": ["IS.REVENUE"]},
+    )
+    assert run.status_code == 200, run.text
+    assert [(r["value"], r["rendition_no"]) for r in run.json()] == [
+        ("15000000.000000", 1)
+    ]
+    # 读数留痕只给所有者看；公开原件不归任何用户
+    reads = await client.get(f"{BASE}/materials/{made['material_id']}/reads")
+    assert (reads.status_code, reads.json()["code"]) == (404, "item_not_found")

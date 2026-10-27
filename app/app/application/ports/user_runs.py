@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.user_facts import FactQuery, FactRow, RawFact, StandardFact
 from app.domain.user_library import ContentVersion, Holding, Material, Rendition
 from app.domain.user_runs import InputSet, Output, RunGrant, Session
 
@@ -27,6 +28,22 @@ class UserRunRepository(Protocol):
     ) -> Rendition | None: ...
 
     async def add_rendition(self, rendition: Rendition) -> Rendition: ...
+
+    async def add_fact_batch(
+        self,
+        rendition: Rendition,
+        material_id: str,
+        version_no: int,
+        subject_code: str | None,
+        raw: list[RawFact],
+        standard: list[StandardFact],
+    ) -> Rendition: ...
+
+    async def latest_table(self, version_id: str) -> Rendition | None: ...
+
+    async def facts(
+        self, query: FactQuery, *, rendition_ids: list[str] | None = None
+    ) -> list[FactRow]: ...
 
     async def save_input_set(self, input_set: InputSet) -> InputSet: ...
 

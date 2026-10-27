@@ -14,12 +14,13 @@ import os
 from pathlib import Path
 from typing import get_args
 
-from app.domain import vocabulary
+from app.domain import chart_of_accounts, vocabulary
 from app.interfaces.schemas import data_needs
 
 CONTRACT_DIR = Path(__file__).resolve().parents[3] / "contracts/knowbot-data-needs/v2"
 SCHEMA = CONTRACT_DIR / "data-needs.schema.json"
 VOCABULARY = CONTRACT_DIR / "vocabulary.json"
+CHART = CONTRACT_DIR / "chart-of-accounts.json"
 MANIFEST = CONTRACT_DIR / "contract-manifest.json"
 
 
@@ -44,16 +45,27 @@ def generated_vocabulary() -> str:
     )
 
 
-def manifest_for(schema_text: str, vocabulary_text: str) -> str:
+def generated_chart() -> str:
+    return (
+        json.dumps(
+            chart_of_accounts.snapshot(), ensure_ascii=False, indent=2, sort_keys=True
+        )
+        + "\n"
+    )
+
+
+def manifest_for(schema_text: str, vocabulary_text: str, chart_text: str) -> str:
     document = {
         "contract": "sunmoonai.knowbase.knowbot-data-needs",
         "major": 2,
         "provider": "knowbase-app",
         "consumers": ["knowlab-app", "knowmart-app", "knowbench-app"],
         "vocab_version": vocabulary.VOCAB_VERSION,
+        "chart_version": chart_of_accounts.CHART_VERSION,
         "files": {
             "data-needs.schema.json": hashlib.sha256(schema_text.encode()).hexdigest(),
             "vocabulary.json": hashlib.sha256(vocabulary_text.encode()).hexdigest(),
+            "chart-of-accounts.json": hashlib.sha256(chart_text.encode()).hexdigest(),
         },
         "compatibility": {
             "consumers": "same-models-locked-by-sha256",
@@ -70,11 +82,15 @@ def test_enumerations_follow_the_vocabulary():
 
 def test_contract_files_are_generated_from_the_models():
     schema_text, vocabulary_text = generated_schema(), generated_vocabulary()
+    chart_text = generated_chart()
+    manifest = manifest_for(schema_text, vocabulary_text, chart_text)
     if os.environ.get("UPDATE_CONTRACTS") == "1":
         CONTRACT_DIR.mkdir(parents=True, exist_ok=True)
         SCHEMA.write_text(schema_text)
         VOCABULARY.write_text(vocabulary_text)
-        MANIFEST.write_text(manifest_for(schema_text, vocabulary_text))
+        CHART.write_text(chart_text)
+        MANIFEST.write_text(manifest)
     assert SCHEMA.read_text() == schema_text
     assert VOCABULARY.read_text() == vocabulary_text
-    assert MANIFEST.read_text() == manifest_for(schema_text, vocabulary_text)
+    assert CHART.read_text() == chart_text
+    assert MANIFEST.read_text() == manifest

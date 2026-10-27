@@ -26,6 +26,7 @@ from app.application.ports.user_data import UserObjects
 from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.application.services.user_data_service import FormatView, format_view
+from app.domain.chart_of_accounts import CHART_VERSION, METRICS
 from app.domain.user_data import (
     UserDataError,
     check_size,
@@ -34,6 +35,18 @@ from app.domain.user_data import (
     kind_of,
     not_found,
     refused,
+)
+from app.domain.user_facts import (
+    MAX_RESULT_ROWS,
+    FactQuery,
+    FactRow,
+    MetricRow,
+    RawFact,
+    StandardFact,
+    batch_digest,
+    check_batch,
+    compute_metric,
+    quality,
 )
 from app.domain.user_library import (
     PLATFORM_KINDS,
@@ -534,6 +547,164 @@ class UserRunService:
             )
         )
 
+    async def write_facts(
+        self,
+        caller: str,
+        grant_id: str,
+        processor_version: str,
+        raw: list[RawFact],
+        standard: list[StandardFact],
+    ) -> Rendition:
+        """knowfeed 写回抽好的表：凭加工授权，原样层与标准化层一批写进一个表格读法版本；
+        恒等式质检照实记在读法上，不改数（0047 第 4.3 节）。"""
+        self._processor(caller)
+        if not processor_version or len(processor_version) > 40:
+            raise refused("processor_version_invalid", "processor_version is invalid")
+        grant = await self.runs.get_grant(grant_id)
+        if (
+            grant is None
+            or grant.executor_app != caller
+            or grant.process != "processing"
+        ):
+            raise not_found("grant")
+        if not grant.active(self.now()):
+            raise denied("grant_inactive", "the grant is revoked or expired")
+        item = grant.items[0]
+        version = await self.library.version(item.material_id, item.version_no)
+        material = await self.library.get_material(item.material_id)
+        if version is None or material is None or not material.readable:
+            raise not_found()
+        raw, standard = check_batch(raw, standard)
+        now = self.now()
+        checks = quality(standard)
+        return await self.runs.add_fact_batch(
+            Rendition(
+                id=self.new_id(),
+                version_id=version.id,
+                kind="table",
+                rendition_no=0,
+                processor=caller,
+                processor_version=processor_version,
+                status="ready",
+                created_at=now,
+                sha256=batch_digest(raw, standard),
+                detail={
+                    "chart_version": CHART_VERSION,
+                    "raw_rows": len(raw),
+                    "standard_rows": len(standard),
+                    "quality": checks,
+                    "quality_passed": all(c["passed"] for c in checks),
+                },
+                ready_at=now,
+            ),
+            material.id,
+            version.version_no,
+            material.description.subject,
+            raw,
+            standard,
+        )
+
+    # —— 查事实（0047 第 4.4 节） ——
+
+    async def query_facts(
+        self,
+        executor_app: str,
+        reader: str,
+        beneficiary: str,
+        run_ref: str,
+        query: FactQuery,
+    ) -> list[FactRow]:
+        """查这次运行钉住的那几份的事实：钉了表格读法的查那一版，没钉的查那个内容版本
+        最新就绪的表格读法（出处里写明用的哪一版读法）；每份留一条读数。"""
+        query = query.checked()
+        renditions: dict[str, tuple[RunGrant, GrantItem, ContentVersion]] = {}
+        for grant in await self._run_grants(executor_app, beneficiary, run_ref):
+            if grant.scope != "content":
+                continue
+            input_set = await self.runs.input_set(grant.input_set_id)
+            for item in grant.items:
+                material = await self.library.get_material(item.material_id)
+                version = await self.library.version(item.material_id, item.version_no)
+                if material is None or not material.readable or version is None:
+                    continue
+                pinned = next(
+                    (
+                        p
+                        for p in (input_set.pins if input_set else ())
+                        if p.material_id == item.material_id
+                        and p.version_no == item.version_no
+                        and p.rendition_kind == "table"
+                    ),
+                    None,
+                )
+                table = (
+                    await self.runs.rendition(
+                        version.id, "table", pinned.rendition_no or 0
+                    )
+                    if pinned
+                    else await self.runs.latest_table(version.id)
+                )
+                if table is not None and table.status == "ready":
+                    renditions[table.id] = (grant, item, version)
+        if not renditions:
+            return []
+        rows = await self.runs.facts(query, rendition_ids=list(renditions))
+        for grant, item, version in {
+            (g.id, i.material_id): (g, i, v) for g, i, v in renditions.values()
+        }.values():
+            if any(r.material_id == item.material_id for r in rows):
+                await self._log(grant, item, version, reader, "rendition")
+        return rows
+
+    async def query_market(self, query: FactQuery) -> list[FactRow]:
+        """跨全市场查公开原件的事实（筛选、排序、排名、统计），平台总开关管；
+        条件由用户或他的专家给（决定 ⑪）。公开数据不逐份记读数。"""
+        if not self.public_access:
+            raise denied("public_access_closed", "public access is closed")
+        return await self.runs.facts(query.checked())
+
+    async def query_metric(
+        self,
+        metric_key: str,
+        query: FactQuery,
+        *,
+        executor_app: str | None = None,
+        reader: str | None = None,
+        beneficiary: str | None = None,
+        run_ref: str | None = None,
+    ) -> list[MetricRow]:
+        """按指标算：给 `run_ref` 的只用钉住的那几份，不给的查全市场公开原件。"""
+        metric = METRICS.get(metric_key)
+        if metric is None:
+            raise refused("metric_invalid", "unknown metric")
+        codes = tuple(
+            dict.fromkeys(t[1:] for t in metric.numerator + metric.denominator)
+        )
+        wide = FactQuery(
+            subjects=query.subjects,
+            codes=codes,
+            period_from=(
+                query.period_from.replace(year=query.period_from.year - 1)
+                if query.period_from and metric.kind == "growth"
+                else query.period_from
+            ),
+            period_to=query.period_to,
+            duration=query.duration,
+            consolidation=query.consolidation,
+            limit=MAX_RESULT_ROWS,
+        )
+        if run_ref is not None:
+            assert executor_app and reader and beneficiary
+            rows = await self.query_facts(
+                executor_app, reader, beneficiary, run_ref, wide
+            )
+        else:
+            rows = await self.query_market(wide)
+        results = compute_metric(metric, rows)
+        if query.period_from is not None:
+            results = [r for r in results if r.period_end >= query.period_from]
+        return results[: query.limit]
+
     async def renditions(
         self, subject: str, material_id: str, version_no: int
     ) -> list[Rendition]:
@@ -933,7 +1104,11 @@ class UserRunService:
         elif basis == "processing":
             if ref != processing_use(version.id) or material.owner != beneficiary:
                 raise refused("basis_ref_invalid", "processing names this version")
-            if not await self.runs.has_use(material.owner, material.id, ref):
+            # 公开原件的加工依据就是公开原件层本身（0043 第 2.7 节「加工」）；
+            # 用户的上传要本人采用过加工
+            if material.owner != PUBLIC_OWNER and not await self.runs.has_use(
+                material.owner, material.id, ref
+            ):
                 raise denied("no_processing_consent", "the owner has not consented")
         elif basis == "reference":
             # 第二区引用：他名下有一条可用的引用覆盖这一版（开关关着也能读）
@@ -959,6 +1134,20 @@ class UserRunService:
             basis_ref=ref,
             content_owner=material.owner,
         )
+
+    async def _run_grants(
+        self, executor_app: str, beneficiary: str, run_ref: str
+    ) -> list[RunGrant]:
+        """这件事（执行应用 + ref）下他还有效的授权，含运行中追加的修订。"""
+        check_ref(run_ref)
+        out = []
+        for grant_id in await self.runs.grant_ids(
+            executor_app=executor_app, ref=run_ref, active_at=self.now()
+        ):
+            grant = await self.runs.get_grant(grant_id)
+            if grant is not None and grant.beneficiary == beneficiary:
+                out.append(grant)
+        return out
 
     async def _covers(self, subject: str, material_id: str, version_no: int) -> None:
         holdings = await self.library.holdings_of(subject, material_id)

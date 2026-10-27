@@ -11,8 +11,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.chart_of_accounts import CHART, CHART_VERSION
 from app.domain.user_data import conflict, not_found
-from app.domain.user_library import ContentVersion, Holding, Material, Rendition
+from app.domain.user_facts import FactQuery, FactRow, RawFact, StandardFact
+from app.domain.user_library import (
+    PUBLIC_OWNER,
+    ContentVersion,
+    Holding,
+    Material,
+    Rendition,
+)
 from app.domain.user_runs import (
     GrantItem,
     InputPin,
@@ -23,6 +31,8 @@ from app.domain.user_runs import (
 )
 from app.infrastructure.models.user_data import (
     UserDataDeletion,
+    UserDataFact,
+    UserDataFactRaw,
     UserDataHolding,
     UserDataInputSet,
     UserDataItem,
@@ -212,6 +222,195 @@ class SqlUserRunRepository:
             entity = _rendition(row)
             await session.commit()
             return entity
+
+    # —— 事实（抽好的表） ——
+
+    async def add_fact_batch(
+        self,
+        rendition: Rendition,
+        material_id: str,
+        version_no: int,
+        subject_code: str | None,
+        raw: list[RawFact],
+        standard: list[StandardFact],
+    ) -> Rendition:
+        """一个事务里记表格读法版本与它的这批事实行（读法号取下一个）。"""
+        async with self._sessions()() as session:
+            version = await session.get(
+                UserDataVersion, uuid.UUID(rendition.version_id), with_for_update=True
+            )
+            if version is None:
+                raise not_found("version")
+            latest = await session.scalar(
+                select(func.max(UserDataRendition.rendition_no)).where(
+                    UserDataRendition.version_id == version.id,
+                    UserDataRendition.kind == "table",
+                )
+            )
+            row = UserDataRendition(
+                id=uuid.UUID(rendition.id),
+                version_id=version.id,
+                kind="table",
+                rendition_no=(latest or 0) + 1,
+                processor=rendition.processor,
+                processor_version=rendition.processor_version,
+                status="ready",
+                sha256=rendition.sha256,
+                object_key=None,
+                detail=dict(rendition.detail),
+                created_at=rendition.created_at,
+                ready_at=rendition.ready_at,
+            )
+            session.add(row)
+            await session.flush()
+            item = uuid.UUID(material_id)
+            session.add_all(
+                UserDataFactRaw(
+                    id=uuid.uuid4(),
+                    rendition_id=row.id,
+                    item_id=item,
+                    version_no=version_no,
+                    ordinal=n,
+                    label=r.label,
+                    value=r.value,
+                    unit=r.unit,
+                    currency=r.currency,
+                    period_end=r.period_end,
+                    duration=r.duration,
+                    consolidation=r.consolidation,
+                    statement_label=r.statement_label,
+                    page=r.page,
+                    row_no=r.row_no,
+                    sheet=r.sheet,
+                    cell=r.cell,
+                )
+                for n, r in enumerate(raw)
+            )
+            session.add_all(
+                UserDataFact(
+                    id=uuid.uuid4(),
+                    rendition_id=row.id,
+                    item_id=item,
+                    version_no=version_no,
+                    subject_code=subject_code,
+                    chart_version=CHART_VERSION,
+                    code=f.code,
+                    value=f.value,
+                    currency=f.currency,
+                    period_end=f.period_end,
+                    duration=f.duration,
+                    consolidation=f.consolidation,
+                    derived_from=list(f.derived_from),
+                    rule=f.rule,
+                    page=f.page,
+                )
+                for f in standard
+            )
+            await session.flush()
+            entity = _rendition(row)
+            await session.commit()
+            return entity
+
+    async def latest_table(self, version_id: str) -> Rendition | None:
+        async with self._sessions()() as session:
+            row = await session.scalar(
+                select(UserDataRendition)
+                .where(
+                    UserDataRendition.version_id == uuid.UUID(version_id),
+                    UserDataRendition.kind == "table",
+                    UserDataRendition.status == "ready",
+                )
+                .order_by(UserDataRendition.rendition_no.desc())
+                .limit(1)
+            )
+            return _rendition(row) if row is not None else None
+
+    async def facts(
+        self, query: FactQuery, *, rendition_ids: list[str] | None = None
+    ) -> list[FactRow]:
+        """按读法版本查（钉住的那几份）；`rendition_ids` 为空时查公开原件层全市场：
+        每份公开原件取当前版本最新就绪的表格读法。"""
+        table = UserDataFact if query.layer == "standard" else UserDataFactRaw
+        latest = (
+            select(func.max(UserDataRendition.rendition_no))
+            .where(
+                UserDataRendition.version_id == UserDataVersion.id,
+                UserDataRendition.kind == "table",
+                UserDataRendition.status == "ready",
+            )
+            .correlate(UserDataVersion)
+            .scalar_subquery()
+        )
+        stmt = (
+            select(table, UserDataItem, UserDataRendition)
+            .join(UserDataRendition, UserDataRendition.id == table.rendition_id)
+            .join(UserDataVersion, UserDataVersion.id == UserDataRendition.version_id)
+            .join(UserDataItem, UserDataItem.id == table.item_id)
+        )
+        if rendition_ids is not None:
+            stmt = stmt.where(
+                table.rendition_id.in_([uuid.UUID(r) for r in rendition_ids])
+            )
+        else:
+            stmt = stmt.where(
+                UserDataItem.owner_subject == PUBLIC_OWNER,
+                UserDataItem.disabled_at.is_(None),
+                UserDataItem.purged_at.is_(None),
+                UserDataVersion.version_no == UserDataItem.current_version,
+                UserDataRendition.rendition_no == latest,
+            )
+        if query.subjects:
+            stmt = stmt.where(UserDataItem.subject_code.in_(query.subjects))
+        if query.layer == "standard":
+            if query.codes:
+                stmt = stmt.where(UserDataFact.code.in_(query.codes))
+        elif query.labels:
+            stmt = stmt.where(UserDataFactRaw.label.in_(query.labels))
+        if query.period_from is not None:
+            stmt = stmt.where(table.period_end >= query.period_from)
+        if query.period_to is not None:
+            stmt = stmt.where(table.period_end <= query.period_to)
+        if query.duration is not None:
+            stmt = stmt.where(table.duration == query.duration)
+        if query.consolidation is not None:
+            stmt = stmt.where(table.consolidation == query.consolidation)
+        if query.value_min is not None:
+            stmt = stmt.where(table.value >= query.value_min)
+        if query.value_max is not None:
+            stmt = stmt.where(table.value <= query.value_max)
+        if query.order == "value_desc":
+            stmt = stmt.order_by(table.value.desc().nulls_last())
+        elif query.order == "value_asc":
+            stmt = stmt.order_by(table.value.asc().nulls_last())
+        else:
+            stmt = stmt.order_by(
+                UserDataItem.subject_code, table.period_end.desc(), table.id
+            )
+        async with self._sessions()() as session:
+            rows = await session.execute(stmt.limit(query.limit))
+            out: list[FactRow] = []
+            for fact, item, rendition in rows.all():
+                standard = query.layer == "standard"
+                out.append(
+                    FactRow(
+                        subject=item.subject_code,
+                        code=fact.code if standard else None,
+                        label=CHART[fact.code].name if standard else fact.label,
+                        value=fact.value,
+                        unit="元" if standard else fact.unit,
+                        currency=fact.currency,
+                        period_end=fact.period_end,
+                        duration=fact.duration,
+                        consolidation=fact.consolidation,
+                        material_id=str(item.id),
+                        material_name=item.name,
+                        version_no=fact.version_no,
+                        rendition_no=rendition.rendition_no,
+                        page=fact.page,
+                        layer=query.layer,
+                    )
+                )
+            return out
 
     # —— 输入组合 ——
 

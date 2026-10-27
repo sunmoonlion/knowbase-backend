@@ -8,6 +8,7 @@ from app.interfaces.endpoints.knowledge_routes import (
     router as knowledge_admin_router,
 )
 from app.interfaces.endpoints.user_data_routes import router as user_data_router
+from app.interfaces.endpoints.user_fact_routes import router as user_fact_router
 from app.interfaces.endpoints.user_library_routes import router as user_library_router
 from app.interfaces.endpoints.user_resolution_routes import (
     router as user_resolution_router,
@@ -45,5 +46,6 @@ router.include_router(user_data_router)
 router.include_router(user_library_router)
 router.include_router(user_run_router)
 router.include_router(user_resolution_router)
+router.include_router(user_fact_router)
 # 工具与数据目录页面用同一份数据集目录（F-KNOW-11）
 router.include_router(build_knowledge_mcp_router(catalog=shared_datasets().catalog))
