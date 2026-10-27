@@ -157,6 +157,16 @@ class UserResolutionService:
             )
         )
 
+    async def add_needs_for_run(
+        self, caller: str, subject: str, resolution_id: str, needs: list[NeedSpec]
+    ) -> Resolution:
+        """运行中专家提的新需求（0048 第五节 `request_data`）：执行的应用以服务身份
+        提，只出清单新修订、不签授权，待确认的仍要本人确认。"""
+        current = await self.repo.resolution(resolution_id, None)
+        if current is None or current.subject != subject or current.app != caller:
+            raise not_found("resolution")
+        return await self.add_needs(subject, caller, resolution_id, needs)
+
     async def get_resolution(
         self, subject: str, app: str, resolution_id: str, revision: int | None
     ) -> Resolution:

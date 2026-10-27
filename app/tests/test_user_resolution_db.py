@@ -385,3 +385,29 @@ async def test_lookup_answers_in_or_out_and_is_rate_limited(world):
         422,
         "subject_invalid",
     )
+
+
+async def test_the_runtime_adds_needs_but_cannot_confirm(world):
+    """0048 第五节 `request_data`：执行的应用替运行中的专家提新需求，只出修订。"""
+    await world.report(ALICE, 2025)
+    first = await world.resolve([annual(count=1)])
+    extra = NeedSpec(
+        **{
+            **annual(count=1).__dict__,
+            "key": "older",
+            "period": PeriodRule("fixed", date(2022, 1, 1), date(2022, 12, 31)),
+        }
+    )
+    await refused(
+        world.resolver.add_needs_for_run("knowlab", ALICE, first.id, [extra]),
+        404,
+        "resolution_not_found",
+    )
+    second = await world.resolver.add_needs_for_run(
+        "knowbench", ALICE, first.id, [extra]
+    )
+    assert second.revision == 2
+    assert [(i.need_key, i.status) for i in second.items] == [
+        ("annual", "resolved"),
+        ("older", "to_confirm"),
+    ]

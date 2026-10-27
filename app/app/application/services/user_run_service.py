@@ -54,6 +54,7 @@ from app.domain.user_runs import (
     DISPLAY_APP_OF,
     SCOPE_OF,
     SESSION_HINT_AT,
+    SESSION_TTL,
     USER_PROCESSES,
     GrantItem,
     GrantRequestItem,
@@ -61,6 +62,7 @@ from app.domain.user_runs import (
     InputSet,
     Output,
     RunGrant,
+    Session,
     check_pins,
     check_ref,
     denied,
@@ -70,6 +72,8 @@ from app.domain.user_runs import (
 from app.domain.vocabulary import VOCAB_VERSION, format_of_media
 
 OUTPUT_CALLERS = ("knowbench", "knowlab")
+# 专家与测试的运行方（knowbot-test-run 契约）：模型经它读数据
+RUNTIME_APP = "knowbench"
 PROCESSORS = ("knowfeed",)
 # knowfeed 写回的读法；扫描版与检索索引由 knowbase 经 RAGFlow 做（块 9）
 PROCESSOR_KINDS = ("text", "pages", "table")
@@ -99,6 +103,7 @@ class UserRunService:
         prefix: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
+        public_access: bool = True,
     ) -> None:
         self.library = library
         self.runs = runs
@@ -106,6 +111,8 @@ class UserRunService:
         self.prefix = prefix
         self.now = clock
         self.new_id = new_id
+        # 平台总开关（0047 第 5.2 节）：公开原件全市场可读、跨全市场查事实
+        self.public_access = public_access
 
     # —— 签发 ——
 
@@ -140,27 +147,82 @@ class UserRunService:
             appendable=True,
         )
 
-    async def session_reads(
-        self,
-        subject: str,
-        app: str,
-        session_ref: str,
-        items: list[GrantRequestItem],
-    ) -> tuple[list[RunGrant], int, bool]:
-        """会话里每首读一份签一条小授权（一份一条，可以一次签多条），会话结束一并撤。
+    # —— 会话：本人登记一次，模型首读一份时签小授权（0048 第五节） ——
 
-        返回这次签的、这段会话累计签了几份、要不要提示（累计刚过 50 份时提示一次，
-        不挡）。
-        """
-        if not items or len(items) > 20:
-            raise refused("items_invalid", "give 1 to 20 items")
-        made = [
-            await self.grant_by_user(subject, app, "session", session_ref, [item])
-            for item in items
-        ]
-        total = len(await self.runs.grant_ids(executor_app=app, ref=session_ref))
-        before = total - len(made)
-        return made, total, before < SESSION_HINT_AT <= total
+    async def register_session(self, subject: str, app: str) -> Session:
+        """本人经应用登记一段会话（24 小时）；范围是他放开给这个应用的。"""
+        if app != DISPLAY_APP_OF["session"]:
+            raise refused("app_invalid", "sessions run in knowbench")
+        now = self.now()
+        return await self.runs.add_session(
+            Session(
+                id=self.new_id(),
+                subject=subject,
+                executor_app=app,
+                scope_use=f"app:{app}",
+                created_at=now,
+                expires_at=now + SESSION_TTL,
+            )
+        )
+
+    async def end_session(self, subject: str, app: str, session_id: str) -> int:
+        """会话结束：小授权一并撤。"""
+        session = await self._own_session(subject, app, session_id)
+        now = self.now()
+        await self.runs.end_session(session.id, now)
+        ids = await self.runs.grant_ids(executor_app=app, ref=session.id)
+        return await self.runs.revoke(ids, now, "session-ended")
+
+    async def session_read(
+        self, subject: str, app: str, session_id: str, material_id: str
+    ) -> tuple[RunGrant, int, bool]:
+        """模型在会话里读一份：读过的回原来那条；第一次读时核在范围里，当场签一条
+        小授权（钉住他能用的那一版）。返回授权、这段会话累计读了几份、要不要提示
+        （累计刚过 50 份时提示一次，不挡）。"""
+        session = await self._own_session(subject, app, session_id)
+        now = self.now()
+        existing = await self.runs.grant_ids(
+            executor_app=app, ref=session.id, material_id=material_id, active_at=now
+        )
+        if existing:
+            grant = await self.runs.get_grant(existing[0])
+            assert grant is not None
+            total = len(await self.runs.grant_ids(executor_app=app, ref=session.id))
+            return grant, total, False
+        material = await self.library.get_material(material_id)
+        if material is None or not material.readable:
+            raise not_found()
+        holdings = await self.library.holdings_of(subject, material.id)
+        if not holdings:
+            raise not_found()
+        holding = next((h for h in holdings if h.version_no is None), holdings[0])
+        version = await self.library.version(
+            material.id, holding.version_no or material.current_version
+        )
+        if version is None:
+            raise not_found("version")
+        if not await self.runs.has_use(subject, material.id, session.scope_use):
+            raise denied("not_shown", f"not shown to {app}")
+        remaining = int((session.expires_at - now).total_seconds())
+        grant = await self._issue(
+            "session",
+            executor_app=app,
+            beneficiary=subject,
+            issued_by=f"session:{session.id}",
+            ref=session.id,
+            items=[
+                GrantRequestItem(
+                    pin=InputPin(material.id, version.version_no, version.sha256),
+                    basis="display",
+                    basis_ref=session.scope_use,
+                )
+            ],
+            reader_role="app",
+            ttl_seconds=max(remaining, 1),
+            appendable=True,
+        )
+        total = len(await self.runs.grant_ids(executor_app=app, ref=session.id))
+        return grant, total, total - 1 < SESSION_HINT_AT <= total
 
     async def grant_by_service(
         self,
@@ -174,7 +236,10 @@ class UserRunService:
         ttl_seconds: int | None = None,
     ) -> RunGrant:
         """knowlab 签：测试凭展示依据（固定测试集，不许中途追加）；平台过程凭
-        `platform:` 依据，读的一方分运营与机器，上限按过程配。"""
+        `platform:` 依据，读的一方分运营与机器，上限按过程配。
+
+        执行的应用是真去读的那一方（0048 第六节）：测试与机器由运行方 knowbench 跑，
+        运营在 knowlab 管理端看；签发方都记 knowlab。"""
         if caller != "knowlab":
             raise denied("service_scope_denied", "only knowlab signs these grants")
         if process == "test":
@@ -182,7 +247,7 @@ class UserRunService:
                 raise refused("reader_role_invalid", "a test is read by the app")
             return await self._issue(
                 "test",
-                executor_app="knowlab",
+                executor_app=RUNTIME_APP,
                 beneficiary=beneficiary,
                 issued_by=caller,
                 ref=ref,
@@ -204,7 +269,7 @@ class UserRunService:
         kind = _platform_kind(use)
         return await self._issue(
             "platform",
-            executor_app="knowlab",
+            executor_app="knowlab" if reader_role == "operator" else RUNTIME_APP,
             beneficiary=beneficiary,
             issued_by=caller,
             ref=ref,
@@ -951,6 +1016,14 @@ class UserRunService:
             if rank < license_rank(cap):
                 cap = ("self", "via_expert", "sale")[rank]
         return cap  # type: ignore[return-value]
+
+    async def _own_session(self, subject: str, app: str, session_id: str) -> Session:
+        session = await self.runs.get_session(session_id)
+        if session is None or session.subject != subject or session.executor_app != app:
+            raise not_found("session")
+        if not session.active(self.now()):
+            raise denied("session_ended", "the session has ended or expired")
+        return session
 
     def _processor(self, caller: str) -> None:
         if caller not in PROCESSORS:

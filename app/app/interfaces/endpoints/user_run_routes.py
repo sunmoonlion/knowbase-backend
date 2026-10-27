@@ -53,8 +53,7 @@ from app.interfaces.schemas.user_runs import (
     RunGrantRead,
     RunGrantView,
     ServiceRunGrantIn,
-    SessionReadsIn,
-    SessionReadsRead,
+    SessionRead,
 )
 from core.config import Settings, get_settings
 
@@ -76,6 +75,7 @@ def get_user_run_service(
         SqlUserRunRepository(lambda: get_postgres().session_factory),
         S3UserObjects(settings),
         prefix=settings.user_data_prefix,
+        public_access=settings.public_access_enabled,
     )
 
 
@@ -194,26 +194,25 @@ async def grant_by_user(
 
 
 @router.post(
-    "/sessions/{session_ref}/reads",
-    response_model=SessionReadsRead,
-    status_code=status.HTTP_201_CREATED,
+    "/sessions", response_model=SessionRead, status_code=status.HTTP_201_CREATED
 )
-async def session_reads(
-    session_ref: str,
-    payload: SessionReadsIn,
+async def register_session(
     owner: Owner = Depends(require_user_owner),
     service: UserRunService = Depends(get_user_run_service),
 ):
-    """会话里每首读一份签一条小授权。
+    """本人开一段会话（24 小时）；模型首读一份时由 knowbase 当场签小授权。"""
+    session = await _call(lambda: service.register_session(owner.subject, owner.app))
+    return SessionRead(session_id=session.id, expires_at=session.expires_at)
 
-    累计刚过 50 份时 `hint` 为真：界面提示一次，不挡。
-    """
-    grants, total, hint = await _call(
-        lambda: service.session_reads(
-            owner.subject, owner.app, session_ref, _items(payload.items)
-        )
-    )
-    return SessionReadsRead(grants=[_grant(g) for g in grants], total=total, hint=hint)
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def end_session(
+    session_id: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """会话结束：小授权一并撤。"""
+    await _call(lambda: service.end_session(owner.subject, owner.app, session_id))
 
 
 @router.delete("/run-grants/{grant_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -19,6 +19,7 @@ from app.domain.user_runs import (
     InputSet,
     Output,
     RunGrant,
+    Session,
 )
 from app.infrastructure.models.user_data import (
     UserDataDeletion,
@@ -30,6 +31,7 @@ from app.infrastructure.models.user_data import (
     UserDataRendition,
     UserDataRunGrant,
     UserDataRunGrantItem,
+    UserDataSession,
     UserDataUse,
     UserDataVersion,
 )
@@ -418,6 +420,54 @@ class SqlUserRunRepository:
                 }
                 for r in rows.scalars()
             ]
+
+    # —— 会话 ——
+
+    async def add_session(self, session: Session) -> Session:
+        async with self._sessions()() as db:
+            db.add(
+                UserDataSession(
+                    id=uuid.UUID(session.id),
+                    subject=session.subject,
+                    executor_app=session.executor_app,
+                    scope_use=session.scope_use,
+                    created_at=session.created_at,
+                    expires_at=session.expires_at,
+                )
+            )
+            await db.commit()
+        return session
+
+    async def get_session(self, session_id: str) -> Session | None:
+        try:
+            key = uuid.UUID(session_id)
+        except (ValueError, TypeError):
+            return None
+        async with self._sessions()() as db:
+            row = await db.get(UserDataSession, key)
+            if row is None:
+                return None
+            return Session(
+                id=str(row.id),
+                subject=row.subject,
+                executor_app=row.executor_app,
+                scope_use=row.scope_use,
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+                ended_at=row.ended_at,
+            )
+
+    async def end_session(self, session_id: str, at: datetime) -> None:
+        async with self._sessions()() as db:
+            await db.execute(
+                update(UserDataSession)
+                .where(
+                    UserDataSession.id == uuid.UUID(session_id),
+                    UserDataSession.ended_at.is_(None),
+                )
+                .values(ended_at=at)
+            )
+            await db.commit()
 
     # —— 产出区 ——
 

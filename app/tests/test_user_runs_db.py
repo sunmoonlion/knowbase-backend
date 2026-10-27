@@ -164,32 +164,64 @@ async def test_delegation_needs_display_and_append_is_a_new_grant(world):
     ]
 
 
-async def test_session_small_grants_hint_once_and_end_together(world):
+async def test_session_signs_one_small_grant_per_first_read(world):
+    """0048 第五节：本人登记一次会话，模型首读一份时 knowbase 凭会话范围签小授权。"""
     shown = []
     for n in range(3):
-        material, version = await world.upload(ALICE, f"{n}.csv", CSV + bytes([48 + n]))
+        material, _ = await world.upload(ALICE, f"{n}.csv", CSV + bytes([48 + n]))
         await world.lib.show(ALICE, material.id, "app:knowbench")
-        shown.append(item(version, "display", "app:knowbench"))
-    grants, total, hint = await world.runs.session_reads(
-        ALICE, "knowbench", "s-1", shown[:2]
+        shown.append(material.id)
+    hidden, _ = await world.upload(ALICE, "hidden.csv", CSV + b"h")
+    await refused(world.runs.register_session(ALICE, "knowlab"), 422, "app_invalid")
+    session = await world.runs.register_session(ALICE, "knowbench")
+    assert session.expires_at - session.created_at == timedelta(hours=24)
+
+    first, total, hint = await world.runs.session_read(
+        ALICE, "knowbench", session.id, shown[0]
     )
-    assert (len(grants), total, hint) == (2, 2, False)
-    assert {len(g.items) for g in grants} == {1}
-    _, total, _ = await world.runs.session_reads(ALICE, "knowbench", "s-1", shown[2:])
-    assert total == 3
-    assert await world.runs.release_ref("knowbench", "s-1") == 3
+    assert (len(first.items), total, hint) == (1, 1, False)
+    again, total, _ = await world.runs.session_read(
+        ALICE, "knowbench", session.id, shown[0]
+    )
+    assert again.id == first.id and total == 1  # 读过的不再签
+    await world.runs.session_read(ALICE, "knowbench", session.id, shown[1])
     await refused(
-        world.runs.read(
-            "knowbench",
-            "m",
-            grants[0].id,
-            grants[0].items[0].material_id,
-            None,
-            "content",
-        ),
+        world.runs.session_read(ALICE, "knowbench", session.id, hidden.id),
+        403,
+        "not_shown",
+    )
+    await refused(
+        world.runs.session_read(BOB, "knowbench", session.id, shown[2]),
+        404,
+        "session_not_found",
+    )
+    got = await world.runs.read("knowbench", "m", first.id, shown[0], None, "content")
+    assert got.content == CSV + b"0"
+
+    assert await world.runs.end_session(ALICE, "knowbench", session.id) == 2
+    await refused(
+        world.runs.read("knowbench", "m", first.id, shown[0], None, "content"),
         403,
         "grant_inactive",
     )
+    await refused(
+        world.runs.session_read(ALICE, "knowbench", session.id, shown[2]),
+        403,
+        "session_ended",
+    )
+
+
+async def test_session_hints_once_when_reads_pass_fifty(world):
+    session = await world.runs.register_session(ALICE, "knowbench")
+    hints = []
+    for n in range(51):
+        material, _ = await world.upload(ALICE, f"m{n}.csv", CSV + str(n).encode())
+        await world.lib.show(ALICE, material.id, "app:knowbench")
+        _, total, hint = await world.runs.session_read(
+            ALICE, "knowbench", session.id, material.id
+        )
+        hints.append((total, hint))
+    assert [t for t, h in hints if h] == [50]
 
 
 async def test_frozen_binding_reads_the_authors_version_for_the_beneficiary(world):
@@ -263,7 +295,8 @@ async def test_knowlab_test_grants_are_fixed_sets(world):
         "service_scope_denied",
     )
     grant = await world.runs.grant_by_service("knowlab", "test", ALICE, "t-1", ask)
-    assert grant.issued_by == "knowlab" and grant.executor_app == "knowlab"
+    # 测试由运行方 knowbench 跑、模型经它读；签发方是 knowlab（0048 第六节）
+    assert grant.issued_by == "knowlab" and grant.executor_app == "knowbench"
     await refused(
         world.runs.grant_by_service("knowlab", "test", ALICE, "t-1", ask),
         409,

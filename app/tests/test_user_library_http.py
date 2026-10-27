@@ -482,6 +482,7 @@ async def test_knowlab_platform_grants_end_with_the_process(api):
         json={"subject": "alice", "reason": "finished"},
     )
     assert ended.status_code == 204
+    state["service"] = "knowbench"  # 机器由运行方 knowbench 读
     read = await client.get(
         f"{BASE}/run-grants/{grant_id}/materials/{material_id}/content"
     )

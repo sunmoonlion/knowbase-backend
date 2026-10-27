@@ -60,12 +60,6 @@ class ServiceRunGrantIn(BaseModel):
     ttl_seconds: int | None = Field(default=None, gt=0)
 
 
-class SessionReadsIn(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    items: list[GrantItemIn] = Field(min_length=1, max_length=20)
-
-
 class PinRead(BaseModel):
     material_id: str
     version_no: int
@@ -105,10 +99,11 @@ class RunGrantView(RunGrantRead):
     pins: list[PinRead]
 
 
-class SessionReadsRead(BaseModel):
-    grants: list[RunGrantRead]
-    total: int
-    hint: bool
+class SessionRead(BaseModel):
+    """本人登记的一段会话；模型在会话里首读一份时 knowbase 凭它签小授权。"""
+
+    session_id: str
+    expires_at: datetime
 
 
 class PlatformEndIn(BaseModel):

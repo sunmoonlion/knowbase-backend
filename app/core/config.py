@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     # （JSON：客户端编号 → knowbench / knowlab / knowmart）。
     user_token_audience: str = ""
     user_token_apps_json: str = "{}"
+    # 平台总开关（SDD 0047 第 5.2 节）：公开原件层全市场可读、跨全市场查事实、
+    # 网页全文搜；现在各环境默认开，正式对外开放前按律师意见确认
+    public_access_enabled: bool = True
     # 用户资料存哪个桶、键的前缀。对象存储单独一套身份 USER_DATA_S3_*：S3_* 是
     # 知识源只读身份（只读 knowfeed 的桶），不能写；没配这套就回「未配置」
     user_data_bucket: str = ""

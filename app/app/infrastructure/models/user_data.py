@@ -709,3 +709,24 @@ class UserDataPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
+
+
+class UserDataSession(Base):
+    """会话登记（SDD 0048 第五节）：本人经应用登记一次，模型首读一份时凭它签小授权。"""
+
+    __tablename__ = "user_data_session"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    executor_app: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 范围：他放开给这个应用的（`app:<应用>`），外加公开原件（开关开着时）
+    scope_use: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (Index("ix_user_data_session_subject", "subject", "created_at"),)

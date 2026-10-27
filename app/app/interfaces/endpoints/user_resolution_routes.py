@@ -28,6 +28,7 @@ from app.infrastructure.repositories.user_resolution import (
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
+    require_read_service,
     require_supply_service,
 )
 from app.infrastructure.security.user_token import require_user_owner
@@ -227,6 +228,27 @@ async def add_needs(
             owner.app,
             resolution_id,
             [_need(n) for n in payload.needs],
+        )
+    )
+    return _resolution(resolution)
+
+
+@router.post(
+    "/service/resolutions/{resolution_id}/revisions",
+    response_model=ResolutionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_needs_for_run(
+    resolution_id: str,
+    payload: AddNeedsIn,
+    subject: str = Query(min_length=1, max_length=255),
+    caller: ServiceCaller = Depends(require_read_service),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    """执行的应用替运行中的专家提新需求：只出修订，确认仍要本人。"""
+    resolution = await _call(
+        lambda: service.add_needs_for_run(
+            caller.caller, subject, resolution_id, [_need(n) for n in payload.needs]
         )
     )
     return _resolution(resolution)

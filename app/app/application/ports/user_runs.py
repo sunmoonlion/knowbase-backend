@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Protocol
 
 from app.domain.user_library import ContentVersion, Holding, Material, Rendition
-from app.domain.user_runs import InputSet, Output, RunGrant
+from app.domain.user_runs import InputSet, Output, RunGrant, Session
 
 
 class UserRunRepository(Protocol):
@@ -67,6 +67,12 @@ class UserRunRepository(Protocol):
     ) -> None: ...
 
     async def reads_of(self, material_id: str) -> list[dict[str, object]]: ...
+
+    async def add_session(self, session: Session) -> Session: ...
+
+    async def get_session(self, session_id: str) -> Session | None: ...
+
+    async def end_session(self, session_id: str, at: datetime) -> None: ...
 
     async def find_output(
         self, owner: str, caller: str, task_ref: str, run_ref: str, name: str

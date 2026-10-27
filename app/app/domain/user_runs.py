@@ -252,3 +252,23 @@ class Output:
 
 def denied(code: str, message: str) -> UserDataError:
     return UserDataError(403, code, message)
+
+
+# 会话一段最长 24 小时（0043 第 2.7 节）
+SESSION_TTL = timedelta(hours=24)
+
+
+@dataclass(frozen=True)
+class Session:
+    """本人经应用登记的一段会话：范围是他放开给这个应用的，外加公开原件（开关开着时）。"""
+
+    id: str
+    subject: str
+    executor_app: str
+    scope_use: str
+    created_at: datetime
+    expires_at: datetime
+    ended_at: datetime | None = None
+
+    def active(self, now: datetime) -> bool:
+        return self.ended_at is None and now < self.expires_at
