@@ -119,6 +119,9 @@ def _candidate(c: Candidate) -> CandidateRead:
         rendition_kind=c.rendition_kind,
         rendition_no=c.rendition_no,
         rendition_sha256=c.rendition_sha256,
+        name=c.name,
+        media_type=c.media_type,
+        size_bytes=c.size_bytes,
     )
 
 

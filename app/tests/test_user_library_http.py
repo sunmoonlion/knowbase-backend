@@ -544,6 +544,8 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
         ("2024-12-31", "to_confirm"),
     ]
     assert body["items"][0]["chosen"][0]["material_id"] == material_id
+    assert body["items"][0]["chosen"][0]["name"] == "maotai-2025.csv"
+    assert body["items"][0]["chosen"][0]["size_bytes"] == len(CSV)
     again = await client.get(f"{BASE}/resolutions/{body['resolution_id']}")
     assert again.json()["revision"] == 1
 

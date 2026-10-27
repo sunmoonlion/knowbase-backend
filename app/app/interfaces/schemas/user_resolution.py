@@ -76,6 +76,9 @@ class CandidateRead(BaseModel):
     rendition_kind: str | None
     rendition_no: int | None
     rendition_sha256: str | None
+    name: str = ""
+    media_type: str = ""
+    size_bytes: int = 0
 
 
 class ResultItemRead(BaseModel):

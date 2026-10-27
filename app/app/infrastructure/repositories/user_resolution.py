@@ -140,6 +140,9 @@ class SqlUserResolutionRepository:
                     data_format=item.data_format,
                     usable=item.disabled_at is None,
                     basis="reference" if reference else "display",
+                    name=item.name,
+                    media_type=version.media_type,
+                    size_bytes=version.size_bytes,
                 )
                 # 同一份有两条使用权（自己的、买的）时取不限版本的那条
                 if found.material_id not in seen or holding.version_no is None:
@@ -176,6 +179,9 @@ class SqlUserResolutionRepository:
                         data_format=item.data_format,
                         usable=item.disabled_at is None,
                         basis="public",
+                        name=item.name,
+                        media_type=version.media_type,
+                        size_bytes=version.size_bytes,
                     )
             return list(seen.values())
 

@@ -347,6 +347,10 @@ class Candidate:
     rendition_kind: str | None = None
     rendition_no: int | None = None
     rendition_sha256: str | None = None
+    # 列给请的人看的：资料名字、那一版的类型与大小
+    name: str = ""
+    media_type: str = ""
+    size_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -449,6 +453,9 @@ def candidate_dict(c: Candidate) -> dict[str, object]:
         "rendition_kind": c.rendition_kind,
         "rendition_no": c.rendition_no,
         "rendition_sha256": c.rendition_sha256,
+        "name": c.name,
+        "media_type": c.media_type,
+        "size_bytes": c.size_bytes,
     }
 
 
@@ -468,6 +475,9 @@ def candidate_from(data: dict[str, object]) -> Candidate:
         rendition_kind=data.get("rendition_kind"),  # type: ignore[arg-type]
         rendition_no=data.get("rendition_no"),  # type: ignore[arg-type]
         rendition_sha256=data.get("rendition_sha256"),  # type: ignore[arg-type]
+        name=str(data.get("name") or ""),
+        media_type=str(data.get("media_type") or ""),
+        size_bytes=int(data.get("size_bytes") or 0),  # type: ignore[call-overload]
     )
 
 
