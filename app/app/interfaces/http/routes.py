@@ -25,6 +25,7 @@ from app.interfaces.http.middleware.auth import require_knowbase_admin
 from app.interfaces.http.web.auth import router as web_auth_router
 from app.interfaces.http.web.cross_app import router as web_cross_app_router
 from app.interfaces.http.web.interactions import router as web_interactions_router
+from app.interfaces.mcp.data_mcp import build_router as build_data_mcp_router
 from app.interfaces.mcp.knowbase_mcp import build_router as build_knowledge_mcp_router
 
 router = APIRouter()
@@ -49,3 +50,4 @@ router.include_router(user_resolution_router)
 router.include_router(user_fact_router)
 # 工具与数据目录页面用同一份数据集目录（F-KNOW-11）
 router.include_router(build_knowledge_mcp_router(catalog=shared_datasets().catalog))
+router.include_router(build_data_mcp_router())

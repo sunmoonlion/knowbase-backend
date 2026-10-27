@@ -418,6 +418,86 @@ class UserRunService:
             )
         return ReadResult(item, version, version.media_type, content)
 
+    async def read_reading(
+        self,
+        executor_app: str,
+        reader: str,
+        grant_id: str,
+        material_id: str,
+        version_no: int | None,
+        kind: str,
+    ) -> tuple[ReadResult, Rendition]:
+        """读钉住那一版的某种读法（正文 `text`、按页文字 `pages`）。
+
+        钉了这种读法的读那一版，没钉的读最新就绪的一版（出处里写明读法版本）；
+        授权、留痕同 `read`。
+        """
+        if kind not in ("text", "pages"):
+            raise refused("kind_invalid", "read text or pages")
+        grant = await self.runs.get_grant(grant_id)
+        if grant is None or grant.executor_app != executor_app:
+            raise not_found("grant")
+        if not grant.active(self.now()):
+            raise denied("grant_inactive", "the grant is revoked or expired")
+        item = grant.item(material_id, version_no)
+        if item is None:
+            raise not_found()
+        if grant.scope != "content":
+            raise denied("format_only", "this grant reads formats only")
+        material = await self.library.get_material(item.material_id)
+        if material is None or not material.readable:
+            raise not_found()
+        version = await self.library.version(item.material_id, item.version_no)
+        pins = await self._pins(grant, item)
+        if version is None or version.sha256 != pins[0].sha256:
+            raise conflict("sha256_mismatch", "the pinned version does not match")
+        pinned = next((p for p in pins if p.rendition_kind == kind), None)
+        if pinned is not None:
+            rendition = await self.runs.rendition(
+                version.id, kind, pinned.rendition_no or 0
+            )
+            if rendition is None or rendition.sha256 != pinned.rendition_sha256:
+                raise conflict("sha256_mismatch", "the pinned rendition does not match")
+        else:
+            ready = [
+                r
+                for r in await self.runs.renditions(version.id)
+                if r.kind == kind and r.status == "ready"
+            ]
+            if not ready:
+                raise not_found("rendition")
+            rendition = max(ready, key=lambda r: r.rendition_no)
+        content = await self._fetch(rendition.object_key or "", rendition.sha256)
+        await self._log(grant, item, version, reader, "rendition")
+        return ReadResult(item, version, "text/plain", content, rendition=rendition), (
+            rendition
+        )
+
+    async def run_grants(
+        self, executor_app: str, beneficiary: str, run_ref: str
+    ) -> list[RunGrant]:
+        """这件事下他还有效的授权（数据 MCP 列输入、找是哪条授权用）。"""
+        return await self._run_grants(executor_app, beneficiary, run_ref)
+
+    async def session_grants(
+        self, subject: str, app: str, session_id: str
+    ) -> list[RunGrant]:
+        """这段会话里已经签过的小授权（会话里找证据只在读过的里找）。"""
+        session = await self._own_session(subject, app, session_id)
+        out = []
+        for grant_id in await self.runs.grant_ids(
+            executor_app=app, ref=session.id, active_at=self.now()
+        ):
+            grant = await self.runs.get_grant(grant_id)
+            if grant is not None:
+                out.append(grant)
+        return out
+
+    async def renditions_of(self, material_id: str, version_no: int) -> list[Rendition]:
+        """这一版有哪些读法（列输入时告诉模型能读什么）；调用方已核过授权。"""
+        version = await self.library.version(material_id, version_no)
+        return [] if version is None else await self.runs.renditions(version.id)
+
     async def grant_view(
         self, executor_app: str, grant_id: str
     ) -> tuple[RunGrant, InputSet]:

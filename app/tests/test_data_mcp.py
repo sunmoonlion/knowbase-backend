@@ -1,0 +1,248 @@
+"""数据 MCP（SDD 0048，第 2 步 2d）：令牌、按运行与会话读、查事实、找证据、出处。"""
+
+from __future__ import annotations
+
+import json
+import time
+from datetime import date
+from decimal import Decimal
+
+import httpx
+import pytest
+from fastapi import FastAPI
+from joserfc import jwt
+from joserfc.jwk import ECKey
+from test_durable_delivery_db import db as db
+from test_user_data import CSV, Clock, MemoryObjects
+
+from app.application.services.call_rate import RateLimiter
+from app.application.services.user_library_service import UserLibraryService
+from app.application.services.user_resolution_service import UserResolutionService
+from app.application.services.user_run_service import UserRunService
+from app.domain.user_facts import RawFact, StandardFact
+from app.domain.user_library import PUBLIC_OWNER, Description
+from app.domain.user_runs import GrantRequestItem, InputPin
+from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
+from app.infrastructure.repositories.user_resolution import (
+    SqlUserResolutionRepository,
+)
+from app.infrastructure.repositories.user_runs import SqlUserRunRepository
+from app.interfaces.mcp import data_mcp
+from core.config import Settings
+
+KEY = ECKey.generate_key("P-256")
+PAGES = [
+    {"page": 1, "text": "贵州茅台酒股份有限公司 2025 年年度报告"},
+    {"page": 88, "text": "报告期内渠道库存保持合理水平，营业收入同比增长。"},
+]
+
+
+def token(sub="alice", aud="knowbase-data", azp="knowbench", exp=None) -> str:
+    claims = {
+        "sub": sub,
+        "aud": aud,
+        "azp": azp,
+        "sandbox": "sb-1",
+        "iss": "knowbench",
+        "exp": exp or int(time.time()) + 600,
+    }
+    return jwt.encode({"alg": "ES256"}, claims, KEY)
+
+
+class World:
+    def __init__(self, db) -> None:
+        clock = Clock()
+        objects = MemoryObjects()
+        library = SqlUserLibraryRepository(lambda: db)
+        runs_repo = SqlUserRunRepository(lambda: db)
+        self.lib = UserLibraryService(library, objects, prefix="p", clock=clock)
+        self.runs = UserRunService(library, runs_repo, objects, prefix="p", clock=clock)
+        self.resolver = UserResolutionService(
+            SqlUserResolutionRepository(lambda: db),
+            library,
+            runs_repo,
+            clock=clock,
+            limiter=RateLimiter(1000),
+        )
+        server = data_mcp.DataMcp(
+            lambda: self.runs, lambda: self.resolver, lambda: self.lib
+        )
+        settings = Settings(
+            knowbase_mcp_jwt_public_key=KEY.as_pem(private=False).decode(),
+            knowbase_mcp_jwt_issuer="knowbench",
+        )
+        app = FastAPI()
+        app.include_router(data_mcp.build_router(settings, server))
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
+        )
+
+    async def call(self, name: str, auth: str | None = None, **arguments):
+        reply = await self.client.post(
+            "/mcp/data",
+            headers={"Authorization": f"Bearer {auth or token()}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            },
+        )
+        assert reply.status_code == 200, reply.text
+        result = reply.json()["result"]
+        if result["isError"]:
+            return {"error": result["content"][0]["text"]}
+        return result["structuredContent"]
+
+    async def publish(self):
+        material, version, _ = await self.lib.deliver_public(
+            "knowfeed",
+            "cninfo",
+            "ar-600519-2025",
+            "maotai-2025.csv",
+            CSV,
+            Description(
+                subject="600519.SH",
+                doc_type="annual_report",
+                period_start=date(2025, 1, 1),
+                period_end=date(2025, 12, 31),
+            ),
+        )
+        grant = await self.runs.issue_processing(
+            "knowfeed", PUBLIC_OWNER, material.id, 1
+        )
+        await self.runs.write_rendition(
+            "knowfeed",
+            grant.id,
+            "pages",
+            "p-0.1",
+            json.dumps(PAGES, ensure_ascii=False).encode(),
+        )
+        raw = [
+            RawFact(
+                "营业收入",
+                Decimal(1500),
+                "万元",
+                period_end=date(2025, 12, 31),
+                duration="year",
+                consolidation="consolidated",
+                page=88,
+            ),
+            RawFact(
+                "营业成本",
+                Decimal(300),
+                "万元",
+                period_end=date(2025, 12, 31),
+                duration="year",
+                consolidation="consolidated",
+                page=88,
+            ),
+        ]
+        standard = [
+            StandardFact(
+                code,
+                raw[i].value * 10_000,
+                date(2025, 12, 31),
+                "year",
+                "consolidated",
+                (i,),
+                "chart-v1:alias",
+                page=88,
+            )
+            for i, code in enumerate(("IS.REVENUE", "IS.COST"))
+        ]
+        await self.runs.write_facts("knowfeed", grant.id, "t-0.1", raw, standard)
+        return material, version
+
+
+@pytest.fixture
+def world(db) -> World:
+    return World(db)
+
+
+async def test_tokens_must_be_issued_for_the_data_mcp(world):
+    for bad in (token(aud="knowbase"), token(azp="knowmart"), token(exp=1)):
+        reply = await world.client.post(
+            "/mcp/data",
+            headers={"Authorization": f"Bearer {bad}"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+        )
+        assert reply.status_code == 401
+    listed = await world.client.post(
+        "/mcp/data",
+        headers={"Authorization": f"Bearer {token()}"},
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+    )
+    names = {t["name"] for t in listed.json()["result"]["tools"]}
+    assert {"list_inputs", "read_input", "query_facts", "search_evidence"} <= names
+
+
+async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
+    material, version = await world.publish()
+    await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "task-1",
+        [
+            GrantRequestItem(
+                InputPin(material.id, 1, version.sha256), "public", PUBLIC_OWNER
+            )
+        ],
+    )
+    inputs = (await world.call("list_inputs", run="task-1"))["inputs"]
+    assert [(i["material_id"], i["owner"], i["readings"]) for i in inputs] == [
+        (material.id, "public", ["pages", "table"])
+    ]
+    pages = await world.call(
+        "read_input", run="task-1", material_id=material.id, what="pages", page_from=88
+    )
+    assert [p["page"] for p in pages["pages"]] == [88]
+    assert pages["source"]["reading"] == "pages/1"
+    facts = await world.call("query_facts", run="task-1", codes=["IS.REVENUE"])
+    assert facts["facts"][0]["value"] == "15000000.000000"
+    assert facts["facts"][0]["source"]["page"] == 88
+    margin = await world.call("query_metric", metric="gross_margin", run="task-1")
+    assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
+    found = await world.call("search_evidence", run="task-1", query="渠道库存")
+    assert found["passages"][0]["source"]["page"] == 88
+    # 别人的令牌拿同一个 run：读不到
+    other = await world.call("list_inputs", auth=token(sub="bob"), run="task-1")
+    assert other["inputs"] == []
+    stranger = await world.call(
+        "read_input",
+        auth=token(sub="bob"),
+        run="task-1",
+        material_id=material.id,
+        what="pages",
+    )
+    assert "not an input" in stranger["error"]
+
+
+async def test_market_lookup_and_sessions(world):
+    material, _ = await world.publish()
+    ranked = await world.call(
+        "query_facts", scope="market", codes=["IS.REVENUE"], order="value_desc"
+    )
+    assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
+    seen = await world.call(
+        "lookup",
+        subject="600519.SH",
+        doc_type="annual_report",
+        period_start="2025-01-01",
+        period_end="2025-12-31",
+    )
+    assert seen == {"status": "shown", "zone": "public"}
+    session = await world.runs.register_session("alice", "knowbench")
+    read = await world.call(
+        "read_input", session=session.id, material_id=material.id, what="pages"
+    )
+    assert read["total_pages"] == 2
+    evidence = await world.call("search_evidence", session=session.id, query="营业收入")
+    assert evidence["passages"][0]["source"]["material_id"] == material.id
+    library = await world.call("list_library", session=session.id)
+    assert library == {"materials": []}  # 公开原件不在他名下，经 lookup 与读找
+    items = await world.call("describe_items")
+    assert items["version"] == 1 and any(
+        m["key"] == "gross_margin" for m in items["metrics"]
+    )
