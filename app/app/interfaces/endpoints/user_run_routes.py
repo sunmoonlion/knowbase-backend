@@ -366,7 +366,7 @@ async def grant_by_confirmation(
     service: UserRunService = Depends(get_user_run_service),
 ):
     """等数据的委托数据齐了，knowbench 凭本人那次确认续签（所有者 10-27 定）。"""
-    resolution = await _call(
+    resolution, confirmed_needs = await _call(
         lambda: resolutions.confirmed_for_run(
             executor[1],
             payload.subject,
@@ -385,6 +385,7 @@ async def grant_by_confirmation(
             resolution,
             _items(payload.items),
             payload.ttl_seconds,
+            confirmed_needs,
         )
     )
     return _grant(grant)

@@ -469,7 +469,8 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
     await refused(check(ref="knowbench:other"), 403, "confirmation_mismatch")
     await refused(check(subject=BOB), 404, "confirmation_not_found")
     await refused(check(caller="knowlab"), 404, "confirmation_not_found")
-    resolution = await check()
+    resolution, confirmed_needs = await check()
+    assert confirmed_needs == {"annual"}
 
     def item(material, version, basis="display", ref="app:knowbench"):
         return GrantRequestItem(
@@ -483,6 +484,7 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
         "knowbench:k-1",
         resolution,
         [item(have, have_version), item(got, got_version)],
+        confirmed_needs=confirmed_needs,
     )
     assert (grant.process, grant.beneficiary, grant.issued_by) == (
         "delegation",
@@ -500,6 +502,7 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
             "knowbench:k-1",
             resolution,
             [item(other, other_version)],
+            confirmed_needs=confirmed_needs,
         ),
         403,
         "outside_resolution",
@@ -512,6 +515,7 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
             "knowbench:k-1",
             resolution,
             [item(other, other_version, "frozen_binding", "expert:fa-9@1")],
+            confirmed_needs=confirmed_needs,
         ),
         403,
         "binding_mismatch",
@@ -524,9 +528,37 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
             "knowbench:k-1",
             resolution,
             [item(have, have_version)],
+            confirmed_needs=confirmed_needs,
         ),
         422,
         "app_invalid",
+    )
+    # 运行中专家新加的需求项：同一张清单的新修订，但不能借这次确认签
+    extra = NeedSpec(
+        **{
+            **annual(count=1).__dict__,
+            "key": "older",
+            "period": PeriodRule("fixed", date(2019, 1, 1), date(2019, 12, 31)),
+        }
+    )
+    grown = await world.resolver.add_needs_for_run(
+        "knowbench", ALICE, first.id, [extra]
+    )
+    widened, still = await check(revision=grown.revision)
+    assert "older" not in still
+    assert any(i.need_key == "older" and i.chosen for i in widened.items)
+    await refused(
+        world.runs.grant_by_confirmation(
+            "knowbench",
+            ALICE,
+            confirmation.id,
+            "knowbench:k-1",
+            widened,
+            [item(other, other_version)],
+            confirmed_needs=still,
+        ),
+        403,
+        "outside_resolution",
     )
     world.clock.now += timedelta(days=8)
     await refused(check(), 403, "confirmation_expired")

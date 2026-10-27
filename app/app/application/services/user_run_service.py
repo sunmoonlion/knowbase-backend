@@ -171,18 +171,20 @@ class UserRunService:
         resolution: Resolution,
         items: list[GrantRequestItem],
         ttl_seconds: int | None = None,
+        confirmed_needs: frozenset[str] = frozenset(),
     ) -> RunGrant:
         """等数据的委托数据齐了：执行的应用凭本人那次确认续签（所有者 10-27 定「自动
         接着跑」，0043 第 3.4 节）。确认与清单由调用方先核过（`confirmed_for_run`）。
 
-        签进去的只能是这一修订清单里的候选（依据也照清单），或作者交付时冻结给这位
-        专家这一版的绑定；逐项再按本人签时同一套规矩核。
+        签进去的只能是这一修订清单里、确认时就有的需求项的候选（依据也照清单），或
+        作者交付时冻结给这位专家这一版的绑定；逐项再按本人签时同一套规矩核。
         """
         if caller != DISPLAY_APP_OF["delegation"]:
             raise refused("app_invalid", "a delegation runs in knowbench")
         offered = {
             (c.material_id, c.version_no, c.sha256): c
             for item in resolution.items
+            if item.need_key in confirmed_needs
             for c in item.chosen + item.candidates
         }
         for request in items:

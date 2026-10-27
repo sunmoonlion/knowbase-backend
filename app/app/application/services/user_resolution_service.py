@@ -220,9 +220,11 @@ class UserResolutionService:
         ref: str,
         resolution_id: str,
         revision: int,
-    ) -> Resolution:
+    ) -> tuple[Resolution, frozenset[str]]:
         """凭确认续签之前核：确认是这个人在这个应用上点的、7 天内、对的是这件任务
-        和这张清单；回要签的那一修订（签进授权的只能是它的候选）。"""
+        和这张清单。回要签的那一修订，与确认时那一修订里有的需求项：签进授权的只能是
+        这些需求项的候选——运行中专家新加的需求项（request_data）要本人另行确认，
+        不能借这次确认签（模型不能替用户确认，0043 第 3.3 节第 6 条）。"""
         confirmation = await self.repo.confirmation(confirmation_id)
         if (
             confirmation is None
@@ -238,7 +240,13 @@ class UserResolutionService:
             raise denied(
                 "confirmation_mismatch", "the confirmation is for another task or list"
             )
-        return await self._run_resolution(caller, subject, resolution_id, revision)
+        resolution = await self._run_resolution(
+            caller, subject, resolution_id, revision
+        )
+        confirmed = await self._run_resolution(
+            caller, subject, resolution_id, confirmation.resolution_revision
+        )
+        return resolution, frozenset(n.key for n in confirmed.needs)
 
     async def get_resolution(
         self, subject: str, app: str, resolution_id: str, revision: int | None
