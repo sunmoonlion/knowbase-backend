@@ -1,4 +1,4 @@
-"""资料库：上传、内容版本、描述、许可档、总栏、下载、删（SDD 0043 第二节，块 1a）。
+"""资料库：上传、内容版本、描述、许可档、总栏、下载、删、同意依据（SDD 0043 第二节）。
 
 谁能做什么：
 - 资料的所有者：传新版本、改描述与许可档、在栏里删；
@@ -22,6 +22,7 @@ from app.domain.user_data import (
     UserDataError,
     check_size,
     clean_name,
+    conflict,
     kind_of,
     not_found,
     refused,
@@ -38,10 +39,14 @@ from app.domain.user_library import (
     License,
     Material,
     ShelfEntry,
+    SubscriptionScope,
     Use,
     check_license,
     check_material_use,
     license_rank,
+    platform_use,
+    processing_use,
+    subscription_use,
     version_object_key,
 )
 from app.domain.vocabulary import VOCAB_VERSION, format_of_media
@@ -74,10 +79,12 @@ class UserLibraryService:
         description: Description | None = None,
         confirm: bool = False,
         license_: str = "self",
+        process: bool = False,
     ) -> tuple[Material, ContentVersion]:
         """用户上传一份新资料：记资料、第 1 版、所有者的使用权（取得依据 upload）。
 
         描述是本人填的、勾了确认才算「用户确认过」（参与解析）；没填的格式按内容类型补。
+        `process`：本人按页面说明采用加工，就是这一版的加工依据。
         """
         filename = clean_name(name)
         media_type = kind_of(filename, content)
@@ -109,10 +116,18 @@ class UserLibraryService:
         if (await self.repo.account(subject)).displays_by_default:
             for use in DEFAULT_DISPLAY_USES:
                 await self._add_use(subject, saved.id, use, "default-display")
+        if process:
+            await self._add_processing(subject, version)
         return saved, version
 
     async def add_version(
-        self, subject: str, material_id: str, name: str | None, content: bytes
+        self,
+        subject: str,
+        material_id: str,
+        name: str | None,
+        content: bytes,
+        *,
+        process: bool = False,
     ) -> tuple[Material, ContentVersion]:
         """所有者传这份资料的新内容版本；旧版本照旧留着，钉住旧版的照旧读旧的。"""
         material = await self._owned(subject, material_id)
@@ -127,6 +142,8 @@ class UserLibraryService:
             self.now(),
         )
         saved = await self.repo.add_version(version)
+        if process and saved.content_origin == "upload":
+            await self._add_processing(subject, version)
         return saved, version
 
     # —— 描述、许可档 ——
@@ -296,6 +313,115 @@ class UserLibraryService:
         shown = await self.repo.material_ids_with_use(subject, use)
         return [e for e in await self.repo.shelf(subject) if e.material.id in shown]
 
+    # —— 平台过程、订阅、加工（块 1b 余下） ——
+
+    async def consent_platform(
+        self,
+        subject: str,
+        app: str,
+        kind: str,
+        ref: str,
+        items: list[tuple[str, int | None]],
+    ) -> list[Use]:
+        """本人在 knowlab 选平台、交审、提交交付时：这次过程能看哪几份，每份一行。
+
+        范围是这次过程：用途里带过程编号，过程结束、撤回、不受理时整个撤。重跑要读的
+        冻结输入带版本号，不带的取当前版本（买来的取成交那一版）；那一版要在本人的
+        使用权里。
+        """
+        use = platform_use(app, kind, ref)
+        if not items or len(items) > 200:
+            raise refused("items_invalid", "give 1 to 200 items")
+        made: list[Use] = []
+        for material_id, version_no in dict.fromkeys(items):
+            material, holding = await self._held(subject, material_id)
+            wanted = version_no or holding.version_no or material.current_version
+            if not holding.covers(wanted) or (
+                await self.repo.version(material.id, wanted) is None
+            ):
+                raise not_found("version")
+            made.append(
+                await self.repo.add_use(
+                    Use(
+                        id=self.new_id(),
+                        subject=subject,
+                        use=use,
+                        created_at=self.now(),
+                        created_via=f"user:{app}",
+                        material_id=material.id,
+                        version_no=wanted,
+                        scope={"kind": kind, "ref": ref},
+                    )
+                )
+            )
+        return made
+
+    async def platform_consents(
+        self, subject: str, app: str, kind: str, ref: str
+    ) -> list[Use]:
+        use = platform_use(app, kind, ref)
+        return [u for u in await self.repo.named(subject, use) if u.use == use]
+
+    async def withdraw_platform(
+        self, subject: str, app: str, kind: str, ref: str
+    ) -> int:
+        """本人撤回这次平台过程的依据（每份一并撤）；块 1c 起同时撤相关授权。"""
+        return await self.repo.withdraw_named(
+            subject, platform_use(app, kind, ref), self.now()
+        )
+
+    async def subscribe(
+        self,
+        subject: str,
+        subscription_id: str,
+        revision: int,
+        scope: SubscriptionScope,
+        via: str,
+    ) -> Use:
+        """建订阅、续订时本人留下的长期范围同意；一个修订定了就不改，改范围出新修订。"""
+        use = subscription_use(subscription_id, revision)
+        wanted = scope.checked().as_dict()
+        saved = await self.repo.add_use(
+            Use(
+                id=self.new_id(),
+                subject=subject,
+                use=use,
+                created_at=self.now(),
+                created_via=via,
+                scope=wanted,
+            )
+        )
+        if saved.scope != wanted:
+            raise conflict(
+                "subscription_revision_exists",
+                "this revision already has another scope; renew as a new revision",
+            )
+        return saved
+
+    async def unsubscribe(
+        self, subject: str, subscription_id: str, revision: int
+    ) -> int:
+        return await self.repo.withdraw_named(
+            subject, subscription_use(subscription_id, revision), self.now()
+        )
+
+    async def subscriptions(self, subject: str) -> list[Use]:
+        return await self.repo.named(subject, "subscription:")
+
+    async def consent_processing(
+        self, subject: str, material_id: str, version_no: int
+    ) -> Use:
+        """本人对已传的一版补采用加工（上传时没勾的）；只限上传的、只这一版。"""
+        material = await self._owned(subject, material_id)
+        if material.content_origin != "upload":
+            raise refused(
+                "not_upload", "only uploaded material is processed on consent"
+            )
+        version = await self.repo.version(material.id, version_no)
+        if version is None:
+            raise not_found("version")
+        return await self._add_processing(subject, version)
+
     # —— 账号设置 ——
 
     async def account(self, subject: str) -> Account:
@@ -379,6 +505,19 @@ class UserLibraryService:
                 created_at=self.now(),
                 created_via=via,
                 material_id=material_id,
+            )
+        )
+
+    async def _add_processing(self, subject: str, version: ContentVersion) -> Use:
+        return await self.repo.add_use(
+            Use(
+                id=self.new_id(),
+                subject=subject,
+                use=processing_use(version.id),
+                created_at=self.now(),
+                created_via="user",
+                material_id=version.material_id,
+                version_no=version.version_no,
             )
         )
 

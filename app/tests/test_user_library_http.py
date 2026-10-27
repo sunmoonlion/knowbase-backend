@@ -240,3 +240,70 @@ async def test_purchase_and_expert_directory(api):
     ]
     state["owner"] = Owner("alice", "knowbench")
     assert (await client.get(f"{BASE}/experts")).json() == []
+
+
+async def test_platform_subscription_and_processing(api):
+    """块 1b 余下：平台过程按次、订阅只经 knowfeed、上传时采用加工。"""
+    client, state = api
+    state["owner"] = Owner("alice", "knowlab")
+    material_id = await _upload(client)
+    made = await client.post(
+        f"{BASE}/platform-consents",
+        json={
+            "kind": "incubate",
+            "ref": "i-1",
+            "items": [{"material_id": material_id}],
+        },
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()[0]["use"] == "platform:knowlab:incubate:i-1"
+    assert made.json()[0]["material_id"] == material_id
+    listed = await client.get(f"{BASE}/platform-consents/incubate/i-1")
+    assert len(listed.json()) == 1
+    gone = await client.delete(f"{BASE}/platform-consents/incubate/i-1")
+    assert gone.status_code == 204
+    assert (await client.get(f"{BASE}/platform-consents/incubate/i-1")).json() == []
+    state["owner"] = Owner("alice", "knowbench")
+    wrong = await client.post(
+        f"{BASE}/platform-consents",
+        json={"kind": "test", "ref": "t-1", "items": [{"material_id": material_id}]},
+    )
+    assert (wrong.status_code, wrong.json()["code"]) == (422, "platform_app_invalid")
+
+    scope = {
+        "by": "url",
+        "starts_on": "2026-10-27",
+        "ends_on": "2027-04-27",
+        "purpose": "看央行公告",
+        "urls": ["https://www.pbc.gov.cn/rss"],
+    }
+    denied = await client.put(f"{BASE}/subscriptions/s-1/revisions/1", json=scope)
+    assert (denied.status_code, denied.json()["code"]) == (
+        403,
+        "subscription_app_denied",
+    )
+    state["owner"] = Owner("alice", "knowfeed")
+    made = await client.put(f"{BASE}/subscriptions/s-1/revisions/1", json=scope)
+    assert made.status_code == 200, made.text
+    assert made.json()["urls"] == scope["urls"] and made.json()["revision"] == 1
+    clash = await client.put(
+        f"{BASE}/subscriptions/s-1/revisions/1", json={**scope, "purpose": "别的"}
+    )
+    assert (clash.status_code, clash.json()["code"]) == (
+        409,
+        "subscription_revision_exists",
+    )
+    listed = (await client.get(f"{BASE}/subscriptions")).json()
+    assert [(s["subscription_id"], s["revision"]) for s in listed] == [("s-1", 1)]
+    gone = await client.delete(f"{BASE}/subscriptions/s-1/revisions/1")
+    assert gone.status_code == 204
+    assert (await client.get(f"{BASE}/subscriptions")).json() == []
+
+    created = await client.post(
+        f"{BASE}/materials", params={"name": "扫描.csv", "process": "true"}, content=CSV
+    )
+    processed = created.json()["material"]["material_id"]
+    uses = (await client.get(f"{BASE}/materials/{processed}/uses")).json()
+    assert [u["use"].split(":")[0] for u in uses] == ["processing"]
+    later = await client.post(f"{BASE}/materials/{material_id}/versions/1/processing")
+    assert later.status_code == 201 and later.json()["version_no"] == 1

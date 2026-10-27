@@ -442,3 +442,121 @@ async def test_v1_uploads_are_shown_to_their_old_app(db):
     lib = library(db)
     assert [e.material.id for e in await lib.column(ALICE, "knowlab")] == [lab.id]
     assert [e.material.id for e in await lib.column(ALICE, "knowmart")] == [mart.id]
+
+
+async def test_platform_consent_is_per_process_and_pins_versions(db):
+    lib = library(db)
+    mine, _ = await lib.upload(ALICE, "mine.csv", CSV)
+    await lib.add_version(ALICE, mine.id, None, CSV + b"5,6\n")
+    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale")
+    await lib.purchase(ALICE, selling.id, BOB, "tx-1")
+    await lib.add_version(ALICE, selling.id, None, CSV + b"7,8\n")
+
+    made = await lib.consent_platform(
+        BOB, "knowlab", "test", "t-1", [(selling.id, None)]
+    )
+    # 买来的只到成交那一版，不跟卖家的新版
+    assert [(u.use, u.version_no) for u in made] == [("platform:knowlab:test:t-1", 1)]
+    await refused(
+        lib.consent_platform(BOB, "knowlab", "test", "t-1", [(selling.id, 2)]),
+        404,
+        "version_not_found",
+    )
+    rerun = await lib.consent_platform(
+        ALICE, "knowlab", "rerun", "d-1", [(mine.id, 1), (mine.id, 1)]
+    )
+    assert [u.version_no for u in rerun] == [1]
+    other = await lib.consent_platform(
+        ALICE, "knowlab", "rerun", "d-10", [(mine.id, None)]
+    )
+    assert other[0].version_no == 2
+    # 撤 d-1 不碰 d-10（编号前缀相同也不碰）
+    assert await lib.withdraw_platform(ALICE, "knowlab", "rerun", "d-1") == 1
+    assert await lib.platform_consents(ALICE, "knowlab", "rerun", "d-1") == []
+    assert len(await lib.platform_consents(ALICE, "knowlab", "rerun", "d-10")) == 1
+    await refused(
+        lib.consent_platform(ALICE, "knowbench", "test", "t", [(mine.id, None)]),
+        422,
+        "platform_app_invalid",
+    )
+    await refused(
+        lib.consent_platform(ALICE, "knowlab", "audit", "t", [(mine.id, None)]),
+        422,
+        "platform_kind_invalid",
+    )
+
+
+async def test_subscription_revisions_are_fixed_and_bounded(db):
+    from app.domain.user_library import SubscriptionScope
+
+    lib = library(db)
+    scope = SubscriptionScope(
+        by="description",
+        starts_on=date(2026, 10, 27),
+        ends_on=date(2027, 10, 27),
+        purpose="跟踪茅台定期报告",
+        subjects=("600519.SH",),
+        doc_types=("annual_report", "semiannual_report"),
+    )
+    first = await lib.subscribe(ALICE, "s-1", 1, scope, "user:knowfeed")
+    again = await lib.subscribe(ALICE, "s-1", 1, scope, "user:knowfeed")
+    assert first.id == again.id and first.use == "subscription:s-1@1"
+    await refused(
+        lib.subscribe(
+            ALICE,
+            "s-1",
+            1,
+            SubscriptionScope(**{**scope.__dict__, "purpose": "改"}),
+            "u",
+        ),
+        409,
+        "subscription_revision_exists",
+    )
+    await lib.subscribe(
+        ALICE,
+        "s-1",
+        2,
+        SubscriptionScope(**{**scope.__dict__, "ends_on": date(2027, 6, 30)}),
+        "user:knowfeed",
+    )
+    assert [u.use for u in await lib.subscriptions(ALICE)] == [
+        "subscription:s-1@1",
+        "subscription:s-1@2",
+    ]
+    assert await lib.unsubscribe(ALICE, "s-1", 1) == 1
+    assert [u.use for u in await lib.subscriptions(ALICE)] == ["subscription:s-1@2"]
+    assert await lib.subscriptions(BOB) == []
+
+    too_long = SubscriptionScope(**{**scope.__dict__, "ends_on": date(2027, 12, 31)})
+    await refused(lib.subscribe(ALICE, "s-2", 1, too_long, "u"), 422, "period_too_long")
+    empty = SubscriptionScope(**{**scope.__dict__, "doc_types": ()})
+    await refused(
+        lib.subscribe(ALICE, "s-2", 1, empty, "u"), 422, "subscription_scope_empty"
+    )
+    unknown = SubscriptionScope(**{**scope.__dict__, "subjects": ("茅台",)})
+    await refused(lib.subscribe(ALICE, "s-2", 1, unknown, "u"), 422, "subject_invalid")
+    topic = SubscriptionScope(
+        by="topic",
+        starts_on=date(2026, 10, 27),
+        ends_on=date(2027, 1, 27),
+        purpose="白酒行业政策",
+        topic="白酒 消费税",
+    )
+    made = await lib.subscribe(ALICE, "s-3", 1, topic, "user:knowfeed")
+    assert made.scope["pick_each_round"] is True
+
+
+async def test_processing_consent_is_one_version_of_an_upload(db):
+    lib = library(db)
+    material, first = await lib.upload(ALICE, "scan.pdf", PDF, process=True)
+    assert [(u.use, u.version_no) for u in await lib.uses(ALICE, material.id)] == [
+        (f"processing:{first.id}", 1)
+    ]
+    _, second = await lib.add_version(ALICE, material.id, None, PDF + b"y")
+    assert len(await lib.uses(ALICE, material.id)) == 1  # 新版没勾不加工
+    later = await lib.consent_processing(ALICE, material.id, 2)
+    assert (later.use, later.version_no) == (f"processing:{second.id}", 2)
+    await refused(
+        lib.consent_processing(ALICE, material.id, 9), 404, "version_not_found"
+    )
+    await refused(lib.consent_processing(BOB, material.id, 1), 404, "item_not_found")

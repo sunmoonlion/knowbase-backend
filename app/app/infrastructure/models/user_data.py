@@ -364,11 +364,12 @@ class UserDataMaterialLog(Base):
 class UserDataUse(Base):
     """同意依据（第四版）：用户本人同意一份资料给哪种用途（SDD 0043 第 2.3 节）。
 
-    `use` 的写法：`app:knowbench`、`app:knowlab`（展示给这个应用）、
-    `market`（交给 knowmart
-    待上架）、`expert:<专家>`（绑给名下这位专家，下一版用）、`expert:<专家>@<版本>`（交付时
-    冻结）、`platform:<应用>:<过程>`、`subscription:<订阅>@<修订>`、`processing:<内容版本>`。
-    按资料的那几种 `item_id` 有值；订阅这类按范围的 `item_id` 为空、范围在 `scope`。
+    `use` 的写法：`app:knowbench`、`app:knowlab`（展示给这个应用）、`market`（交给
+    knowmart 待上架）、`expert:<专家>`（绑给名下这位专家，下一版用）、
+    `expert:<专家>@<版本>`（交付时冻结）、`platform:<应用>:<过程>:<过程编号>`、
+    `subscription:<订阅>@<修订>`、`processing:<内容版本>`。
+    按资料的那几种 `item_id` 有值（平台过程每份一行）；订阅这类按范围的 `item_id`
+    为空、范围在 `scope`。
     """
 
     __tablename__ = "user_data_use"
@@ -395,6 +396,13 @@ class UserDataUse(Base):
             "use",
             unique=True,
             postgresql_where=text("withdrawn_at IS NULL AND item_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_user_data_use_account_live",
+            "subject",
+            "use",
+            unique=True,
+            postgresql_where=text("withdrawn_at IS NULL AND item_id IS NULL"),
         ),
         Index(
             "ix_user_data_use_subject",

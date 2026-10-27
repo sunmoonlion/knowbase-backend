@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, Query, Request, Response, status
 from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.domain.user_data import MAX_ITEM_BYTES, Owner
-from app.domain.user_library import Account, Description, ShelfEntry, Use
+from app.domain.user_library import (
+    Account,
+    Description,
+    ShelfEntry,
+    SubscriptionScope,
+    Use,
+)
 from app.domain.vocabulary import snapshot
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.security.relation_auth import (
@@ -40,9 +46,12 @@ from app.interfaces.schemas.user_library import (
     HoldingRead,
     LicenseIn,
     MaterialRead,
+    PlatformConsentIn,
     PurchaseIn,
     PurchaseRead,
     ShelfEntryRead,
+    SubscriptionRead,
+    SubscriptionScopeIn,
     UseIn,
     UseRead,
     VersionRead,
@@ -147,10 +156,14 @@ async def upload_material(
     disclosed_on: date | None = None,
     confirm: bool = False,
     license: str = Query(default="self", max_length=16),
+    process: bool = False,
     owner: Owner = Depends(require_user_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
-    """请求体就是文件本身；描述放在查询参数里，勾了 `confirm` 才算用户确认过。"""
+    """请求体就是文件本身；描述放在查询参数里，勾了 `confirm` 才算用户确认过。
+
+    `process`：本人按页面说明采用加工（交 knowfeed 加工这一版）。
+    """
     content = await _body(request)
     description = Description(
         subject=subject,
@@ -167,6 +180,7 @@ async def upload_material(
             description=description,
             confirm=confirm,
             license_=license,
+            process=process,
         )
     )
     entry = await _call(lambda: service.get(owner.subject, material.id))
@@ -203,11 +217,16 @@ async def add_version(
     material_id: str,
     request: Request,
     name: str | None = Query(default=None, max_length=200),
+    process: bool = False,
     owner: Owner = Depends(require_user_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     content = await _body(request)
-    await _call(lambda: service.add_version(owner.subject, material_id, name, content))
+    await _call(
+        lambda: service.add_version(
+            owner.subject, material_id, name, content, process=process
+        )
+    )
     return _entry(
         await _call(lambda: service.get(owner.subject, material_id)), owner.subject
     )
@@ -312,6 +331,7 @@ def _use(use: Use) -> UseRead:
         created_at=use.created_at,
         created_via=use.created_via,
         version_no=use.version_no,
+        material_id=use.material_id,
     )
 
 
@@ -424,6 +444,160 @@ async def my_experts(
         ExpertRead(expert_id=e.expert_id, name=e.name, latest_version=e.latest_version)
         for e in await _call(lambda: service.experts(owner.subject))
     ]
+
+
+# —— 平台过程、订阅、加工 ——
+
+# 订阅在 knowfeed web端建，由 knowfeed 凭本人令牌转交（SDD 0045 第 2.1 节）
+SUBSCRIPTION_APPS = ("knowfeed",)
+
+
+def _subscription(use: Use) -> SubscriptionRead:
+    subscription_id, revision = use.use.removeprefix("subscription:").rsplit("@", 1)
+    scope = SubscriptionScope.from_dict(use.scope)
+    return SubscriptionRead(
+        subscription_id=subscription_id,
+        revision=int(revision),
+        by=scope.by,
+        starts_on=scope.starts_on,
+        ends_on=scope.ends_on,
+        purpose=scope.purpose,
+        subjects=list(scope.subjects),
+        doc_types=list(scope.doc_types),
+        urls=list(scope.urls),
+        topic=scope.topic,
+        pick_each_round=scope.pick_each_round,
+        created_at=use.created_at,
+    )
+
+
+def _subscribing_app(owner: Owner) -> None:
+    if owner.app not in SUBSCRIPTION_APPS:
+        raise AppException(
+            code="subscription_app_denied",
+            status_code=403,
+            msg="subscriptions are made in knowfeed",
+        )
+
+
+@router.post(
+    "/platform-consents",
+    response_model=list[UseRead],
+    status_code=status.HTTP_201_CREATED,
+)
+async def consent_platform(
+    payload: PlatformConsentIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """本人在 knowlab 确认平台过程的范围；应用就是代办的那个（令牌的 azp）。"""
+    items = [(i.material_id, i.version_no) for i in payload.items]
+    uses = await _call(
+        lambda: service.consent_platform(
+            owner.subject, owner.app, payload.kind, payload.ref, items
+        )
+    )
+    return [_use(u) for u in uses]
+
+
+@router.get("/platform-consents/{kind}/{ref}", response_model=list[UseRead])
+async def platform_consents(
+    kind: str,
+    ref: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    uses = await _call(
+        lambda: service.platform_consents(owner.subject, owner.app, kind, ref)
+    )
+    return [_use(u) for u in uses]
+
+
+@router.delete(
+    "/platform-consents/{kind}/{ref}", status_code=status.HTTP_204_NO_CONTENT
+)
+async def withdraw_platform(
+    kind: str,
+    ref: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    await _call(lambda: service.withdraw_platform(owner.subject, owner.app, kind, ref))
+
+
+@router.get("/subscriptions", response_model=list[SubscriptionRead])
+async def subscriptions(
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    return [
+        _subscription(u)
+        for u in await _call(lambda: service.subscriptions(owner.subject))
+    ]
+
+
+@router.put(
+    "/subscriptions/{subscription_id}/revisions/{revision}",
+    response_model=SubscriptionRead,
+)
+async def subscribe(
+    subscription_id: str,
+    revision: int,
+    payload: SubscriptionScopeIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """建订阅、续订：同一修订重放回原来那条；范围不同要出新修订（409）。"""
+    _subscribing_app(owner)
+    scope = SubscriptionScope(
+        by=payload.by,
+        starts_on=payload.starts_on,
+        ends_on=payload.ends_on,
+        purpose=payload.purpose,
+        subjects=tuple(payload.subjects),
+        doc_types=tuple(payload.doc_types),
+        urls=tuple(payload.urls),
+        topic=payload.topic,
+    )
+    use = await _call(
+        lambda: service.subscribe(
+            owner.subject, subscription_id, revision, scope, f"user:{owner.app}"
+        )
+    )
+    return _subscription(use)
+
+
+@router.delete(
+    "/subscriptions/{subscription_id}/revisions/{revision}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def unsubscribe(
+    subscription_id: str,
+    revision: int,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    _subscribing_app(owner)
+    await _call(lambda: service.unsubscribe(owner.subject, subscription_id, revision))
+
+
+@router.post(
+    "/materials/{material_id}/versions/{version_no}/processing",
+    response_model=UseRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def consent_processing(
+    material_id: str,
+    version_no: int,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """对已传的一版补采用加工（上传时没勾的）。"""
+    return _use(
+        await _call(
+            lambda: service.consent_processing(owner.subject, material_id, version_no)
+        )
+    )
 
 
 # —— 服务：knowlab 推名录、knowmart 成交 ——

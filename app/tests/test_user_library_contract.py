@@ -40,6 +40,10 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.ExpertRead,
     models.PurchaseIn,
     models.PurchaseRead,
+    models.PlatformItemIn,
+    models.PlatformConsentIn,
+    models.SubscriptionScopeIn,
+    models.SubscriptionRead,
 )
 
 

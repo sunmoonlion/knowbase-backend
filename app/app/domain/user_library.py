@@ -252,7 +252,10 @@ _VERSION_LABEL = re.compile(r"^[0-9][0-9.]{0,31}$")
 
 
 def check_material_use(use: str) -> str:
-    """按资料点的那几种用途：展示给应用、交给 knowmart、绑给专家（下一版）。"""
+    """总栏里按资料点的那几种用途：展示给应用、交给 knowmart、绑给专家（下一版）。
+
+    平台过程、订阅、加工另有入口（`platform_use` 等），不走这里。
+    """
     if use in ("app:knowbench", "app:knowlab", "market"):
         return use
     if use.startswith("expert:") and _EXPERT_ID.fullmatch(use.removeprefix("expert:")):
@@ -304,3 +307,114 @@ class Expert:
     name: str
     latest_version: str | None
     updated_at: datetime
+
+
+# —— 平台过程、订阅、加工三种同意依据（块 1b 余下） ——
+
+# 平台过程：孵化、测试、交付审核、自助重跑；范围是「这次过程」，所以用途里带过程编号
+PLATFORM_KINDS: tuple[str, ...] = ("incubate", "test", "review", "rerun")
+PLATFORM_APPS: tuple[str, ...] = ("knowlab",)
+_REF = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+# 订阅：必须有截止日，最长一年（0045 第 2.1 节）
+SUBSCRIPTION_MAX_DAYS = 366
+SUBSCRIPTION_BY: tuple[str, ...] = ("description", "url", "topic")
+
+
+def platform_use(app: str, kind: str, ref: str) -> str:
+    """`platform:<应用>:<过程>:<过程编号>`，如 `platform:knowlab:test:t-42`。"""
+    if app not in PLATFORM_APPS:
+        raise refused("platform_app_invalid", "no platform process in this app")
+    if kind not in PLATFORM_KINDS:
+        raise refused("platform_kind_invalid", "platform process kind is invalid")
+    if not _REF.fullmatch(ref):
+        raise refused("ref_invalid", "process ref is invalid")
+    return f"platform:{app}:{kind}:{ref}"
+
+
+def subscription_use(subscription_id: str, revision: int) -> str:
+    """`subscription:<订阅>@<修订>`；续订出新修订，旧修订的依据照旧可查。"""
+    if not _REF.fullmatch(subscription_id) or not 1 <= revision <= 10_000:
+        raise refused("subscription_invalid", "subscription or revision is invalid")
+    return f"subscription:{subscription_id}@{revision}"
+
+
+def processing_use(version_id: str) -> str:
+    """`processing:<内容版本>`：只这一份、只这个目的。"""
+    return f"processing:{version_id}"
+
+
+@dataclass(frozen=True)
+class SubscriptionScope:
+    """订阅的长期范围同意：订什么、起止、用途、自动取得方式（0045 第 2.1 节）。
+
+    按描述订只认主体与类型，从开始那天起往后新发的；按网址订是栏目页、RSS 源；
+    按主题订每轮的候选仍要本人勾（`pick_each_round`）。
+    """
+
+    by: str
+    starts_on: date
+    ends_on: date
+    purpose: str
+    subjects: tuple[str, ...] = ()
+    doc_types: tuple[str, ...] = ()
+    urls: tuple[str, ...] = ()
+    topic: str | None = None
+
+    @property
+    def pick_each_round(self) -> bool:
+        return self.by == "topic"
+
+    def checked(self) -> SubscriptionScope:
+        if self.by not in SUBSCRIPTION_BY:
+            raise refused("subscription_by_invalid", "subscribe by what is invalid")
+        if self.ends_on < self.starts_on:
+            raise refused("period_invalid", "subscription ends before it starts")
+        if (self.ends_on - self.starts_on).days > SUBSCRIPTION_MAX_DAYS:
+            raise refused("period_too_long", "a subscription lasts at most one year")
+        if not self.purpose.strip() or len(self.purpose) > 200:
+            raise refused("purpose_invalid", "purpose is required")
+        try:
+            for subject in self.subjects:
+                subject_kind(subject)
+            for doc_type in self.doc_types:
+                check_doc_type(doc_type)
+        except VocabularyError as exc:
+            raise UserDataError(422, f"{exc.field}_invalid", str(exc)) from None
+        wanted = {
+            "description": bool(self.subjects and self.doc_types),
+            "url": bool(self.urls),
+            "topic": bool(self.topic and self.topic.strip()),
+        }
+        if not wanted[self.by]:
+            raise refused(
+                "subscription_scope_empty", f"subscribe by {self.by} needs it"
+            )
+        if any(not u.startswith(("https://", "http://")) for u in self.urls):
+            raise refused("url_invalid", "url is invalid")
+        return self
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "by": self.by,
+            "starts_on": self.starts_on.isoformat(),
+            "ends_on": self.ends_on.isoformat(),
+            "purpose": self.purpose,
+            "subjects": list(self.subjects),
+            "doc_types": list(self.doc_types),
+            "urls": list(self.urls),
+            "topic": self.topic,
+            "pick_each_round": self.pick_each_round,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, object]) -> SubscriptionScope:
+        return SubscriptionScope(
+            by=str(data["by"]),
+            starts_on=date.fromisoformat(str(data["starts_on"])),
+            ends_on=date.fromisoformat(str(data["ends_on"])),
+            purpose=str(data["purpose"]),
+            subjects=tuple(data.get("subjects") or ()),  # type: ignore[arg-type]
+            doc_types=tuple(data.get("doc_types") or ()),  # type: ignore[arg-type]
+            urls=tuple(data.get("urls") or ()),  # type: ignore[arg-type]
+            topic=data.get("topic"),  # type: ignore[arg-type]
+        )

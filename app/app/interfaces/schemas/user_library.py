@@ -108,6 +108,7 @@ class UseRead(BaseModel):
     created_at: datetime
     created_via: str
     version_no: int | None
+    material_id: str | None = None
 
 
 class BulkUseIn(BaseModel):
@@ -165,3 +166,50 @@ class PurchaseRead(BaseModel):
     buyer: str
     version_no: int | None
     license: LicenseName
+
+
+class PlatformItemIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_id: str = Field(min_length=1, max_length=64)
+    version_no: int | None = Field(default=None, ge=1)
+
+
+class PlatformConsentIn(BaseModel):
+    """本人在 knowlab 选平台、交审、提交交付时确认的范围：这次过程能看哪几份。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["incubate", "test", "review", "rerun"]
+    ref: str = Field(min_length=1, max_length=64)
+    items: list[PlatformItemIn] = Field(min_length=1, max_length=200)
+
+
+class SubscriptionScopeIn(BaseModel):
+    """建订阅、续订时的长期范围同意（SDD 0045 第 2.1 节）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    by: Literal["description", "url", "topic"]
+    starts_on: date
+    ends_on: date
+    purpose: str = Field(min_length=1, max_length=200)
+    subjects: list[str] = Field(default_factory=list, max_length=50)
+    doc_types: list[str] = Field(default_factory=list, max_length=11)
+    urls: list[str] = Field(default_factory=list, max_length=20)
+    topic: str | None = Field(default=None, max_length=200)
+
+
+class SubscriptionRead(BaseModel):
+    subscription_id: str
+    revision: int
+    by: str
+    starts_on: date
+    ends_on: date
+    purpose: str
+    subjects: list[str]
+    doc_types: list[str]
+    urls: list[str]
+    topic: str | None
+    pick_each_round: bool
+    created_at: datetime

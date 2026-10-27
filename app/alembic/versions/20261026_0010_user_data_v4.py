@@ -234,6 +234,13 @@ def upgrade() -> None:
         postgresql_where=sa.text("withdrawn_at IS NULL AND item_id IS NOT NULL"),
     )
     op.create_index(
+        "uq_user_data_use_account_live",
+        "user_data_use",
+        ["subject", "use"],
+        unique=True,
+        postgresql_where=sa.text("withdrawn_at IS NULL AND item_id IS NULL"),
+    )
+    op.create_index(
         "ix_user_data_use_subject",
         "user_data_use",
         ["subject", "use"],
@@ -315,6 +322,7 @@ def downgrade() -> None:
     op.drop_table("user_data_expert")
     op.drop_table("user_data_account")
     op.drop_index("ix_user_data_use_subject", table_name="user_data_use")
+    op.drop_index("uq_user_data_use_account_live", table_name="user_data_use")
     op.drop_index("uq_user_data_use_live", table_name="user_data_use")
     op.drop_table("user_data_use")
     op.drop_index("ix_user_data_material_log_item", table_name="user_data_material_log")

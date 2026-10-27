@@ -438,19 +438,23 @@ class SqlUserLibraryRepository:
     # —— 同意依据（第四版） ——
 
     async def add_use(self, use: Use) -> Use:
-        """记一条同意依据；同一份资料、同一种用途已有有效的就回已有的那条。"""
+        """记一条同意依据；同一份资料（或账号级）、同一种用途已有有效的就回已有的那条。"""
         async with self._sessions()() as session:
-            if use.material_id is not None:
-                existing = await session.scalar(
-                    select(UserDataUse).where(
-                        UserDataUse.subject == use.subject,
-                        UserDataUse.item_id == uuid.UUID(use.material_id),
-                        UserDataUse.use == use.use,
-                        UserDataUse.withdrawn_at.is_(None),
-                    )
+            item = (
+                UserDataUse.item_id == uuid.UUID(use.material_id)
+                if use.material_id is not None
+                else UserDataUse.item_id.is_(None)
+            )
+            existing = await session.scalar(
+                select(UserDataUse).where(
+                    UserDataUse.subject == use.subject,
+                    item,
+                    UserDataUse.use == use.use,
+                    UserDataUse.withdrawn_at.is_(None),
                 )
-                if existing is not None:
-                    return _use(existing)
+            )
+            if existing is not None:
+                return _use(existing)
             session.add(
                 UserDataUse(
                     id=uuid.UUID(use.id),
@@ -483,6 +487,35 @@ class SqlUserLibraryRepository:
             )
             await session.commit()
             return bool(result.rowcount)
+
+    async def withdraw_named(self, subject: str, use: str, at: datetime) -> int:
+        """撤这个用户这种用途的全部有效依据（平台过程每份一行、订阅账号级一行）。"""
+        async with self._sessions()() as session:
+            result = await session.execute(
+                update(UserDataUse)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.use == use,
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .values(withdrawn_at=at)
+            )
+            await session.commit()
+            return int(result.rowcount or 0)
+
+    async def named(self, subject: str, prefix: str) -> list[Use]:
+        """用途以 `prefix` 开头的有效依据，按时间。"""
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataUse)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.use.startswith(prefix, autoescape=True),
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .order_by(UserDataUse.created_at, UserDataUse.use)
+            )
+            return [_use(r) for r in rows.scalars()]
 
     async def uses_of(self, subject: str, material_id: str) -> list[Use]:
         async with self._sessions()() as session:
