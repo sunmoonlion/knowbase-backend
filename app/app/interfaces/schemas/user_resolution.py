@@ -47,7 +47,8 @@ class ResolveIn(BaseModel):
 
     consumer: str = Field(min_length=1, max_length=160)
     contract_version: Literal["data-request/v1"]
-    needs: list[NeedSpecIn] = Field(min_length=1, max_length=20)
+    # 可以是空的：请专家时先建一张空清单，委托第 0 步提出的再出新修订（decisions ⑭）
+    needs: list[NeedSpecIn] = Field(default_factory=list, max_length=20)
     params: TaskParamsIn
     task_ref: str | None = Field(default=None, max_length=255)
 

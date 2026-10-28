@@ -117,7 +117,8 @@ class UserResolutionService:
             raise refused("contract_version_invalid", f"only {CONTRACT_VERSION}")
         if not _CONSUMER.fullmatch(consumer):
             raise refused("consumer_invalid", "consumer is invalid")
-        checked = _checked_needs(needs)
+        # 可以先建一张空清单：请专家时本人在场先建，委托第 0 步提出的再出新修订
+        checked = _checked_needs(needs, allow_empty=True)
         params.checked()
         items = await self._resolve_needs(subject, app, consumer, checked, params)
         return await self.repo.add_resolution(
@@ -589,8 +590,10 @@ class UserResolutionService:
             raise refused("app_invalid", "resolution runs for knowbench or knowlab")
 
 
-def _checked_needs(needs: list[NeedSpec]) -> list[NeedSpec]:
-    if not 1 <= len(needs) <= MAX_NEEDS:
+def _checked_needs(
+    needs: list[NeedSpec], *, allow_empty: bool = False
+) -> list[NeedSpec]:
+    if not (0 if allow_empty else 1) <= len(needs) <= MAX_NEEDS:
         raise refused("needs_invalid", f"give 1 to {MAX_NEEDS} needs")
     checked = [n.checked() for n in needs]
     if len({n.key for n in checked}) != len(checked):

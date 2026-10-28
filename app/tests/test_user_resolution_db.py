@@ -252,6 +252,23 @@ async def test_a_request_without_a_subject_looks_across_subjects(world):
     ]
 
 
+async def test_an_empty_list_first_then_step_zero_adds_to_it(world):
+    """请专家时先建空清单，第 0 步提出的出新修订（decisions ⑭）。"""
+    await world.report(ALICE, 2025)
+    empty = await world.resolve([])
+    assert (empty.revision, empty.items) == (1, ())
+    added = await world.resolver.add_needs(
+        ALICE, "knowbench", empty.id, [annual(count=1)]
+    )
+    assert added.revision == 2
+    assert [i.status for i in added.items] == ["resolved"]
+    await refused(
+        world.resolver.add_needs(ALICE, "knowbench", empty.id, []),
+        422,
+        "needs_invalid",
+    )
+
+
 async def test_the_user_revises_the_list_before_confirming(world):
     """用户确认前改了（换主体、加一样）：整份换掉重新解析，出新修订。"""
     await world.report(ALICE, 2025)
