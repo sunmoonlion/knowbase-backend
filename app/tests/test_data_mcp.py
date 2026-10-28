@@ -19,6 +19,7 @@ from app.application.services.call_rate import RateLimiter
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
+from app.domain import chart_of_accounts
 from app.domain.user_facts import RawFact, StandardFact
 from app.domain.user_library import PUBLIC_OWNER, Description
 from app.domain.user_runs import GrantRequestItem, InputPin
@@ -243,7 +244,7 @@ async def test_market_lookup_and_sessions(world):
     library = await world.call("list_library", session=session.id)
     assert library == {"materials": []}  # 公开原件不在他名下，经 lookup 与读找
     items = await world.call("describe_items")
-    assert items["version"] == 1 and any(
+    assert items["version"] == chart_of_accounts.CHART_VERSION and any(
         m["key"] == "gross_margin" for m in items["metrics"]
     )
 

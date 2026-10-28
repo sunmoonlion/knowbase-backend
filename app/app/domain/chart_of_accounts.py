@@ -1,19 +1,28 @@
 """统一科目表（SDD 0047 第 4.1 节）：标准化层的数按这里的编码存。
 
 编码是我们自己的（`IS.` 利润表、`BS.` 资产负债表、`CF.` 现金流量表），中文名按财政部
-一般企业财务报表格式的报表项目；银行另有一组。`cas_element` 是对应的财政部《企业
-会计准则通用分类标准》元素名：第 1 版还没有拿到标准文件，先空着，拿到后逐项填，
-不凭记忆编。`aliases` 是报表上常见的其他写法，加工器把原样层的科目名对到编码时用。
+一般企业财务报表格式的报表项目；银行另有一组。`aliases` 是报表上常见的其他写法，加工器把
+原样层的科目名对到编码时用。
+
+`cas_element` 是对应的财政部《企业会计准则通用分类标准》元素（写成 `前缀:名称`）。
+现行正式版是 2015 版（财会〔2015〕6 号；2020 版只是征求意见稿，没有正式发布），按概念
+逐项对过：标准里没有的照实空着，`cas_note` 写原因——多是 2017 年以后准则与报表格式新增
+的项目（合同资产、使用权资产、研发费用、信用减值损失……），2015 版还没有。科目的依据是
+现行的报表格式，XBRL 元素只是附加的对照；银行那一组随银行专家再填（decisions ⑱）。
 
 科目表带版本：改版出新版本，旧事实照旧指它当时的版本。
+- 第 1 版（10-27）：一般企业与银行的三张表。
+- 第 2 版（10-28）：加折旧与摊销四项（附注「现金流量表补充资料」，为以后 DCF 这类
+  估值备数）；对上 2015 版分类标准的元素。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
-CHART_VERSION = 1
+CHART_VERSION = 2
+CAS_TAXONOMY = "企业会计准则通用分类标准 2015 版（财会〔2015〕6 号）"
 
 CompanyType = Literal["general", "bank", "insurance", "securities"]
 COMPANY_TYPES: tuple[CompanyType, ...] = ("general", "bank", "insurance", "securities")
@@ -28,6 +37,7 @@ class ChartItem:
     company_types: tuple[CompanyType, ...]
     aliases: tuple[str, ...] = ()
     cas_element: str | None = None
+    cas_note: str | None = None  # 空着的原因
 
 
 _G: tuple[CompanyType, ...] = ("general",)
@@ -45,7 +55,150 @@ def _items(
     ]
 
 
-_ITEMS: list[ChartItem] = [
+# 对上的 2015 版分类标准元素（10-28 从财政部会计司官网的分类标准压缩包按概念逐项对，
+# 压缩包 sha256 87dda0e4…f8）：编码 → （元素，说明）。一般企业的科目都要在这里
+_NEW_2018 = "2018 年报表格式（财会〔2018〕15 号）新增，2015 版没有"
+_NEW_2017 = "2017 年新增（财会〔2017〕30 号），2015 版没有"
+_NEW_FIN_INSTR = "2017 年修订金融工具准则之后的报表格式新增，2015 版没有"
+_NEW_REVENUE = "2017 年新收入准则新增，2015 版没有"
+_NEW_LEASE = "2018 年新租赁准则新增，2015 版没有"
+CAS_2015: dict[str, tuple[str | None, str | None]] = {
+    "IS.REVENUE": ("cas:Revenues", None),
+    "IS.TOTAL_REVENUE": (
+        None,
+        "2015 版一般企业利润表从营业收入起，没有营业总收入（含金融业务的格式才有）",
+    ),
+    "IS.TOTAL_COST": (
+        None,
+        "2015 版一般企业利润表没有营业总成本（含金融业务的格式才有）",
+    ),
+    "IS.COST": ("cas:CostOfRevenues", None),
+    "IS.TAXES_SURCHARGES": ("cas:BusinessTaxAndSurcharge", None),
+    "IS.SELLING": ("cas:SellingAndMarketingExpense", None),
+    "IS.ADMIN": ("cas:GeneralAndAdministrativeExpenses", None),
+    "IS.RND": (None, _NEW_2018),
+    "IS.FINANCE": ("cas:FinanceExpense", None),
+    "IS.INTEREST_EXPENSE": (
+        None,
+        _NEW_2018 + "（cas:InterestExpenses 是附注口径的利息支出，不等同）",
+    ),
+    "IS.INTEREST_INCOME": ("cas:InterestIncome", None),
+    "IS.OTHER_INCOME": (None, _NEW_2017),
+    "IS.INVESTMENT_INCOME": ("cas:InvestmentIncome", None),
+    "IS.INVESTMENT_INCOME_JV": (
+        "cas:IncomeFromInvestmentInAssociatesAndJointVentures",
+        None,
+    ),
+    "IS.FAIR_VALUE_CHANGE": ("cas:ProfitOrLossArisingFromChangesInFairValue", None),
+    "IS.CREDIT_IMPAIRMENT": (
+        None,
+        _NEW_FIN_INSTR,
+    ),
+    "IS.ASSET_IMPAIRMENT": ("cas:ImpairmentLoss", None),
+    "IS.ASSET_DISPOSAL": (None, _NEW_2017),
+    "IS.NON_OPERATING_INCOME": ("cas:NonOperatingIncome", None),
+    "IS.NON_OPERATING_EXPENSE": ("cas:NonOperatingExpenses", None),
+    "IS.OPERATING_PROFIT": ("cas:OperatingProfits", None),
+    "IS.PROFIT_BEFORE_TAX": ("cas:ProfitLossBeforeIncomeTaxes", None),
+    "IS.INCOME_TAX": ("cas:IncomeTaxExpenses", None),
+    "IS.NET_PROFIT": ("ifrs-full:ProfitLoss", None),
+    "IS.NET_PROFIT_PARENT": ("ifrs-full:ProfitLossAttributableToOwnersOfParent", None),
+    "IS.NET_PROFIT_PARENT_DEDUCTED": (
+        None,
+        "不是报表项目（主要会计数据里的指标），分类标准没有对应元素",
+    ),
+    "IS.MINORITY_PROFIT": (
+        "ifrs-full:ProfitLossAttributableToNoncontrollingInterests",
+        None,
+    ),
+    "IS.EPS_BASIC": ("ifrs-full:BasicEarningsLossPerShare", None),
+    "IS.EPS_DILUTED": ("ifrs-full:DilutedEarningsLossPerShare", None),
+    "BS.CASH": ("cas:BankBalancesAndCash", None),
+    "BS.TRADING_FIN_ASSETS": ("cas:FinancialAssetsHeldForTrading", None),
+    "BS.NOTES_RECEIVABLE": ("cas:NotesReceivable", None),
+    "BS.ACCOUNTS_RECEIVABLE": ("cas:AccountsReceivable", None),
+    "BS.RECEIVABLES_FINANCING": (
+        None,
+        _NEW_FIN_INSTR,
+    ),
+    "BS.PREPAYMENTS": ("cas:AdvancesToSuppliers", None),
+    "BS.OTHER_RECEIVABLES": ("cas:OtherReceivables", None),
+    "BS.INVENTORIES": ("ifrs-full:Inventories", None),
+    "BS.CONTRACT_ASSETS": (None, _NEW_REVENUE),
+    "BS.OTHER_CURRENT_ASSETS": ("cas:OtherCurrentAssets", None),
+    "BS.TOTAL_CURRENT_ASSETS": ("ifrs-full:CurrentAssets", None),
+    "BS.LT_EQUITY_INVEST": ("cas:LongTermEquityInvestments", None),
+    "BS.INVESTMENT_PROPERTY": ("ifrs-full:InvestmentProperty", None),
+    "BS.FIXED_ASSETS": ("ifrs-full:PropertyPlantAndEquipment", None),
+    "BS.CIP": ("cas:ConstructionInProgress", None),
+    "BS.RIGHT_OF_USE": (None, _NEW_LEASE),
+    "BS.INTANGIBLES": ("ifrs-full:IntangibleAssetsOtherThanGoodwill", None),
+    "BS.GOODWILL": ("ifrs-full:Goodwill", None),
+    "BS.DEFERRED_TAX_ASSETS": ("ifrs-full:DeferredTaxAssets", None),
+    "BS.TOTAL_NONCURRENT_ASSETS": ("ifrs-full:NoncurrentAssets", None),
+    "BS.SHORT_BORROWINGS": ("cas:ShortTermBorrowings", None),
+    "BS.NOTES_PAYABLE": ("cas:NotesPayable", None),
+    "BS.ACCOUNTS_PAYABLE": ("cas:AccountsPayable", None),
+    "BS.ADVANCES_RECEIVED": ("cas:AdvancesFromCustomers", None),
+    "BS.CONTRACT_LIABILITIES": (None, _NEW_REVENUE),
+    "BS.PAYROLL_PAYABLE": ("cas:EmployeeBenefitsPayables", None),
+    "BS.TAXES_PAYABLE": ("ifrs-full:CurrentTaxLiabilities", None),
+    "BS.OTHER_PAYABLES": ("cas:OtherPayables", None),
+    "BS.NONCURRENT_LIAB_DUE_1Y": ("cas:CurrentPortionOfLongTermLiabilities", None),
+    "BS.TOTAL_CURRENT_LIABILITIES": ("ifrs-full:CurrentLiabilities", None),
+    "BS.LT_BORROWINGS": ("cas:NonCurrentPortionOfLongTermBorrowings", None),
+    "BS.BONDS_PAYABLE": ("cas:BondsPayable", None),
+    "BS.LEASE_LIABILITIES": (None, _NEW_LEASE),
+    "BS.TOTAL_NONCURRENT_LIABILITIES": ("ifrs-full:NoncurrentLiabilities", None),
+    "BS.PAID_IN_CAPITAL": ("ifrs-full:IssuedCapital", None),
+    "BS.CAPITAL_RESERVE": ("cas:CapitalSurplus", None),
+    "BS.TREASURY_STOCK": ("ifrs-full:TreasuryShares", None),
+    "BS.OTHER_COMPREHENSIVE_INCOME": (
+        "ifrs-full:AccumulatedOtherComprehensiveIncome",
+        None,
+    ),
+    "BS.SURPLUS_RESERVE": ("cas:SurplusReserves", None),
+    "BS.RETAINED_EARNINGS": ("ifrs-full:RetainedEarnings", None),
+    "BS.TOTAL_ASSETS": ("ifrs-full:Assets", None),
+    "BS.TOTAL_LIABILITIES": ("ifrs-full:Liabilities", None),
+    "BS.EQUITY_PARENT": ("ifrs-full:EquityAttributableToOwnersOfParent", None),
+    "BS.MINORITY_EQUITY": ("ifrs-full:NoncontrollingInterests", None),
+    "BS.TOTAL_EQUITY": ("ifrs-full:Equity", None),
+    "BS.TOTAL_LIABILITIES_EQUITY": ("ifrs-full:EquityAndLiabilities", None),
+    "CF.SALES_CASH": ("ifrs-full:ReceiptsFromSalesOfGoodsAndRenderingOfServices", None),
+    "CF.OPERATING_INFLOW": ("cas:CashInflowsFromOperatingActivities", None),
+    "CF.PURCHASE_CASH": ("ifrs-full:PaymentsToSuppliersForGoodsAndServices", None),
+    "CF.OPERATING_OUTFLOW": ("cas:CashOutflowsFromOperatingActivities", None),
+    "CF.CAPEX": (
+        "cas:CashPaidToAcquireFixedAssetsIntangibleAssetsAndOtherLongtermAssets",
+        None,
+    ),
+    "CF.DIVIDENDS_INTEREST_PAID": (
+        "cas:CashPaymentsForDistributionOfDividendsOrProfitAndInterestExpenses",
+        None,
+    ),
+    "CF.NET_OPERATING": ("ifrs-full:CashFlowsFromUsedInOperatingActivities", None),
+    "CF.NET_INVESTING": ("ifrs-full:CashFlowsFromUsedInInvestingActivities", None),
+    "CF.NET_FINANCING": ("ifrs-full:CashFlowsFromUsedInFinancingActivities", None),
+    "CF.FX_EFFECT": (
+        "ifrs-full:EffectOfExchangeRateChangesOnCashAndCashEquivalents",
+        None,
+    ),
+    "CF.NET_CHANGE_CASH": ("ifrs-full:IncreaseDecreaseInCashAndCashEquivalents", None),
+    "CF.BEGINNING_CASH": ("ifrs-full:CashAndCashEquivalents", "同一元素，取期初时点"),
+    "CF.ENDING_CASH": ("ifrs-full:CashAndCashEquivalents", "同一元素，取期末时点"),
+    "CF.DEPRECIATION_FIXED_ASSETS": (
+        "cas:DepreciationOfFixedAssetsDepletionOfOilAndNaturalGasAssetsAndDepreciationOfBearerBiologicalAssets",
+        None,
+    ),
+    "CF.DEPRECIATION_RIGHT_OF_USE": (None, _NEW_LEASE),
+    "CF.AMORTIZATION_INTANGIBLES": ("cas:IntangibleAssetsAmortization", None),
+    "CF.AMORTIZATION_LT_PREPAID": ("cas:LongTermDeferredExpensesAmortization", None),
+}
+_BANK_NOTE = "银行科目随银行专家再填（decisions ⑱）"
+
+
+_ITEMS_RAW: list[ChartItem] = [
     # —— 利润表（一般企业） ——
     *_items(
         "income",
@@ -215,6 +368,21 @@ _ITEMS: list[ChartItem] = [
             ("CF.DIVIDENDS_INTEREST_PAID", "分配股利、利润或偿付利息支付的现金"),
         ],
     ),
+    # 附注「现金流量表补充资料」里将净利润调节为经营活动现金流量的几行（第 2 版）
+    *_items(
+        "cashflow",
+        _G,
+        [
+            (
+                "CF.DEPRECIATION_FIXED_ASSETS",
+                "固定资产折旧、油气资产折耗、生产性生物资产折旧",
+                ["固定资产折旧"],
+            ),
+            ("CF.DEPRECIATION_RIGHT_OF_USE", "使用权资产折旧", ["使用权资产摊销"]),
+            ("CF.AMORTIZATION_INTANGIBLES", "无形资产摊销"),
+            ("CF.AMORTIZATION_LT_PREPAID", "长期待摊费用摊销"),
+        ],
+    ),
     *_items(
         "cashflow",
         _GB,
@@ -230,6 +398,15 @@ _ITEMS: list[ChartItem] = [
     ),
 ]
 
+
+def _with_cas(item: ChartItem) -> ChartItem:
+    if "general" not in item.company_types:
+        return replace(item, cas_note=_BANK_NOTE)
+    element, note = CAS_2015[item.code]
+    return replace(item, cas_element=element, cas_note=note)
+
+
+_ITEMS: list[ChartItem] = [_with_cas(i) for i in _ITEMS_RAW]
 CHART: dict[str, ChartItem] = {i.code: i for i in _ITEMS}
 assert len(CHART) == len(_ITEMS), "chart codes are unique"
 
@@ -244,6 +421,7 @@ def snapshot() -> dict[str, object]:
     """给加工器、专家、web端看的整张科目表。"""
     return {
         "version": CHART_VERSION,
+        "cas_taxonomy": CAS_TAXONOMY,
         "company_types": list(COMPANY_TYPES),
         "items": [
             {
@@ -253,6 +431,7 @@ def snapshot() -> dict[str, object]:
                 "company_types": list(i.company_types),
                 "aliases": list(i.aliases),
                 "cas_element": i.cas_element,
+                "cas_note": i.cas_note,
             }
             for i in _ITEMS
         ],

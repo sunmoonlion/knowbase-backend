@@ -15,6 +15,7 @@ from app.application.services.call_rate import RateLimiter
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
+from app.domain import chart_of_accounts
 from app.domain.user_data import Owner
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_resolution import (
@@ -781,7 +782,7 @@ async def test_facts_written_by_knowfeed_and_queried_by_run_and_market(api):
     assert market.status_code == 200, market.text
     assert [(r["subject"], r["page"]) for r in market.json()] == [("600519.SH", 88)]
     chart = (await client.get(f"{BASE}/chart")).json()
-    assert chart["version"] == 1 and "gross_margin" in {
+    assert chart["version"] == chart_of_accounts.CHART_VERSION and "gross_margin" in {
         m["key"] for m in chart["metrics"]
     }
 
