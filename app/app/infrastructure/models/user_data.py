@@ -720,15 +720,13 @@ class UserDataConfirmation(Base):
 
 
 class UserDataPreference(Base):
-    """偏好：用户 × 使用者 × 声明契约版本 × 需求 key × 规范化的任务参数 → 资料。"""
+    """偏好：用户 × 使用者 × 描述（摘要）→ 资料（10-28 起，decisions ⑭）。"""
 
     __tablename__ = "user_data_preference"
 
     subject: Mapped[str] = mapped_column(String(255), primary_key=True)
     consumer: Mapped[str] = mapped_column(String(160), primary_key=True)
-    contract_version: Mapped[str] = mapped_column(String(40), primary_key=True)
-    need_key: Mapped[str] = mapped_column(String(40), primary_key=True)
-    params_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     material_ids: Mapped[list] = mapped_column(JSONB, nullable=False)
     vocab_version: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(

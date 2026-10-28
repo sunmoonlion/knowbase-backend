@@ -48,6 +48,7 @@ NEED = NeedSpec(
     doc_type="annual_report",
     period=PeriodRule("fixed", date(2025, 1, 1), date(2025, 12, 31)),
     formats=("csv",),
+    subject=MAOTAI,
 )
 
 
@@ -89,7 +90,7 @@ class World:
             "expert:fa-1@2",
             CONTRACT_VERSION,
             [NEED],
-            TaskParams(subjects=(MAOTAI,), task_date=date(2026, 10, 27)),
+            TaskParams(task_date=date(2026, 10, 27)),
         )
 
 

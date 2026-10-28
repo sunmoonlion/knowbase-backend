@@ -1,9 +1,9 @@
-"""按描述查与解析（SDD 0043 第三节）：数据需求声明 v2、任务参数、展开、解析结果、确认。
+"""按描述查与解析（SDD 0043 第三节）：一样数据的描述、展开、解析结果、确认。
 
-声明（`knowbot-manifest/v2` 的数据需求）只在这里定义一处：作者在 knowlab 写声明模板
-（要什么类型、哪几期、什么格式、几份、来源限制、多候选时怎么挑），请专家的人发起
-任务时给主体（一家或几家）、必要时覆盖期间；knowbase 把两者展开成一条条精确的描述
-（主体 × 类型 × 报告期），逐条在请的人名下找。
+「一样数据的描述」（契约 `data-request/v1`）只在这里定义一处：每件委托要什么数据，
+由委托第 0 步用户自己的模型读专家逻辑和用户问题提出、用户改过（decisions ⑭）——
+主体（或不限主体）、类型、期间规则、格式、几份、来源限制、多候选时怎么挑；knowbase
+按任务日期把它展开成一条条精确的描述（主体 × 类型 × 期间），逐条在请的人名下找。
 
 描述只按词表里的值匹配：主体、类型、报告期（定期报告的报告期按词表的规矩写），
 格式与来源限制只做筛选；口径、说明是自由文本，只展示。
@@ -33,10 +33,9 @@ from app.domain.vocabulary import (
     subject_kind,
 )
 
-CONTRACT_VERSION = "knowbot-manifest/v2"
+CONTRACT_VERSION = "data-request/v1"
 NEED_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 MAX_NEEDS = 20
-MAX_SUBJECTS = 10
 MAX_LATEST = 10
 MAX_RECENT_MONTHS = 60
 MAX_ITEMS = 200
@@ -113,7 +112,7 @@ class PeriodRule:
 
 @dataclass(frozen=True)
 class NeedSpec:
-    """声明模板里的一样。"""
+    """一样数据的描述（第 0 步提出、用户改过的）。主体为空就是不限主体。"""
 
     key: str
     name: str
@@ -134,12 +133,15 @@ class NeedSpec:
     edition: str = "full"
     topics: tuple[str, ...] = ()
     industry: str | None = None
+    subject: str | None = None
 
     def checked(self) -> NeedSpec:
         if not NEED_KEY.fullmatch(self.key):
             raise refused("need_key_invalid", "need key is invalid")
         if not self.name.strip() or len(self.name) > 80 or len(self.description) > 500:
             raise refused("need_name_invalid", "need name is invalid")
+        if self.subject is not None:
+            _vocab(lambda: subject_kind(self.subject))  # type: ignore[arg-type]
         _vocab(lambda: check_doc_type_or_class(self.doc_type))
         _vocab(lambda: check_edition(self.edition))
         _vocab(lambda: check_topics(self.topics))
@@ -197,55 +199,22 @@ class NeedSpec:
             "edition": self.edition,
             "topics": list(self.topics),
             "industry": self.industry,
+            "subject": self.subject,
         }
 
 
 @dataclass(frozen=True)
 class TaskParams:
-    """请专家的人发起任务时给的：主体（一家或几家）、任务日期、必要时覆盖期间。"""
+    """解析用的任务参数：只有任务日期（「最近 N 期」「截至任务日期已披露」按它算）。
+    主体写在每一样描述上（10-28 起不再由请专家的人另给）。"""
 
-    subjects: tuple[str, ...]
     task_date: date
-    period_start: date | None = None
-    period_end: date | None = None
 
     def checked(self) -> TaskParams:
-        if not 1 <= len(self.subjects) <= MAX_SUBJECTS:
-            raise refused("subjects_invalid", f"give 1 to {MAX_SUBJECTS} subjects")
-        if len(set(self.subjects)) != len(self.subjects):
-            raise refused("subjects_invalid", "a subject is given twice")
-        for s in self.subjects:
-            _vocab(lambda s=s: subject_kind(s))
-        _vocab(lambda: check_period(self.period_start, self.period_end))
         return self
 
-    def normalized(self) -> str:
-        """偏好的键用的规范化参数：主体排序、覆盖的期间；不含任务日期。"""
-        return json.dumps(
-            {
-                "subjects": sorted(self.subjects),
-                "period": [
-                    self.period_start.isoformat() if self.period_start else None,
-                    self.period_end.isoformat() if self.period_end else None,
-                ],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-
-    @property
-    def params_hash(self) -> str:
-        return hashlib.sha256(self.normalized().encode("utf-8")).hexdigest()
-
     def as_dict(self) -> dict[str, object]:
-        return {
-            "subjects": list(self.subjects),
-            "task_date": self.task_date.isoformat(),
-            "period_start": self.period_start.isoformat()
-            if self.period_start
-            else None,
-            "period_end": self.period_end.isoformat() if self.period_end else None,
-        }
+        return {"task_date": self.task_date.isoformat()}
 
 
 @dataclass(frozen=True)
@@ -254,11 +223,11 @@ class DescriptionKey:
     行业（缩小范围用，不改「在不在」怎么认）。
 
     类型可以是细类或大类；定期报告的期间是报告期（一条对一份），其余类型的期间是
-    披露时间窗（一条对窗里的一批）；不限期间的两头都空。缺省的版本形态（全文）、
+    披露时间窗（一条对窗里的一批）；不限期间的两头都空；不限主体的主体为空。缺省的版本形态（全文）、
     空的事项与行业不写进字典，旧的字典照样读得回来。
     """
 
-    subject: str
+    subject: str | None
     doc_type: str
     period_start: date | None = None
     period_end: date | None = None
@@ -267,7 +236,8 @@ class DescriptionKey:
     industry: str | None = None
 
     def checked(self) -> DescriptionKey:
-        _vocab(lambda: subject_kind(self.subject))
+        if self.subject is not None:
+            _vocab(lambda: subject_kind(self.subject))  # type: ignore[arg-type]
         _vocab(lambda: check_doc_type_or_class(self.doc_type))
         _vocab(lambda: check_period(self.period_start, self.period_end))
         _vocab(lambda: check_edition(self.edition))
@@ -298,7 +268,7 @@ class DescriptionKey:
         start, end = data.get("period_start"), data.get("period_end")
         topics = data.get("topics") or ()
         return DescriptionKey(
-            subject=str(data["subject"]),
+            subject=str(data["subject"]) if data.get("subject") else None,
             doc_type=str(data["doc_type"]),
             period_start=date.fromisoformat(str(start)) if start else None,
             period_end=date.fromisoformat(str(end)) if end else None,
@@ -319,16 +289,14 @@ class Wanted:
 
 
 def expand(need: NeedSpec, params: TaskParams) -> list[Wanted]:
-    """声明 × 任务参数 → 一条条描述（新的期在前）。
+    """一样数据的描述 × 任务日期 → 一条条描述（新的期在前）。
 
     定期报告一期一条；其余类型一条就是一个披露时间窗（或不限期间）。
     """
     rule = need.period
-    if params.period_start is not None and rule.kind != "none":
-        # 请的人覆盖期间：定期报告按覆盖范围里每年的那一期，其余就是这一段
-        rule = PeriodRule("fixed", params.period_start, params.period_end)
+    subject = need.subject
 
-    def key(subject: str, start: date | None = None, end: date | None = None):
+    def key(subject: str | None, start: date | None = None, end: date | None = None):
         return DescriptionKey(
             subject,
             need.doc_type,
@@ -340,24 +308,23 @@ def expand(need: NeedSpec, params: TaskParams) -> list[Wanted]:
         )
 
     out: list[Wanted] = []
-    for subject in params.subjects:
-        if rule.kind == "none":
-            out.append(Wanted(need.key, key(subject)))
-        elif rule.kind == "recent":
-            assert rule.months is not None
-            start = months_before(params.task_date, rule.months)
-            out.append(Wanted(need.key, key(subject, start, params.task_date)))
-        elif rule.kind == "fixed":
-            assert rule.start is not None and rule.end is not None
-            if need.doc_type in PERIODIC:
-                for year in range(rule.end.year, rule.start.year - 1, -1):
-                    start, end = report_period(need.doc_type, year)
-                    if rule.start <= end <= rule.end:
-                        out.append(Wanted(need.key, key(subject, start, end)))
-            else:
-                out.append(Wanted(need.key, key(subject, rule.start, rule.end)))
+    if rule.kind == "none":
+        out.append(Wanted(need.key, key(subject)))
+    elif rule.kind == "recent":
+        assert rule.months is not None
+        start = months_before(params.task_date, rule.months)
+        out.append(Wanted(need.key, key(subject, start, params.task_date)))
+    elif rule.kind == "fixed":
+        assert rule.start is not None and rule.end is not None
+        if need.doc_type in PERIODIC:
+            for year in range(rule.end.year, rule.start.year - 1, -1):
+                start, end = report_period(need.doc_type, year)
+                if rule.start <= end <= rule.end:
+                    out.append(Wanted(need.key, key(subject, start, end)))
         else:
-            out.extend(_latest(need, subject, rule, params.task_date, key))
+            out.append(Wanted(need.key, key(subject, rule.start, rule.end)))
+    else:
+        out.extend(_latest(need, subject, rule, params.task_date, key))
     if len(out) > MAX_ITEMS:
         raise refused("too_many_items", f"the needs expand to more than {MAX_ITEMS}")
     return out
@@ -377,7 +344,7 @@ def months_before(day: date, months: int) -> date:
 
 
 def _latest(
-    need: NeedSpec, subject: str, rule: PeriodRule, task_date: date, key
+    need: NeedSpec, subject: str | None, rule: PeriodRule, task_date: date, key
 ) -> list[Wanted]:
     """最近 N 个完整的报告期（报告期末在任务日期之前）；要「截至任务日期已披露」的，
     还没到法定截止的那一期标 tentative，多展开一期备着。"""
@@ -498,16 +465,21 @@ class Confirmation:
 
 @dataclass(frozen=True)
 class Preference:
-    """换过的记成偏好：只是排序输入，每次仍核当前权利；词表改版就失效。"""
+    """换过的记成偏好（用户 × 使用者 × 描述）：只是排序输入，每次仍核当前权利；
+    词表改版就失效。"""
 
     subject: str
     consumer: str
-    contract_version: str
-    need_key: str
-    params_hash: str
+    key_id: str
     material_ids: tuple[str, ...]
     vocab_version: int
     updated_at: datetime
+
+
+def key_id(key: DescriptionKey) -> str:
+    """偏好按描述记：描述字典的摘要。"""
+    body = json.dumps(key.as_dict(), sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def candidate_dict(c: Candidate) -> dict[str, object]:
@@ -606,14 +578,9 @@ def need_from(data: dict[str, object]) -> NeedSpec:
         edition=str(data.get("edition") or "full"),
         topics=tuple(data.get("topics") or ()),  # type: ignore[arg-type]
         industry=data.get("industry"),  # type: ignore[arg-type]
+        subject=data.get("subject"),  # type: ignore[arg-type]
     )
 
 
 def params_from(data: dict[str, object]) -> TaskParams:
-    start, end = data.get("period_start"), data.get("period_end")
-    return TaskParams(
-        subjects=tuple(data["subjects"]),  # type: ignore[arg-type]
-        task_date=date.fromisoformat(str(data["task_date"])),
-        period_start=date.fromisoformat(str(start)) if start else None,
-        period_end=date.fromisoformat(str(end)) if end else None,
-    )
+    return TaskParams(task_date=date.fromisoformat(str(data["task_date"])))

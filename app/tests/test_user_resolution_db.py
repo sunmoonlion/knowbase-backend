@@ -24,6 +24,7 @@ from app.domain.user_resolution import (
     PeriodRule,
     TaskParams,
     expand,
+    key_id,
 )
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_resolution import (
@@ -44,11 +45,11 @@ def annual(count=3, **kw) -> NeedSpec:
         doc_type="annual_report",
         period=PeriodRule("latest", count=count, disclosed_by_task_date=True),
         formats=("csv", "pdf"),
-        **kw,
+        **{"subject": MAOTAI, **kw},
     )
 
 
-PARAMS = TaskParams(subjects=(MAOTAI,), task_date=TASK_DAY)
+PARAMS = TaskParams(task_date=TASK_DAY)
 
 
 def test_latest_periods_hold_back_the_one_not_yet_due():
@@ -180,9 +181,7 @@ async def test_resolve_marks_each_period(world):
         (2024, "not_shown"),
     ]
     # 披露在任务日期之后的不算
-    late = await world.resolve(
-        [annual()], TaskParams(subjects=(MAOTAI,), task_date=date(2027, 3, 5))
-    )
+    late = await world.resolve([annual()], TaskParams(task_date=date(2027, 3, 5)))
     assert statuses(late)[0] == (2025, "resolved")
 
 
@@ -193,6 +192,7 @@ async def test_private_types_cannot_be_collected_and_disabled_cannot_be_used(wor
         doc_type="other_table",
         period=PeriodRule("none"),
         formats=("csv",),
+        subject=MAOTAI,
     )
     result = await world.resolve([table])
     assert [(i.status, i.reason) for i in result.items] == [
@@ -215,7 +215,7 @@ async def test_several_candidates_need_a_choice_priority_or_preference(world):
     newest = await world.resolve([annual(count=1, priority="newest")])
     assert newest.items[0].chosen[0].material_id == new.id
     await world.resolver.record_preference(
-        ALICE, "expert:fa-1@2", "annual", PARAMS, [old.id]
+        ALICE, "expert:fa-1@2", result.items[0].key, [old.id]
     )
     preferred = await world.resolve([annual(count=1)])
     assert (preferred.items[0].status, preferred.items[0].reason) == (
@@ -226,8 +226,58 @@ async def test_several_candidates_need_a_choice_priority_or_preference(world):
     # 偏好只认同一个使用者
     other = await world.resolve([annual(count=1)], consumer="expert:fa-2@1")
     assert other.items[0].status == "ambiguous"
-    prefs = await world.resolver.preferences(ALICE, "expert:fa-1@2", PARAMS)
-    assert [(p.need_key, p.material_ids) for p in prefs] == [("annual", (old.id,))]
+    prefs = await world.resolver.preferences(ALICE, "expert:fa-1@2")
+    assert [(p.key_id, p.material_ids) for p in prefs] == [
+        (key_id(result.items[0].key), (old.id,))
+    ]
+
+
+async def test_a_request_without_a_subject_looks_across_subjects(world):
+    """不限主体的（decisions ⑭）：不按主体筛；找不到交不了 knowfeed。"""
+    y2025, _ = await world.report(ALICE, 2025)
+    anyone = annual(count=1, subject=None)
+    result = await world.resolve([anyone])
+    assert result.items[0].key.subject is None
+    assert [c.material_id for c in result.items[0].chosen] == [y2025.id]
+    policy = NeedSpec(
+        key="rules",
+        name="业务规则",
+        doc_type="business_rule",
+        period=PeriodRule("recent", months=12),
+        formats=("pdf",),
+    )
+    missing = await world.resolve([policy])
+    assert [(i.status, i.reason) for i in missing.items] == [
+        ("not_collectable", "no_subject")
+    ]
+
+
+async def test_the_user_revises_the_list_before_confirming(world):
+    """用户确认前改了（换主体、加一样）：整份换掉重新解析，出新修订。"""
+    await world.report(ALICE, 2025)
+    first = await world.resolve([annual(count=1)])
+    other = annual(count=1, subject="000858.SZ")
+    extra = NeedSpec(
+        key="half",
+        name="半年报",
+        doc_type="semiannual_report",
+        period=PeriodRule("latest", count=1),
+        formats=("pdf",),
+        subject=MAOTAI,
+    )
+    revised = await world.resolver.revise_needs(
+        ALICE, "knowbench", first.id, [other, extra]
+    )
+    assert (revised.id, revised.revision) == (first.id, 2)
+    assert [(i.need_key, i.key.subject, i.status) for i in revised.items] == [
+        ("annual", "000858.SZ", "to_confirm"),
+        ("half", MAOTAI, "to_confirm"),
+    ]
+    await refused(
+        world.resolver.revise_needs(BOB, "knowbench", first.id, [other]),
+        404,
+        "resolution_not_found",
+    )
 
 
 async def test_reading_must_be_ready(world):

@@ -1,12 +1,13 @@
 """按描述查、解析、确认、偏好（SDD 0043 第三节，块 2）。
 
 - 按描述查：只认精确的键，只答「这一份在不在、在哪个范围」；同一用户限流。
-- 解析：声明模板 × 任务参数展开成一条条描述，逐条在请的人名下找，每条一个结果
-  （已定、你有没放开、待确认、采不来、有歧义、等数据、不能用），存成解析清单；
-  运行中冒出的新需求出新修订，已有的条目不动。
-- 确认：用户点一次，应用凭本人令牌交来；记清单修订、条目、声明快照、供给条件快照，
+- 解析：这件委托的描述（第 0 步提出、用户改过的）按任务日期展开成一条条，逐条在
+  请的人名下找，每条一个结果（已定、你有没放开、待确认、采不来、有歧义、等数据、
+  不能用），存成解析清单；用户在确认前改了（换主体、改期间、去掉、加一样）出新修订；
+  运行中冒出的新需求也出新修订，已有的条目不动。
+- 确认：用户点一次，应用凭本人令牌交来；记清单修订、条目、清单快照、供给条件快照，
   7 天有效；按入口分支告诉应用哪些已经齐了、哪些要交 knowfeed。knowfeed 受理前来核。
-- 偏好：只是排序输入，每次仍核当前权利；词表改版就不用。接口先只读。
+- 偏好：用户 × 使用者 × 描述；只是排序输入，每次仍核当前权利；词表改版就不用。
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from app.domain.user_resolution import (
     TaskParams,
     Wanted,
     expand,
+    key_id,
     rank,
 )
 from app.domain.user_runs import denied
@@ -166,6 +168,33 @@ class UserResolutionService:
             )
         )
 
+    async def revise_needs(
+        self, subject: str, app: str, resolution_id: str, needs: list[NeedSpec]
+    ) -> Resolution:
+        """用户确认前改了这张清单（换主体、改期间、去掉、自己加一样）：整份描述换成
+        改过的，重新解析，出新修订；描述没变的那几样照样解析，换选按条目编号接着认。"""
+        current = await self._own_resolution(subject, app, resolution_id, None)
+        checked = _checked_needs(needs)
+        items = await self._resolve_needs(
+            subject, app, current.consumer, checked, current.params
+        )
+        return await self.repo.add_resolution(
+            Resolution(
+                id=current.id,
+                revision=0,
+                subject=subject,
+                app=app,
+                consumer=current.consumer,
+                contract_version=current.contract_version,
+                vocab_version=VOCAB_VERSION,
+                needs=tuple(checked),
+                params=current.params,
+                items=tuple(items),
+                created_at=self.now(),
+                task_ref=current.task_ref,
+            )
+        )
+
     async def add_needs_for_run(
         self, caller: str, subject: str, resolution_id: str, needs: list[NeedSpec]
     ) -> Resolution:
@@ -268,10 +297,8 @@ class UserResolutionService:
         params: TaskParams,
     ) -> list[ResultItem]:
         preferences = {
-            p.need_key: p
-            for p in await self.repo.preferences(
-                subject, consumer, CONTRACT_VERSION, params.params_hash
-            )
+            p.key_id: p
+            for p in await self.repo.preferences(subject, consumer)
             if p.vocab_version == VOCAB_VERSION
         }
         waiting = await self._waiting_keys(subject)
@@ -284,7 +311,7 @@ class UserResolutionService:
                     app,
                     need,
                     wanted,
-                    preferences.get(need.key),
+                    preferences.get(key_id(wanted.key)),
                     waiting,
                     params,
                 )
@@ -349,6 +376,9 @@ class UserResolutionService:
         if reading_missing:
             # 原件在、读法没齐：交 knowfeed 补读法
             return ResultItem(need.key, key, "to_confirm", reason="reading_missing")
+        if key.subject is None:
+            # 不限主体的：渠道按主体采，交不了 knowfeed
+            return ResultItem(need.key, key, "not_collectable", reason="no_subject")
         if collectable(key.subject, key.doc_type):
             return ResultItem(need.key, key, "to_confirm")
         reason = "needs_url" if key.doc_type == "webpage" else "private"
@@ -507,15 +537,10 @@ class UserResolutionService:
 
     # —— 偏好 ——
 
-    async def preferences(
-        self, subject: str, consumer: str, params: TaskParams
-    ) -> list[Preference]:
-        params.checked()
+    async def preferences(self, subject: str, consumer: str) -> list[Preference]:
         return [
             p
-            for p in await self.repo.preferences(
-                subject, consumer, CONTRACT_VERSION, params.params_hash
-            )
+            for p in await self.repo.preferences(subject, consumer)
             if p.vocab_version == VOCAB_VERSION
         ]
 
@@ -523,21 +548,18 @@ class UserResolutionService:
         self,
         subject: str,
         consumer: str,
-        need_key: str,
-        params: TaskParams,
+        key: DescriptionKey,
         material_ids: list[str],
     ) -> Preference:
-        """用户开跑前换过：记成偏好（接口随 knowbench 块 6 开）。"""
-        params.checked()
+        """用户换过：记成偏好（按描述）。"""
+        key.checked()
         if not 1 <= len(material_ids) <= MAX_ITEMS:
             raise refused("items_invalid", "give the chosen materials")
         return await self.repo.save_preference(
             Preference(
                 subject=subject,
                 consumer=consumer,
-                contract_version=CONTRACT_VERSION,
-                need_key=need_key,
-                params_hash=params.params_hash,
+                key_id=key_id(key),
                 material_ids=tuple(dict.fromkeys(material_ids)),
                 vocab_version=VOCAB_VERSION,
                 updated_at=self.now(),

@@ -1,8 +1,9 @@
-"""数据需求声明 `knowbot-data-needs/v2`（SDD 0043 第 3.1 节、0049）：跨应用契约的
-唯一真源。
+"""一样数据的描述 `data-request/v1`（SDD 0043 第 3.1 节、0049）：跨应用契约的唯一真源。
 
-作者在 knowlab 写声明模板，knowmart 收清单 v2 时核，knowbench 按它解析、核数据；
-三个应用各自照这份写模型，契约锁核到字（类型、格式的取值来自词表，词表一改锁就变）。
+每件委托要什么数据，由委托第 0 步用户自己的模型读专家逻辑和用户问题，按这个形状
+提出，用户改过、确认（decisions ⑭；取代原「数据需求声明」`knowbot-data-needs/v2`，
+清单里不再有声明）。knowbench（委托）与 knowlab（测试）各照这份写模型，契约锁核到字
+（类型、格式的取值来自词表，词表一改锁就变）。
 """
 
 from __future__ import annotations
@@ -140,13 +141,15 @@ class PeriodRule(_Strict):
     months: int | None = Field(default=None, ge=1, le=60)
 
 
-class DataNeed(_Strict):
-    """声明模板里的一样：类型（细类，或只写大类）、期间规则、版本形态、格式、份数、
-    必填、要的读法、来源限制、多候选时的优先策略、表格类的表与列；事项与行业写了就是
-    缩小范围；口径与说明只展示。"""
+class DataRequest(_Strict):
+    """一样数据：主体（证券代码、机构编号；空是不限主体）、类型（细类，或只写大类）、
+    期间规则、版本形态、格式、份数、是不是必需、要的读法、来源限制、多候选时的优先
+    策略、表格类的表与列；事项与行业写了就是缩小范围；名字、说明（为什么要）、口径
+    只展示。"""
 
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
     name: str = Field(min_length=1, max_length=80)
+    subject: str | None = Field(default=None, min_length=1, max_length=64)
     doc_type: DocType
     period: PeriodRule
     formats: tuple[DataFormat, ...] = Field(min_length=1, max_length=6)

@@ -59,6 +59,7 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261027_0014_user_data_v4_public.py",
         "20261027_0015_user_data_v4_facts.py",
         "20261027_0016_description_dimensions.py",
+        "20261028_0017_requests_by_task.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert (

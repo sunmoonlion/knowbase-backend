@@ -280,27 +280,21 @@ class SqlUserResolutionRepository:
 
     # —— 偏好 ——
 
-    async def preferences(
-        self, subject: str, consumer: str, contract_version: str, params_hash: str
-    ) -> list[Preference]:
+    async def preferences(self, subject: str, consumer: str) -> list[Preference]:
         async with self._sessions()() as session:
             rows = await session.execute(
                 select(UserDataPreference)
                 .where(
                     UserDataPreference.subject == subject,
                     UserDataPreference.consumer == consumer,
-                    UserDataPreference.contract_version == contract_version,
-                    UserDataPreference.params_hash == params_hash,
                 )
-                .order_by(UserDataPreference.need_key)
+                .order_by(UserDataPreference.key_id)
             )
             return [
                 Preference(
                     subject=r.subject,
                     consumer=r.consumer,
-                    contract_version=r.contract_version,
-                    need_key=r.need_key,
-                    params_hash=r.params_hash,
+                    key_id=r.key_id,
                     material_ids=tuple(r.material_ids),
                     vocab_version=r.vocab_version,
                     updated_at=r.updated_at,
@@ -313,9 +307,7 @@ class SqlUserResolutionRepository:
             values = {
                 "subject": preference.subject,
                 "consumer": preference.consumer,
-                "contract_version": preference.contract_version,
-                "need_key": preference.need_key,
-                "params_hash": preference.params_hash,
+                "key_id": preference.key_id,
                 "material_ids": list(preference.material_ids),
                 "vocab_version": preference.vocab_version,
                 "updated_at": preference.updated_at,
@@ -324,13 +316,7 @@ class SqlUserResolutionRepository:
                 insert(UserDataPreference)
                 .values(**values)
                 .on_conflict_do_update(
-                    index_elements=[
-                        "subject",
-                        "consumer",
-                        "contract_version",
-                        "need_key",
-                        "params_hash",
-                    ],
+                    index_elements=["subject", "consumer", "key_id"],
                     set_={
                         "material_ids": values["material_ids"],
                         "vocab_version": values["vocab_version"],
@@ -353,13 +339,15 @@ def _matching(query, key: DescriptionKey):
 
 
 def _key_conditions(key: DescriptionKey) -> list:
-    """一条描述在资料表上的条件（SDD 0049）：主体；类型（大类展开成它的细类）；
-    版本形态；定期报告按报告期，其余按披露日落在披露时间窗里；事项任一对上；行业。"""
+    """一条描述在资料表上的条件（SDD 0049）：主体（不限主体的不筛）；类型（大类展开成
+    它的细类）；版本形态；定期报告按报告期，其余按披露日落在披露时间窗里；事项任一
+    对上；行业。"""
     conditions = [
-        UserDataItem.subject_code == key.subject,
         UserDataItem.doc_type.in_(types_of(key.doc_type)),
         UserDataItem.doc_edition == key.edition,
     ]
+    if key.subject is not None:
+        conditions.append(UserDataItem.subject_code == key.subject)
     if key.period_end is not None:
         if is_periodic(key.doc_type):
             conditions += [

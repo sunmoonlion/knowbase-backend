@@ -49,6 +49,7 @@ from app.interfaces.schemas.user_resolution import (
     ResolutionRead,
     ResolveIn,
     ResultItemRead,
+    ReviseNeedsIn,
     TaskParamsIn,
 )
 from core.config import get_settings
@@ -99,16 +100,12 @@ def _need(n: NeedSpecIn) -> NeedSpec:
         edition=n.edition,
         topics=tuple(n.topics),
         industry=n.industry,
+        subject=n.subject,
     )
 
 
 def _params(p: TaskParamsIn) -> TaskParams:
-    return TaskParams(
-        subjects=tuple(p.subjects),
-        task_date=p.task_date,
-        period_start=p.period_start,
-        period_end=p.period_end,
-    )
+    return TaskParams(task_date=p.task_date)
 
 
 def _candidate(c: Candidate) -> CandidateRead:
@@ -246,6 +243,29 @@ async def add_needs(
     return _resolution(resolution)
 
 
+@router.put(
+    "/resolutions/{resolution_id}/needs",
+    response_model=ResolutionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def revise_needs(
+    resolution_id: str,
+    payload: ReviseNeedsIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    """用户确认前改了清单：整份描述换成改过的，重新解析，出新修订。"""
+    resolution = await _call(
+        lambda: service.revise_needs(
+            owner.subject,
+            owner.app,
+            resolution_id,
+            [_need(n) for n in payload.needs],
+        )
+    )
+    return _resolution(resolution)
+
+
 @router.post(
     "/service/resolutions/{resolution_id}/revisions",
     response_model=ResolutionRead,
@@ -334,18 +354,14 @@ async def confirm(
 @router.get("/preferences", response_model=list[PreferenceRead])
 async def preferences(
     consumer: str = Query(min_length=1, max_length=160),
-    subjects: list[str] = Query(min_length=1, max_length=10),
-    period_start: date | None = None,
-    period_end: date | None = None,
     owner: Owner = Depends(require_user_owner),
     service: UserResolutionService = Depends(get_user_resolution_service),
 ):
-    """偏好（先只读）：用户 × 使用者 × 声明契约版本 × 规范化的任务参数。"""
-    params = TaskParams(tuple(subjects), date.today(), period_start, period_end)
-    found = await _call(lambda: service.preferences(owner.subject, consumer, params))
+    """偏好（先只读）：用户 × 使用者 × 描述（摘要）。"""
+    found = await _call(lambda: service.preferences(owner.subject, consumer))
     return [
         PreferenceRead(
-            need_key=p.need_key,
+            key_id=p.key_id,
             material_ids=list(p.material_ids),
             updated_at=p.updated_at,
         )

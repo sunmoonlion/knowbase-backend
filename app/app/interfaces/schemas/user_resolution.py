@@ -1,6 +1,6 @@
 """按描述查、解析、确认、偏好的模型（契约 `user-data/v2` 的一部分，SDD 0043 第三节）。
 
-声明的模型在 `data_needs.py`（契约 `knowbot-data-needs/v2`）。
+一样数据的描述的模型在 `data_request.py`（契约 `data-request/v1`）。
 """
 
 from __future__ import annotations
@@ -10,8 +10,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.interfaces.schemas.data_needs import (
-    DataNeed,
+from app.interfaces.schemas.data_request import (
+    DataRequest,
     Edition,
     Industry,
     PeriodRule,
@@ -29,27 +29,24 @@ Status = Literal[
 ]
 
 
-# 声明的模型只有一份：契约 `knowbot-data-needs/v2`
+# 一样数据的描述只有一份模型：契约 `data-request/v1`
 PeriodRuleIn = PeriodRule
-NeedSpecIn = DataNeed
+NeedSpecIn = DataRequest
 
 
 class TaskParamsIn(BaseModel):
-    """请专家的人发起任务时给的：主体、任务日期，必要时覆盖期间。"""
+    """解析用的任务参数：只有任务日期（主体写在每一样描述上）。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    subjects: list[str] = Field(min_length=1, max_length=10)
     task_date: date
-    period_start: date | None = None
-    period_end: date | None = None
 
 
 class ResolveIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     consumer: str = Field(min_length=1, max_length=160)
-    contract_version: Literal["knowbot-manifest/v2"]
+    contract_version: Literal["data-request/v1"]
     needs: list[NeedSpecIn] = Field(min_length=1, max_length=20)
     params: TaskParamsIn
     task_ref: str | None = Field(default=None, max_length=255)
@@ -61,13 +58,21 @@ class AddNeedsIn(BaseModel):
     needs: list[NeedSpecIn] = Field(min_length=1, max_length=20)
 
 
+class ReviseNeedsIn(BaseModel):
+    """用户确认前改过的整份描述（换主体、改期间、去掉、自己加一样）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    needs: list[NeedSpecIn] = Field(min_length=1, max_length=20)
+
+
 class DescriptionKeyModel(BaseModel):
     """一条描述（SDD 0049）：类型可以是细类或大类；定期报告的期间是报告期，其余类型
     是披露时间窗；版本形态进键，事项与行业只缩小范围。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    subject: str = Field(min_length=1, max_length=64)
+    subject: str | None = Field(default=None, min_length=1, max_length=64)
     doc_type: str = Field(min_length=1, max_length=32)
     period_start: date | None = None
     period_end: date | None = None
@@ -181,6 +186,6 @@ class ConfirmationCheckRead(BaseModel):
 
 
 class PreferenceRead(BaseModel):
-    need_key: str
+    key_id: str
     material_ids: list[str]
     updated_at: datetime

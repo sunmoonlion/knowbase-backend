@@ -576,6 +576,7 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
     need = {
         "key": "annual",
         "name": "年报",
+        "subject": "600519.SH",
         "doc_type": "annual_report",
         "period": {"kind": "latest", "count": 2},
         "formats": ["csv", "pdf"],
@@ -584,9 +585,9 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
         f"{BASE}/resolutions",
         json={
             "consumer": "expert:fa-1@2",
-            "contract_version": "knowbot-manifest/v2",
+            "contract_version": "data-request/v1",
             "needs": [need],
-            "params": {"subjects": ["600519.SH"], "task_date": "2026-10-27"},
+            "params": {"task_date": "2026-10-27"},
         },
     )
     assert resolved.status_code == 201, resolved.text
@@ -623,7 +624,7 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
     assert checked.json()["needs"][0]["key"] == "annual"
     prefs = await client.get(
         f"{BASE}/preferences",
-        params={"consumer": "expert:fa-1@2", "subjects": ["600519.SH"]},
+        params={"consumer": "expert:fa-1@2"},
     )
     assert prefs.json() == []
 
@@ -665,6 +666,15 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
         f"{BASE}/service/resolutions/{rid}/refresh", params={"subject": "alice"}
     )
     assert denied.json()["code"] == "service_scope_denied"
+
+    # 用户确认前改了清单（换主体）：整份换掉重新解析，出新修订（decisions ⑭）
+    revised = await client.put(
+        f"{BASE}/resolutions/{rid}/needs",
+        json={"needs": [{**need, "subject": "000858.SZ"}]},
+    )
+    assert revised.status_code == 201, revised.text
+    assert revised.json()["revision"] == refreshed.json()["revision"] + 1
+    assert {i["key"]["subject"] for i in revised.json()["items"]} == {"000858.SZ"}
 
 
 async def test_knowfeed_delivers_public_originals_and_references(api):
