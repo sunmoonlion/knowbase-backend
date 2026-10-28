@@ -35,14 +35,6 @@
         ],
         "versioning": true,
         "objectLock": false
-      },
-      {
-        "name": "development-knowbase-datasets",
-        "permissions": [
-          "read"
-        ],
-        "versioning": true,
-        "objectLock": false
       }
     ]
   }

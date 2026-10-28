@@ -1,8 +1,7 @@
-"""用户资料（SDD 0042）。
+"""用户资料的公共件（SDD 0042 起，第四版沿用）：本人令牌、对象存储、读格式。
 
-上传与本人读删、同意依据、运行授权、凭授权读、买来复制、本人令牌、接口。
-
-不需要数据库与对象存储：记录与对象都用内存替身；数据库那一份见 test_user_data_db.py。
+v1 的资料、同意依据、运行授权与 `user-data/v1` 接口 10-28 已删（decisions ⑰），它们的
+测试一并删了。这里还放着第四版各测试共用的替身（`CSV`、`MemoryObjects`、`Clock`）。
 """
 
 from __future__ import annotations
@@ -11,37 +10,26 @@ import hashlib
 import io
 import json
 import zipfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 import pytest
-from fastapi import FastAPI
 
-from app.application.services.user_data_service import UserDataService
-from app.domain.security import Principal
 from app.domain.user_data import (
-    MAX_ITEM_BYTES,
-    Consent,
-    Grant,
-    Item,
     Owner,
-    Pin,
-    ReadEvent,
     UserDataError,
-    conflict,
-    not_found,
+    check_size,
+    clean_name,
+    format_view,
+    kind_of,
 )
-from app.infrastructure.security.relation_auth import ServiceCaller
 from app.infrastructure.security.user_token import UserTokenVerifier
 from app.infrastructure.storage.user_objects import S3UserObjects, sign
-from app.interfaces.endpoints import user_data_routes
-from app.interfaces.errors.exception_handlers import register_exception_handlers
 from core.config import Settings
 
-ALICE = Owner("alice", "knowbench")
 ALICE_LAB = Owner("alice", "knowlab")
-BOB = Owner("bob", "knowbench")
 CSV = b"year,revenue\n2023,10\n"
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def xlsx(*sheets: str) -> bytes:
@@ -54,100 +42,6 @@ def xlsx(*sheets: str) -> bytes:
             "xl/workbook.xml", f"<workbook><sheets>{names}</sheets></workbook>"
         )
     return buffer.getvalue()
-
-
-class MemoryRepo:
-    """照端口的约定：删除在用的抛 409，签授权时引到已删的抛 404。"""
-
-    def __init__(self) -> None:
-        self.item_rows: dict[str, Item] = {}
-        self.consents: dict[str, Consent] = {}
-        self.grants: dict[str, Grant] = {}
-        self.reads: list[ReadEvent] = []
-
-    async def add_item(self, item: Item) -> Item:
-        self.item_rows[item.id] = item
-        return item
-
-    async def get_item(self, item_id: str) -> Item | None:
-        return self.item_rows.get(item_id)
-
-    async def holds_no_resale(self, subject: str, sha256: str) -> bool:
-        return any(
-            i.owner.subject == subject
-            and i.sha256 == sha256
-            and i.no_resale
-            and i.deleted_at is None
-            for i in self.item_rows.values()
-        )
-
-    async def items(self, ids: list[str]) -> dict[str, Item]:
-        return {i: self.item_rows[i] for i in ids if i in self.item_rows}
-
-    async def list_items(self, owner: Owner) -> list[Item]:
-        mine = [
-            i for i in self.item_rows.values() if i.owner == owner and not i.deleted_at
-        ]
-        return sorted(mine, key=lambda i: i.created_at, reverse=True)
-
-    async def bytes_used(self, owner: Owner) -> int:
-        return sum(i.size_bytes for i in await self.list_items(owner))
-
-    async def find_by_origin(self, owner: Owner, origin_ref: str) -> Item | None:
-        return next(
-            (
-                i
-                for i in self.item_rows.values()
-                if i.owner == owner and i.origin_ref == origin_ref
-            ),
-            None,
-        )
-
-    async def delete_item(self, item_id: str, now: datetime) -> None:
-        item = self.item_rows.get(item_id)
-        if item is None or item.deleted_at is not None:
-            raise not_found()
-        granted = any(g.active(now) and g.pin(item_id) for g in self.grants.values())
-        consented = any(
-            c.withdrawn_at is None and any(p.item_id == item_id for p in c.pins)
-            for c in self.consents.values()
-        )
-        if granted or consented:
-            raise conflict("in_use", "in use")
-        self.item_rows[item_id] = Item(**{**item.__dict__, "deleted_at": now})
-
-    async def add_consent(self, consent: Consent) -> Consent:
-        self._live(consent.pins)
-        self.consents[consent.id] = consent
-        return consent
-
-    async def get_consent(self, consent_id: str) -> Consent | None:
-        return self.consents.get(consent_id)
-
-    async def withdraw_consent(self, consent_id: str, now: datetime) -> None:
-        c = self.consents[consent_id]
-        self.consents[consent_id] = Consent(**{**c.__dict__, "withdrawn_at": now})
-
-    async def add_grant(self, grant: Grant) -> Grant:
-        self._live(grant.pins)
-        self.grants[grant.id] = grant
-        return grant
-
-    async def get_grant(self, grant_id: str) -> Grant | None:
-        return self.grants.get(grant_id)
-
-    async def revoke_grant(self, grant_id: str, now: datetime) -> None:
-        g = self.grants[grant_id]
-        self.grants[grant_id] = Grant(**{**g.__dict__, "revoked_at": now})
-
-    async def record_read(self, event: ReadEvent) -> None:
-        self.reads.append(event)
-
-    def _live(self, pins: tuple[Pin, ...]) -> None:
-        for p in pins:
-            item = self.item_rows.get(p.item_id)
-            if item is None or item.deleted_at is not None:
-                raise not_found()
 
 
 class MemoryObjects:
@@ -173,366 +67,6 @@ class Clock:
 
     def __call__(self) -> datetime:
         return self.now
-
-
-@pytest.fixture
-def world():
-    repo, objects, clock = MemoryRepo(), MemoryObjects(), Clock()
-    counter = iter(range(1, 10_000))
-    service = UserDataService(
-        repo,
-        objects,
-        prefix="users",
-        clock=clock,
-        new_id=lambda: f"00000000-0000-4000-8000-{next(counter):012d}",
-    )
-    return service, repo, objects, clock
-
-
-def pin(item: Item) -> Pin:
-    return Pin(item.id, item.sha256)
-
-
-async def refused(work, status: int, code: str) -> None:
-    with pytest.raises(UserDataError) as caught:
-        await work
-    assert (caught.value.status, caught.value.code) == (status, code)
-
-
-# —— 本人 ——
-
-
-async def test_upload_lists_and_reads_only_in_its_own_partition(world):
-    service, repo, objects, _ = world
-    item = await service.upload(ALICE, "营收.csv", CSV)
-    assert item.sha256 == hashlib.sha256(CSV).hexdigest()
-    assert item.media_type.startswith("text/csv") and item.origin == "upload"
-    # 对象键按用户摘要、应用分开，键里没有用户编号原值
-    assert "alice" not in item.object_key and "/knowbench/" in item.object_key
-    assert [i.id for i in await service.items_of(ALICE)] == [item.id]
-    # 别人、同一个人的别的应用分区都看不到（与没有一样）
-    for other in (BOB, ALICE_LAB):
-        assert await service.items_of(other) == []
-        await refused(service.get(other, item.id), 404, "item_not_found")
-    got, content = await service.download(ALICE, item.id)
-    assert content == CSV
-    assert (
-        repo.reads[-1].operation == "owner-download"
-        and repo.reads[-1].reader == "alice"
-    )
-
-
-@pytest.mark.parametrize(
-    ("name", "content", "code"),
-    [
-        ("a.exe", b"MZ", "type_not_allowed"),
-        ("a.pdf", b"not a pdf", "content_mismatch"),
-        ("a.csv", "营收".encode("gbk"), "not_utf8"),
-        ("../a.csv", CSV, "name_invalid"),
-        ("a.csv", b"", "empty"),
-    ],
-)
-async def test_bad_uploads_are_refused(world, name, content, code):
-    service, *_ = world
-    with pytest.raises(UserDataError) as caught:
-        await service.upload(ALICE, name, content)
-    assert caught.value.code == code
-
-
-async def test_quota_counts_live_items_of_the_partition(world, monkeypatch):
-    service, *_ = world
-    monkeypatch.setattr("app.domain.user_data.QUOTA_BYTES", len(CSV) * 2)
-    first = await service.upload(ALICE, "a.csv", CSV)
-    await service.upload(ALICE, "b.csv", CSV)
-    await refused(service.upload(ALICE, "c.csv", CSV), 413, "quota_exceeded")
-    await service.upload(ALICE_LAB, "c.csv", CSV)  # 别的分区另算
-    await service.delete(ALICE, first.id)
-    await service.upload(ALICE, "c.csv", CSV)  # 删了就腾出来
-
-
-async def test_stored_content_that_does_not_match_is_not_served(world):
-    service, _, objects, _ = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    objects.data[item.object_key] = b"tampered"
-    await refused(service.download(ALICE, item.id), 503, "storage_mismatch")
-
-
-async def test_delete_waits_for_grants_and_consents(world):
-    service, _, objects, clock = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    grant = await service.grant_by_user(
-        ALICE, "delegation", "knowbench", "task-1", (pin(item),)
-    )
-    await refused(service.delete(ALICE, item.id), 409, "in_use")
-    await service.revoke_by_user(ALICE, grant.id)
-    lab = await service.upload(ALICE_LAB, "b.csv", CSV)
-    consent = await service.consent(ALICE_LAB, "knowlab-test", "idea-1@v2", (pin(lab),))
-    await refused(service.delete(ALICE_LAB, lab.id), 409, "in_use")
-    await service.withdraw_consent(ALICE_LAB, consent.id)
-    await service.delete(ALICE_LAB, lab.id)
-    await service.delete(ALICE, item.id)
-    assert item.object_key not in objects.data
-    # 过期的授权不挡删除
-    again = await service.upload(ALICE, "c.csv", CSV)
-    await service.grant_by_user(ALICE, "session", "knowbench", "s-1", (pin(again),), 60)
-    clock.now += timedelta(seconds=61)
-    await service.delete(ALICE, again.id)
-
-
-# —— 运行授权 ——
-
-
-async def test_user_grants_read_the_right_partition_and_only_own_pins(world):
-    service, *_ = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    lab = await service.upload(ALICE_LAB, "b.csv", CSV)
-    bobs = await service.upload(BOB, "c.csv", CSV)
-    # 委托、会话读 knowbench 云端知识库；孵化读 knowlab 知识库；测试不由用户签
-    await refused(
-        service.grant_by_user(ALICE, "incubation", "knowbench", "r", (pin(item),)),
-        422,
-        "partition_invalid",
-    )
-    await refused(
-        service.grant_by_user(ALICE, "test", "knowbench", "r", (pin(item),)),  # type: ignore[arg-type]
-        422,
-        "kind_invalid",
-    )
-    incubation = await service.grant_by_user(
-        ALICE_LAB, "incubation", "knowbench", "r", (pin(lab),)
-    )
-    assert incubation.scope == "format"
-    await refused(
-        service.grant_by_user(ALICE, "delegation", "knowbench", "r", (pin(bobs),)),
-        404,
-        "item_not_found",
-    )
-    await refused(
-        service.grant_by_user(
-            ALICE, "delegation", "knowbench", "r", (Pin(item.id, "0" * 64),)
-        ),
-        409,
-        "sha256_mismatch",
-    )
-    await refused(
-        service.grant_by_user(
-            ALICE, "delegation", "knowbench", "r", (pin(item), pin(item))
-        ),
-        422,
-        "pins_duplicate",
-    )
-
-
-async def test_grant_lifetime_is_capped_by_kind(world):
-    """兜底时限与 knowbench 申请的一致：委托 7 天、会话 24 小时（Qwen 评审 Q-06）。"""
-    service, _, _, clock = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    session = await service.grant_by_user(
-        ALICE, "session", "knowbench", "s", (pin(item),), 7 * 24 * 3600
-    )
-    assert session.expires_at == clock.now + timedelta(hours=24)
-    delegation = await service.grant_by_user(
-        ALICE, "delegation", "knowbench", "t", (pin(item),), 7 * 24 * 3600
-    )
-    assert delegation.expires_at == clock.now + timedelta(days=7)
-    longer = await service.grant_by_user(
-        ALICE, "delegation", "knowbench", "u", (pin(item),), 30 * 24 * 3600
-    )
-    assert longer.expires_at == clock.now + timedelta(days=7)
-
-
-async def test_test_grants_stay_inside_the_users_consent(world):
-    service, *_ = world
-    a = await service.upload(ALICE_LAB, "a.csv", CSV)
-    b = await service.upload(ALICE_LAB, "b.csv", b"x,y\n")
-    consent = await service.consent(ALICE_LAB, "knowlab-test", "idea-1@v2", (pin(a),))
-    grant = await service.grant_test(
-        "svc-knowlab", "alice", consent.id, "knowbench", "test-5", (pin(a),)
-    )
-    assert (grant.kind, grant.owner, grant.consent_id) == (
-        "test",
-        ALICE_LAB,
-        consent.id,
-    )
-    # knowlab 按超时 + 等人 3 天 + 1 小时申请：照给，不截（Fable 评审 P1-1）
-    asked = 600 + 3 * 24 * 3600 + 3600
-    long = await service.grant_test(
-        "svc-knowlab", "alice", consent.id, "knowbench", "test-7", (pin(a),), asked
-    )
-    assert long.expires_at - long.issued_at == timedelta(seconds=asked)
-    await refused(
-        service.grant_test(
-            "svc-knowlab", "alice", consent.id, "knowbench", "test-6", (pin(b),)
-        ),
-        403,
-        "outside_consent",
-    )
-    # 同意依据不是这个人的、用途不对、撤了：都当没有
-    await refused(
-        service.grant_test(
-            "svc-knowlab", "bob", consent.id, "knowbench", "t", (pin(a),)
-        ),
-        404,
-        "consent_not_found",
-    )
-    other = await service.consent(ALICE_LAB, "something-else", "x", (pin(b),))
-    await refused(
-        service.grant_test(
-            "svc-knowlab", "alice", other.id, "knowbench", "t", (pin(b),)
-        ),
-        404,
-        "consent_not_found",
-    )
-    await service.withdraw_consent(ALICE_LAB, consent.id)
-    await refused(
-        service.grant_test(
-            "svc-knowlab", "alice", consent.id, "knowbench", "t", (pin(a),)
-        ),
-        404,
-        "consent_not_found",
-    )
-    # 测试授权只有签它的服务能撤
-    await refused(
-        service.revoke_by_service("svc-other", grant.id), 404, "grant_not_found"
-    )
-    await service.revoke_by_service("svc-knowlab", grant.id)
-
-
-async def test_reading_needs_an_active_grant_for_that_reader_and_item(world):
-    service, repo, _, clock = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    other = await service.upload(ALICE, "b.csv", b"q\n")
-    grant = await service.grant_by_user(
-        ALICE, "delegation", "knowbench", "task-1", (pin(item),)
-    )
-    got, content = await service.read(
-        "knowbench", "svc-bench", grant.id, item.id, "content"
-    )
-    assert content == CSV
-    assert (repo.reads[-1].operation, repo.reads[-1].grant_id) == ("content", grant.id)
-    await refused(
-        service.read("knowlab", "svc", grant.id, item.id, "content"),
-        404,
-        "grant_not_found",
-    )
-    await refused(
-        service.read("knowbench", "svc", grant.id, other.id, "content"),
-        404,
-        "item_not_found",
-    )
-    await service.revoke_by_user(ALICE, grant.id)
-    await refused(
-        service.read("knowbench", "svc", grant.id, item.id, "content"),
-        403,
-        "grant_inactive",
-    )
-    fresh = await service.grant_by_user(
-        ALICE, "session", "knowbench", "s", (pin(item),), 60
-    )
-    clock.now += timedelta(minutes=2)
-    await refused(
-        service.read("knowbench", "svc", fresh.id, item.id, "content"),
-        403,
-        "grant_inactive",
-    )
-
-
-async def test_a_check_judges_like_a_read_without_the_content(world):
-    """读的一方用缓存前核一次（Astra F01）：判断与读一样，不给内容，也留记录。"""
-    service, repo, _, _ = world
-    item = await service.upload(ALICE, "a.csv", CSV)
-    grant = await service.grant_by_user(
-        ALICE, "delegation", "knowbench", "task-1", (pin(item),)
-    )
-    checked = await service.check("knowbench", "svc-bench", grant.id, item.id)
-    assert checked.sha256 == item.sha256
-    assert (repo.reads[-1].operation, repo.reads[-1].reader) == ("check", "svc-bench")
-    await refused(
-        service.check("knowlab", "svc", grant.id, item.id), 404, "grant_not_found"
-    )
-    await service.revoke_by_user(ALICE, grant.id)
-    await refused(
-        service.check("knowbench", "svc", grant.id, item.id), 403, "grant_inactive"
-    )
-
-
-async def test_incubation_grants_see_formats_only(world):
-    service, repo, _, _ = world
-    book = await service.upload(ALICE_LAB, "三表.xlsx", xlsx("资产负债表", "利润表"))
-    text = await service.upload(ALICE_LAB, "营收.csv", CSV)
-    grant = await service.grant_by_user(
-        ALICE_LAB, "incubation", "knowbench", "hatch-1", (pin(book), pin(text))
-    )
-    await refused(
-        service.read("knowbench", "svc", grant.id, book.id, "content"),
-        403,
-        "format_only",
-    )
-    _, view = await service.read("knowbench", "svc", grant.id, book.id, "format")
-    assert view.sheets == ("资产负债表", "利润表") and view.header is None
-    _, view = await service.read("knowbench", "svc", grant.id, text.id, "format")
-    assert view.header == "year,revenue"
-    assert repo.reads[-1].operation == "format"
-
-
-# —— 买来复制 ——
-
-
-async def test_a_purchase_copies_once_into_the_buyers_chosen_knowledge_base(world):
-    service, repo, objects, _ = world
-    seller = Owner("seller", "knowmart")
-    goods = await service.upload(seller, "年报整理.csv", CSV)
-    copied = await service.purchase(
-        "svc-mart", "seller", goods.id, "alice", "knowlab", "tx-1"
-    )
-    assert (copied.owner, copied.origin, copied.origin_ref) == (
-        ALICE_LAB,
-        "purchase",
-        "tx-1",
-    )
-    assert objects.data[copied.object_key] == CSV and copied.sha256 == goods.sha256
-    assert repo.reads[-1].operation == "purchase-copy"
-    again = await service.purchase(
-        "svc-mart", "seller", goods.id, "alice", "knowlab", "tx-1"
-    )
-    assert again.id == copied.id  # 同一笔重发不再复制
-    # 卖家删了、下架了，买家那份照旧在
-    await service.delete(seller, goods.id)
-    _, content = await service.download(ALICE_LAB, copied.id)
-    assert content == CSV
-
-
-async def test_no_resale_follows_the_copy_and_its_reuploads(world):
-    """买来不许转卖的：复制出的那份带标记；买家下载了再传进别的知识库，同样内容的也带上
-    （Fable 评审 P2-16）。改过字节的认不出，只能靠驻场规则。"""
-    service, *_ = world
-    goods = await service.upload(Owner("seller", "knowmart"), "整理.csv", CSV)
-    copied = await service.purchase(
-        "svc-mart", "seller", goods.id, "alice", "knowbench", "tx-9", True
-    )
-    assert copied.no_resale
-    again = await service.upload(Owner("alice", "knowmart"), "转手.csv", CSV)
-    assert again.no_resale
-    other = await service.upload(Owner("alice", "knowmart"), "改过.csv", CSV + b"x")
-    assert not other.no_resale
-    mine = await service.upload(Owner("bob", "knowmart"), "别人的.csv", CSV)
-    assert not mine.no_resale  # 只认这个人手里的
-
-
-async def test_purchases_come_from_knowmart_and_go_to_bench_or_lab(world):
-    service, *_ = world
-    not_for_sale = await service.upload(Owner("seller", "knowbench"), "a.csv", CSV)
-    await refused(
-        service.purchase("svc", "seller", not_for_sale.id, "alice", "knowbench", "tx"),
-        404,
-        "item_not_found",
-    )
-    goods = await service.upload(Owner("seller", "knowmart"), "a.csv", CSV)
-    await refused(
-        service.purchase("svc", "seller", goods.id, "alice", "knowmart", "tx"),  # type: ignore[arg-type]
-        422,
-        "buyer_app_invalid",
-    )
 
 
 # —— 本人令牌 ——
@@ -686,245 +220,38 @@ def test_object_store_checks_tls_with_the_object_storage_ca(tmp_path):
     assert S3UserObjects(Settings(**settings))._verify is True
 
 
-# —— 接口 ——
+# —— 收文件的检查与读格式 ——
 
 
-def service_caller(
-    scope: str, caller: str = "knowbench", subject: str = "svc-test"
-) -> ServiceCaller:
-    """按关系校验认出的调用方（校验本身在 test_relation_auth.py）。"""
-    now = datetime.now(UTC)
-    return ServiceCaller(
-        caller=caller,
-        principal=Principal(
-            actor_type="service",
-            subject=subject,
-            issuer="https://casdoor.test",
-            app="knowbase",
-            surface="internal",
-            audience=f"sunmoon-{caller}-{scope.removeprefix('knowbase:')}",
-            scopes=frozenset({scope}),
-            authenticated_at=now,
-            expires_at=now + timedelta(minutes=5),
-            policy_version="service-v1",
-        ),
-    )
+@pytest.mark.parametrize(
+    ("name", "content", "code"),
+    [
+        ("", CSV, "name_invalid"),
+        ("a/b.csv", CSV, "name_invalid"),
+        ("run.exe", b"MZ", "type_not_allowed"),
+        ("fake.pdf", b"hello", "content_mismatch"),
+        ("gbk.csv", "营收".encode("gbk"), "not_utf8"),
+    ],
+)
+def test_bad_files_are_refused(name, content, code):
+    with pytest.raises(UserDataError) as caught:
+        kind_of(clean_name(name), content)
+    assert caught.value.code == code
 
 
-@pytest.fixture
-def api(world):
-    service, repo, objects, clock = world
-    app = FastAPI()
-    register_exception_handlers(app)
-    app.include_router(user_data_routes.router, prefix="/api")
-    state = {"owner": ALICE, "caller": service_caller(READ)}
-    overrides = app.dependency_overrides
-    overrides[user_data_routes.internal_host_only] = lambda: None
-    overrides[user_data_routes.require_user_owner] = lambda: state["owner"]
-    overrides[user_data_routes.get_user_data_service] = lambda: service
-    for dep in (
-        user_data_routes.require_read_service,
-        user_data_routes.require_grant_test_service,
-        user_data_routes.require_purchase_service,
-        user_data_routes.require_import_service,
-    ):
-        overrides[dep] = lambda: state["caller"]
-    transport = httpx.ASGITransport(app=app)
-    client = httpx.AsyncClient(transport=transport, base_url="http://knowbase")
-    return client, state, repo
+def test_size_and_quota():
+    with pytest.raises(UserDataError) as caught:
+        check_size(0, 0)
+    assert caught.value.code == "empty"
+    with pytest.raises(UserDataError) as caught:
+        check_size(10, 1024 * 1024 * 1024 - 5)
+    assert (caught.value.status, caught.value.code) == (413, "quota_exceeded")
 
 
-BASE = "/api/internal/v1/user-data"
-READ = user_data_routes.READ
-
-
-async def test_api_upload_list_download_and_errors_with_codes(api):
-    client, state, _ = api
-    created = await client.post(
-        f"{BASE}/items", params={"name": "营收.csv"}, content=CSV
-    )
-    assert created.status_code == 201, created.text
-    item = created.json()
-    assert (item["app"], item["origin"], item["size_bytes"]) == (
-        "knowbench",
-        "upload",
-        len(CSV),
-    )
-    listed = (await client.get(f"{BASE}/items")).json()
-    assert [i["item_id"] for i in listed] == [item["item_id"]]
-    content = await client.get(f"{BASE}/items/{item['item_id']}/content")
-    assert (
-        content.content == CSV and content.headers["x-content-sha256"] == item["sha256"]
-    )
-    bad = await client.post(f"{BASE}/items", params={"name": "a.exe"}, content=b"MZ")
-    assert (bad.status_code, bad.json()["code"]) == (422, "type_not_allowed")
-    state["owner"] = BOB
-    missing = await client.get(f"{BASE}/items/{item['item_id']}")
-    assert (missing.status_code, missing.json()["code"]) == (404, "item_not_found")
-
-
-async def test_api_refuses_oversized_bodies_before_reading_them_all(api, monkeypatch):
-    client, *_ = api
-    monkeypatch.setattr(user_data_routes, "MAX_ITEM_BYTES", 8)
-    too_big = await client.post(
-        f"{BASE}/items", params={"name": "a.csv"}, content=b"x" * 9
-    )
-    assert (too_big.status_code, too_big.json()["code"]) == (413, "too_large")
-    assert MAX_ITEM_BYTES == 50 * 1024 * 1024
-
-
-async def test_api_grant_then_read_as_the_reader_app(api):
-    client, state, repo = api
-    item = (
-        await client.post(f"{BASE}/items", params={"name": "a.csv"}, content=CSV)
-    ).json()
-    pins = [{"item_id": item["item_id"], "sha256": item["sha256"]}]
-    grant = await client.post(
-        f"{BASE}/grants",
-        json={
-            "kind": "delegation",
-            "reader_app": "knowbench",
-            "ref": "task-9",
-            "items": pins,
-        },
-    )
-    assert grant.status_code == 201, grant.text
-    gid = grant.json()["grant_id"]
-    view = (await client.get(f"{BASE}/grants/{gid}")).json()
-    assert [g["name"] for g in view["granted"]] == ["a.csv"]
-    read = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
-    assert read.content == CSV and repo.reads[-1].reader == "svc-test"
-    check = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/check")
-    assert check.json() == {"item_id": item["item_id"], "sha256": item["sha256"]}
-    assert repo.reads[-1].operation == "check"
-    # 调用方不是三个应用之一（部署配了别的运行方）：没有分区可代表，拒
-    state["caller"] = service_caller(READ, caller="other-runtime", subject="svc-x")
-    denied = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
-    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
-    # 别的应用来读：授权不是给它的，与没有一样
-    state["caller"] = service_caller(READ, caller="knowlab", subject="svc-lab")
-    other = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
-    assert (other.status_code, other.json()["code"]) == (404, "grant_not_found")
-    # 别的应用不能替它交还；读的一方自己交还，交还后再读是确定的拒绝，用户就能删了
-    released = await client.post(f"{BASE}/grants/{gid}/release")
-    assert (released.status_code, released.json()["code"]) == (404, "grant_not_found")
-    state["caller"] = service_caller(READ)
-    assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
-    assert (await client.post(f"{BASE}/grants/{gid}/release")).status_code == 204
-    after = await client.get(f"{BASE}/grants/{gid}/items/{item['item_id']}/content")
-    assert (after.status_code, after.json()["code"]) == (403, "grant_inactive")
-    gone = await client.delete(f"{BASE}/items/{item['item_id']}")
-    assert gone.status_code == 204, gone.text
-
-
-async def test_api_test_grant_and_purchase_as_services(api):
-    client, state, _ = api
-    state["owner"] = ALICE_LAB
-    item = (
-        await client.post(f"{BASE}/items", params={"name": "a.csv"}, content=CSV)
-    ).json()
-    pins = [{"item_id": item["item_id"], "sha256": item["sha256"]}]
-    consent = (
-        await client.post(
-            f"{BASE}/consents",
-            json={"purpose": "knowlab-test", "ref": "idea-1@v1", "items": pins},
-        )
-    ).json()
-    state["caller"] = service_caller(
-        user_data_routes.GRANT_TEST, caller="knowlab", subject="svc-lab"
-    )
-    grant = await client.post(
-        f"{BASE}/test-grants",
-        json={
-            "owner": "alice",
-            "consent_id": consent["consent_id"],
-            "reader_app": "knowbench",
-            "ref": "test-5",
-            "items": pins,
-        },
-    )
-    assert grant.status_code == 201, grant.text
-    assert grant.json()["kind"] == "test" and grant.json()["app"] == "knowlab"
-    revoked = await client.post(f"{BASE}/test-grants/{grant.json()['grant_id']}/revoke")
-    assert revoked.status_code == 204
-    state["owner"] = Owner("seller", "knowmart")
-    goods = (
-        await client.post(f"{BASE}/items", params={"name": "b.csv"}, content=CSV)
-    ).json()
-    state["caller"] = service_caller(
-        user_data_routes.PURCHASE, caller="knowmart", subject="svc-mart"
-    )
-    bought = await client.post(
-        f"{BASE}/purchases",
-        json={
-            "seller": "seller",
-            "seller_item_id": goods["item_id"],
-            "buyer": "alice",
-            "buyer_app": "knowbench",
-            "transaction_ref": "tx-7",
-        },
-    )
-    assert bought.status_code == 201 and bought.json()["origin"] == "purchase"
-
-
-async def test_an_app_imports_its_old_data_into_its_own_partition(api):
-    """knowlab 知识库搬家（SDD 0042 第七节）。
-
-    按原编号幂等，只进调用方自己那个应用的分区。
-    """
-    client, state, _ = api
-    state["caller"] = service_caller(
-        user_data_routes.IMPORT, caller="knowlab", subject="svc-lab"
-    )
-    params = {"owner": "alice", "name": "年报.csv", "ref": "knowlab-dataset:d1"}
-    first = await client.post(f"{BASE}/imports", params=params, content=CSV)
-    assert first.status_code == 201, first.text
-    item = first.json()
-    assert (item["app"], item["origin"], item["origin_ref"]) == (
-        "knowlab",
-        "upload",
-        "knowlab-dataset:d1",
-    )
-    again = await client.post(f"{BASE}/imports", params=params, content=CSV)
-    assert again.json()["item_id"] == item["item_id"]
-    other = await client.post(f"{BASE}/imports", params=params, content=CSV + b"x")
-    assert (other.status_code, other.json()["code"]) == (409, "origin_ref_reused")
-    # 本人在 knowlab 的知识库里看得到
-    state["owner"] = ALICE_LAB
-    assert [i["item_id"] for i in (await client.get(f"{BASE}/items")).json()] == [
-        item["item_id"]
-    ]
-    # 调用方不是三个应用之一：没有自己的分区，拒
-    state["caller"] = service_caller(
-        user_data_routes.IMPORT, caller="other-runtime", subject="svc-x"
-    )
-    denied = await client.post(f"{BASE}/imports", params=params, content=CSV)
-    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
-
-
-async def test_a_consent_may_cover_more_than_one_grant(world):
-    """knowlab 的测试同意覆盖整个知识库（SDD 0042 第七节）。
-
-    同意依据最多 1000 份，授权仍 64 份。
-    """
-    service, *_ = world
-    items = [
-        await service.upload(ALICE_LAB, f"表{i}.csv", CSV + str(i).encode())
-        for i in range(65)
-    ]
-    consent = await service.consent(
-        ALICE_LAB, "knowlab-test", "knowlab-kb", tuple(pin(i) for i in items)
-    )
-    assert len(consent.pins) == 65
-    await refused(
-        service.grant_test(
-            "svc-lab",
-            "alice",
-            consent.id,
-            "knowbench",
-            "test-1",
-            tuple(pin(i) for i in items),
-        ),
-        422,
-        "pins_too_many",
-    )
+def test_format_view_gives_sheet_names_or_the_first_line_only():
+    view = format_view(XLSX, xlsx("资产负债表", "利润表"))
+    assert view.sheets == ("资产负债表", "利润表") and view.header is None
+    assert format_view("text/csv; charset=utf-8", CSV).header == "year,revenue"
+    assert format_view(XLSX, b"PK\x03\x04 broken").sheets == ()
+    pdf = format_view("application/pdf", b"%PDF-1.7")
+    assert pdf.sheets == () and pdf.header is None

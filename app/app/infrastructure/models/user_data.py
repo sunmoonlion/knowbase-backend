@@ -30,9 +30,10 @@ _APPS = "('knowbench', 'knowlab', 'knowmart')"
 class UserDataItem(TimestampMixin, Base):
     """用户资料：一份上传、代采或买来的文件。
 
-    v1 按「用户 × 应用」分区（SDD 0042）；第四版（SDD 0043）里一行就是一份资料：
-    不按应用分区（`app` 只留给 v1 时代的旧行），内容版本另记在 `user_data_version`，
-    这里的 sha256、object_key、size_bytes、media_type 缓存当前版本给 v1 的读法用。
+    v1 按「用户 × 应用」分区（SDD 0042，10-28 已删）；第四版（SDD 0043）里一行就是
+    一份资料：不按应用分区（`app` 只留给 v1 时代的旧行），内容版本另记在
+    `user_data_version`，这里的 sha256、object_key、size_bytes、media_type
+    缓存当前版本。
     """
 
     __tablename__ = "user_data_item"
@@ -142,91 +143,6 @@ class UserDataItem(TimestampMixin, Base):
     )
 
 
-class UserDataConsent(TimestampMixin, Base):
-    """同意依据：用户本人留下「这几份可用于某件事」（数据拓扑第 5.2 节）。"""
-
-    __tablename__ = "user_data_consent"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    app: Mapped[str] = mapped_column(String(16), nullable=False)
-    purpose: Mapped[str] = mapped_column(String(80), nullable=False)
-    ref: Mapped[str] = mapped_column(String(255), nullable=False)
-    withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        CheckConstraint(f"app IN {_APPS}", name="ck_user_data_consent_app"),
-    )
-
-
-class UserDataConsentItem(Base):
-    __tablename__ = "user_data_consent_item"
-
-    consent_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("user_data_consent.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user_data_item.id"), primary_key=True
-    )
-    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    __table_args__ = (Index("ix_user_data_consent_item_item", "item_id"),)
-
-
-class UserDataGrant(TimestampMixin, Base):
-    """运行授权：某一次测试、委托、会话、孵化可读哪几份；到期或撤销就失效。"""
-
-    __tablename__ = "user_data_grant"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    owner_subject: Mapped[str] = mapped_column(String(255), nullable=False)
-    app: Mapped[str] = mapped_column(String(16), nullable=False)
-    reader_app: Mapped[str] = mapped_column(String(16), nullable=False)
-    ref: Mapped[str] = mapped_column(String(255), nullable=False)
-    scope: Mapped[str] = mapped_column(String(8), nullable=False)
-    issued_by: Mapped[str] = mapped_column(String(255), nullable=False)
-    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
-    consent_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user_data_consent.id")
-    )
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        CheckConstraint(
-            "kind IN ('test', 'delegation', 'session', 'incubation')",
-            name="ck_user_data_grant_kind",
-        ),
-        CheckConstraint(f"app IN {_APPS}", name="ck_user_data_grant_app"),
-        CheckConstraint(f"reader_app IN {_APPS}", name="ck_user_data_grant_reader"),
-        CheckConstraint(
-            "scope IN ('content', 'format')", name="ck_user_data_grant_scope"
-        ),
-        CheckConstraint("expires_at > issued_at", name="ck_user_data_grant_expiry"),
-    )
-
-
-class UserDataGrantItem(Base):
-    __tablename__ = "user_data_grant_item"
-
-    grant_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("user_data_grant.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    item_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("user_data_item.id"), primary_key=True
-    )
-    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-
-    __table_args__ = (Index("ix_user_data_grant_item_item", "item_id"),)
-
-
 class UserDataRead(Base):
     """读数留痕：谁、凭哪条授权、读了哪一份；只记编号不记内容，留一年。"""
 
@@ -243,7 +159,7 @@ class UserDataRead(Base):
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     reader: Mapped[str] = mapped_column(String(255), nullable=False)
     operation: Mapped[str] = mapped_column(String(20), nullable=False)
-    # v1 的授权或第四版的运行授权
+    # 第四版的运行授权（v1 时代的旧行是 v1 授权的编号，那张表已删）
     grant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # 第四版：受益人（请专家的人；专家绑定的数据所有者是作者）与读的一方是谁
     beneficiary: Mapped[str | None] = mapped_column(String(255))

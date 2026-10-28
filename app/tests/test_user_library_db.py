@@ -17,12 +17,10 @@ from test_durable_delivery_db import ROOT, sql
 from test_durable_delivery_db import db as db
 from test_user_data import CSV, Clock, MemoryObjects
 
-from app.application.services.user_data_service import UserDataService
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
-from app.domain.user_data import Owner, UserDataError
+from app.domain.user_data import UserDataError
 from app.domain.user_library import Description
-from app.infrastructure.repositories.user_data import SqlUserDataRepository
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.storage.postgres import make_session_factory
@@ -72,7 +70,7 @@ async def test_upload_records_material_first_version_and_owner_holding(db):
     assert [(e.material.id, e.category, e.version.version_no) for e in shelf] == [
         (material.id, "uploaded", 1)
     ]
-    # v1 的缓存栏是当前版本，app 为空（不按应用分区）
+    # 缓存栏是当前版本，app 为空（不按应用分区）
     assert (
         await sql(
             db,
@@ -248,17 +246,6 @@ async def test_space_counts_all_versions_and_what_buyers_still_hold(db):
     )
     await lib.remove(ALICE, material.id)
     assert await lib.repo.bytes_used(ALICE) == used  # 买家还在，照算
-
-
-async def test_v1_uploads_show_up_in_the_library(db):
-    v1 = UserDataService(SqlUserDataRepository(lambda: db), MemoryObjects(), prefix="p")
-    item = await v1.upload(Owner(ALICE, "knowlab"), "old.csv", CSV)
-    lib = library(db)
-    entry = await lib.get(ALICE, item.id)
-    assert entry.material.legacy_app == "knowlab"
-    assert (entry.category, entry.version.sha256) == ("uploaded", item.sha256)
-    await v1.delete(Owner(ALICE, "knowlab"), item.id)
-    assert await lib.shelf(ALICE) == []
 
 
 async def test_migration_backfills_old_rows():
@@ -437,15 +424,6 @@ async def test_purchase_is_one_holding_per_transaction_and_needs_sale(db):
     await lib.remove(ALICE, selling.id)
     entry = await lib.get(BOB, selling.id)
     assert (entry.category, entry.holding.license) == ("purchased", "sale")
-
-
-async def test_v1_uploads_are_shown_to_their_old_app(db):
-    v1 = UserDataService(SqlUserDataRepository(lambda: db), MemoryObjects(), prefix="p")
-    lab = await v1.upload(Owner(ALICE, "knowlab"), "lab.csv", CSV)
-    mart = await v1.upload(Owner(ALICE, "knowmart"), "mart.csv", CSV)
-    lib = library(db)
-    assert [e.material.id for e in await lib.column(ALICE, "knowlab")] == [lab.id]
-    assert [e.material.id for e in await lib.column(ALICE, "knowmart")] == [mart.id]
 
 
 async def test_platform_consent_is_per_process_and_pins_versions(db):

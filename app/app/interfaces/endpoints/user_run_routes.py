@@ -30,7 +30,7 @@ from app.infrastructure.security.relation_auth import (
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
-from app.interfaces.endpoints.user_data_routes import _call
+from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.endpoints.user_library_routes import (
     _body,
     _entry,

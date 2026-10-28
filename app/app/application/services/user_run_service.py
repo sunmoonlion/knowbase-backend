@@ -25,13 +25,14 @@ from datetime import UTC, datetime
 from app.application.ports.user_data import UserObjects
 from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_runs import UserRunRepository
-from app.application.services.user_data_service import FormatView, format_view
 from app.domain.chart_of_accounts import CHART_VERSION, METRICS
 from app.domain.user_data import (
+    FormatView,
     UserDataError,
     check_size,
     clean_name,
     conflict,
+    format_view,
     kind_of,
     not_found,
     refused,

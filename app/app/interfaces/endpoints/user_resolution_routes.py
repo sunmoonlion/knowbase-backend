@@ -33,7 +33,7 @@ from app.infrastructure.security.relation_auth import (
 )
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
-from app.interfaces.endpoints.user_data_routes import _call
+from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_resolution import (
     AddNeedsIn,

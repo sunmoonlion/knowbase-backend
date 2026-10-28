@@ -1,11 +1,10 @@
 """按关系校验其他应用的服务令牌（SDD 0042，做法同 knowmart、knowlab 的 relation_auth）。
 
-knowbase 的用户资料接口接受七种关系：knowlab 签测试授权（user-data-grant-test；
-第四版也签平台过程的授权）、运行方凭授权读（user-data-read，现在只有 knowbench）、
-knowmart 成交（user-data-purchase；v1 复制一份，第四版给买家加使用权）、应用把自己
-原来存的资料搬进自己的分区（user-data-import，knowlab）、knowlab 推名下专家的名录
-与交付时冻结绑定（user-data-directory，SDD 0044 第三节）、应用替用户写产出区
-（user-data-output，knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
+knowbase 的用户资料接口（`user-data/v2`）接受六种关系：knowlab 签测试与平台过程的
+授权（user-data-grant-test）、运行方凭授权读（user-data-read）、knowmart 成交给买家
+加使用权（user-data-purchase）、knowlab 推名下专家的名录与交付时冻结绑定
+（user-data-directory，SDD 0044 第三节）、应用替用户写产出区（user-data-output，
+knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
 领授权与写回读法、受理前核确认（user-data-supply，SDD 0043 第 2.7、3.3 节）。
 一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
 每个调用方一组 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id，即
@@ -13,7 +12,7 @@ Casdoor 给 client_credentials 令牌的 aud）、`_SUBJECT_ALLOWLIST`
 （`admin/<调用方服务应用>`）、`_REQUIRED_SCOPE`（`knowbase:<关系>`），都由部署从
 调用方配置推出来（`common/backend/service-client`）。关系名带连字符，环境变量里
 换成下划线（`SERVICE_AUTH_USER_DATA_READ_CALLERS`），与调用方 service_client 的
-`_key` 一致。校验通过后返回调用方是谁：读、导入以这个应用的名义。一组都没配就是
+`_key` 一致。校验通过后返回调用方是谁：读以这个应用的名义。一组都没配就是
 这种关系没开，一律拒绝。
 
 签名、签发方、有效期用模板的 OIDC 客户端核（与浏览器登录同一个 Casdoor、同一套
@@ -46,7 +45,6 @@ Relation = Literal[
     "user-data-grant-test",
     "user-data-read",
     "user-data-purchase",
-    "user-data-import",
     "user-data-directory",
     "user-data-output",
     "user-data-supply",
@@ -270,9 +268,3 @@ async def require_supply_service(
     SDD 0043 第 2.7、3.3 节。
     """
     return await _verify("user-data-supply", authorization)
-
-
-async def require_import_service(
-    authorization: str | None = Header(default=None, alias="Authorization"),
-) -> ServiceCaller:
-    return await _verify("user-data-import", authorization)

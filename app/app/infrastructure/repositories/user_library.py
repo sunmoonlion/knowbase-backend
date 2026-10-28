@@ -1,7 +1,7 @@
 """资料库的记录（PostgreSQL，SDD 0043 第二节）。
 
-资料就是 `user_data_item` 的一行：v1 的几栏（sha256、object_key、size_bytes、
-media_type）缓存当前版本，v1 的读法照旧能用；内容版本、使用权、改动记录在各自的表里。
+资料就是 `user_data_item` 的一行：v1 时代的几栏（sha256、object_key、size_bytes、
+media_type）缓存当前版本；内容版本、使用权、改动记录在各自的表里。
 """
 
 from __future__ import annotations

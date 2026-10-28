@@ -1,8 +1,8 @@
 """资料库的内部接口 `user-data/v2`（SDD 0043）：数据第四版，资料不再按应用分区。
 
-和 v1（`user_data_routes.py`）并存：兼容期里三个应用照旧用 v1，切过来以后再收 v1
-（SDD 0043 第九节）。身份同 v1 的本人接口：`Authorization: Bearer <换来的用户令牌>`，
-`sub` 是用户；`azp` 不再认分区，只记成代办的应用（读数留痕里写这一栏）。
+v1（`user-data/v1`）10-28 已删（decisions ⑰）。本人接口的身份：
+`Authorization: Bearer <换来的用户令牌>`，`sub` 是用户；`azp` 不认分区，只记成代办的
+应用（读数留痕里写这一栏）。
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from app.infrastructure.security.relation_auth import (
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
-from app.interfaces.endpoints.user_data_routes import _call
+from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_library import (
     AccountIn,

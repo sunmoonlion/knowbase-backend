@@ -184,28 +184,11 @@ class Settings(BaseSettings):
     retrieval_auth_required_scope: str = "knowbase:retrieve"
 
     # Knowledge providers and upstream artifact policy.
-    # 知识 MCP（0006）：数据集与令牌表；第一期静态令牌（D10）
-    knowbase_dataset_path: str = "datasets/lesson23_business_analysis.sqlite"
-    knowbase_dataset_id: str = "lesson23-business-analysis"
-    # 默认数据集在数据目录页面上叫什么；不配就显示它的标识
-    knowbase_dataset_title: str | None = None
-    # 本地没有文件时从对象存储取：s3://bucket/key，并按 sha256 钉版本（F-KNOW-07）
-    knowbase_dataset_object: str | None = None
-    knowbase_dataset_sha256: str | None = None
-    knowbase_mcp_tokens_json: str = "{}"
-    # D10：工作台签发的 ES256 JWT（aud=knowbase）用这把公钥就地验；未配置时只认静态表
+    # 数据 MCP 第二版（/api/mcp/data）：工作台签发的 ES256 JWT（aud=knowbase）用这把公钥
+    # 就地验；每个令牌每分钟调用数封顶
     knowbase_mcp_jwt_public_key: str | None = None
     knowbase_mcp_jwt_issuer: str | None = None
     knowbase_mcp_rate_per_minute: int = 120
-    # 多数据集（0008-info 段三）：打开后，除默认数据集外还认登记表里的数据集。
-    # 登记的数据集只从下面列出的桶里取（逗号分隔），按 sha256 钉版，取到缓存目录。
-    knowbase_dataset_registry_enabled: bool = False
-    knowbase_dataset_allowed_buckets: str = ""
-    knowbase_dataset_cache_dir: str = "/tmp/knowbase-datasets"  # noqa: S108
-    # 语义层（0009-semantic）：打开后，工具后面的检查、规划、执行走语义层；
-    # 关着时与以前完全一样。转换出的库放在缓存目录，按数据集文件的校验值命名。
-    knowbase_semantic_engine_enabled: bool = False
-    knowbase_semantic_cache_dir: str = "/tmp/knowledge-semantic"  # noqa: S108
 
     ragflow_api_base: str | None = Field(
         default=None, validation_alias="RAGFLOW_API_BASE"

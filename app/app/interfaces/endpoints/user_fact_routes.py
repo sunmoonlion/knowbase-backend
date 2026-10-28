@@ -19,7 +19,7 @@ from app.infrastructure.security.relation_auth import (
     require_supply_service,
 )
 from app.infrastructure.security.user_token import require_user_owner
-from app.interfaces.endpoints.user_data_routes import _call
+from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.endpoints.user_run_routes import (
     _rendition,
     get_user_run_service,
