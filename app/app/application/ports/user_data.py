@@ -13,3 +13,12 @@ class UserObjects(Protocol):
     async def get(self, key: str) -> bytes: ...
 
     async def delete(self, key: str) -> None: ...
+
+
+class FirstPageReader(Protocol):
+    """读一份文件首页的文字，给上传时识别描述用（SDD 0044 第 2.3 节）。
+
+    读不出（扫描版、坏文件、不认的格式）就回空串，不报错：识别只是建议。
+    """
+
+    def __call__(self, media_type: str, content: bytes) -> str: ...

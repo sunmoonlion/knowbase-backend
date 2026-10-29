@@ -116,9 +116,12 @@ def test_the_two_settings():
     }
     assert parse_sources("{}") == {} and parse_targets("") == {}
     blank = Settings(_env_file=None)
-    # knowbase 默认认 knowbench 与 knowfeed，都没有回跳地址
+    # knowbase 默认认 knowbench、knowlab（直达上传）、knowmart（交易记录）、knowfeed，
+    # 都没有回跳地址
     assert blank.cross_app_sources() == {
         "knowbench": Source("knowbench"),
+        "knowlab": Source("knowlab"),
+        "knowmart": Source("knowmart"),
         "knowfeed": Source("knowfeed"),
     }
     assert blank.cross_app_targets() == {}

@@ -159,8 +159,9 @@ async def test_describe_logs_and_does_not_make_a_version(db):
     assert described.description.status == "confirmed"
     assert described.current_version == 1
     history = await lib.history(ALICE, material.id)
-    assert [h["what"] for h in history] == ["description"]
-    assert history[0]["after"]["subject"] == "000001.SZ"
+    # 上传时的识别先记一条（规则版本，0049 第六节），改描述再记一条
+    assert [h["what"] for h in history] == ["recognized", "description"]
+    assert history[1]["after"]["subject"] == "000001.SZ"
     await refused(
         lib.describe(BOB, material.id, Description(), confirm=False),
         404,
@@ -181,7 +182,7 @@ async def test_license_rules(db):
     lowered = await lib.set_license(ALICE, material.id, "self", attest=False)
     assert lowered.license == "self"
     history = await lib.history(ALICE, material.id)
-    assert [h["after"] for h in history] == [
+    assert [h["after"] for h in history if h["what"] == "license"] == [
         {"license": "sale", "attested": True},
         {"license": "self", "attested": False},
     ]
@@ -395,7 +396,9 @@ async def test_default_display_needs_the_owner_to_have_seen_it(db):
 
 async def test_market_is_for_owners_and_experts_must_be_pushed_first(db):
     lib = library(db)
-    material, _ = await lib.upload(ALICE, "table.csv", CSV, license_="sale")
+    material, _ = await lib.upload(
+        ALICE, "table.csv", CSV, license_="sale", attest=True
+    )
     await refused(lib.show(ALICE, material.id, "expert:fa-1"), 404, "expert_not_found")
     await lib.upsert_expert("fa-1", ALICE, "财务分析与预测", "2")
     await lib.show(ALICE, material.id, "expert:fa-1")
@@ -414,7 +417,7 @@ async def test_purchase_is_one_holding_per_transaction_and_needs_sale(db):
     lib = library(db)
     private, _ = await lib.upload(ALICE, "mine.csv", CSV)
     await refused(lib.purchase(ALICE, private.id, BOB, "tx-1"), 422, "not_for_sale")
-    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale")
+    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale", attest=True)
     first = await lib.purchase(ALICE, selling.id, BOB, "tx-2", resale_allowed=True)
     again = await lib.purchase(ALICE, selling.id, BOB, "tx-2", resale_allowed=True)
     assert first.id == again.id and first.license == "sale"
@@ -430,7 +433,7 @@ async def test_platform_consent_is_per_process_and_pins_versions(db):
     lib = library(db)
     mine, _ = await lib.upload(ALICE, "mine.csv", CSV)
     await lib.add_version(ALICE, mine.id, None, CSV + b"5,6\n")
-    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale")
+    selling, _ = await lib.upload(ALICE, "sale.csv", CSV, license_="sale", attest=True)
     await lib.purchase(ALICE, selling.id, BOB, "tx-1")
     await lib.add_version(ALICE, selling.id, None, CSV + b"7,8\n")
 

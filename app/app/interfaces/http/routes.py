@@ -6,6 +6,10 @@ from app.interfaces.endpoints.knowledge_routes import (
 from app.interfaces.endpoints.knowledge_routes import (
     router as knowledge_admin_router,
 )
+from app.interfaces.endpoints.library_web_routes import router as library_web_router
+from app.interfaces.endpoints.user_data_admin_routes import (
+    router as user_data_admin_router,
+)
 from app.interfaces.endpoints.user_fact_routes import router as user_fact_router
 from app.interfaces.endpoints.user_library_routes import router as user_library_router
 from app.interfaces.endpoints.user_resolution_routes import (
@@ -40,5 +44,9 @@ router.include_router(user_library_router)
 router.include_router(user_run_router)
 router.include_router(user_resolution_router)
 router.include_router(user_fact_router)
+# knowbase web端自家的资料库（SDD 0044）：本人会话，复用同一套服务
+router.include_router(library_web_router)
+# 管理端：用户资料的用量、词表、禁用资料的处理（0044 第四节）
+router.include_router(user_data_admin_router)
 # 数据 MCP 第二版（/api/mcp/data）
 router.include_router(build_data_mcp_router())

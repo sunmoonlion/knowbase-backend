@@ -7,7 +7,7 @@ media_type）缓存当前版本；内容版本、使用权、改动记录在各�
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import datetime
 
 from sqlalchemy import and_, exists, func, or_, select, update
@@ -21,6 +21,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    LogEntry,
     Material,
     ShelfEntry,
     Use,
@@ -174,11 +175,43 @@ class SqlUserLibraryRepository:
         self._sessions = sessions
 
     async def add_material(
-        self, material: Material, version: ContentVersion, holding: Holding
+        self,
+        material: Material,
+        version: ContentVersion,
+        holding: Holding,
+        *,
+        uses: Sequence[Use] = (),
+        logs: Sequence[LogEntry] = (),
     ) -> Material:
-        """一个事务里记资料、第 1 版与所有者的使用权。"""
+        """一个事务里记资料、第 1 版、所有者的使用权，连同上传时的同意依据（账号默认
+        展示、直达上传的来源应用）与留痕（识别、上传时选的许可档）。"""
         async with self._sessions()() as session:
             entity = await insert_material(session, material, version, holding)
+            key = uuid.UUID(material.id)
+            for use in uses:
+                session.add(
+                    UserDataUse(
+                        id=uuid.UUID(use.id),
+                        subject=use.subject,
+                        item_id=key,
+                        use=use.use,
+                        scope=dict(use.scope),
+                        version_no=use.version_no,
+                        created_at=use.created_at,
+                        created_via=use.created_via,
+                    )
+                )
+            for log in logs:
+                session.add(
+                    UserDataMaterialLog(
+                        item_id=key,
+                        at=material.created_at,
+                        actor=material.owner,
+                        what=log.what,
+                        before=dict(log.before),
+                        after=dict(log.after),
+                    )
+                )
             await session.commit()
             return entity
 
@@ -591,6 +624,105 @@ class SqlUserLibraryRepository:
                 )
             )
             return {str(r) for r in rows.scalars()}
+
+    async def live_uses(self, subject: str) -> dict[str, list[str]]:
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataUse.item_id, UserDataUse.use)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.withdrawn_at.is_(None),
+                    UserDataUse.item_id.is_not(None),
+                )
+                .order_by(UserDataUse.created_at, UserDataUse.use)
+            )
+            found: dict[str, list[str]] = {}
+            for item_id, use in rows.all():
+                found.setdefault(str(item_id), []).append(use)
+            return found
+
+    # —— 管理端（0044 第四节）：用量、词表、禁用 ——
+
+    async def usage_by_subject(self, limit: int) -> list[dict[str, object]]:
+        """各用户的空间用量，多的在前；算法同 `bytes_used`。公开原件不算谁的空间。"""
+        others = exists().where(
+            UserDataHolding.item_id == UserDataItem.id,
+            UserDataHolding.subject != UserDataItem.owner_subject,
+            UserDataHolding.ended_at.is_(None),
+        )
+        used = func.coalesce(func.sum(UserDataVersion.size_bytes), 0)
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(
+                    UserDataItem.owner_subject,
+                    used.label("used"),
+                    func.count(func.distinct(UserDataItem.id)).label("materials"),
+                )
+                .join(UserDataVersion, UserDataVersion.item_id == UserDataItem.id)
+                .where(
+                    UserDataItem.owner_subject != PUBLIC_OWNER,
+                    or_(UserDataItem.deleted_at.is_(None), others),
+                )
+                .group_by(UserDataItem.owner_subject)
+                .order_by(used.desc(), UserDataItem.owner_subject)
+                .limit(limit)
+            )
+            return [
+                {"subject": subject, "bytes_used": int(b), "materials": int(n)}
+                for subject, b, n in rows.all()
+            ]
+
+    async def description_stats(self) -> list[dict[str, object]]:
+        """描述按词表版本、确认状态、细类数一数（没清除的）；旧词表的要重新确认。"""
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(
+                    UserDataItem.vocab_version,
+                    UserDataItem.description_status,
+                    UserDataItem.doc_type,
+                    func.count(),
+                )
+                .where(UserDataItem.purged_at.is_(None))
+                .group_by(
+                    UserDataItem.vocab_version,
+                    UserDataItem.description_status,
+                    UserDataItem.doc_type,
+                )
+            )
+            return [
+                {
+                    "vocab_version": version,
+                    "status": status,
+                    "doc_type": doc_type,
+                    "count": int(count),
+                }
+                for version, status, doc_type, count in rows.all()
+            ]
+
+    async def find_materials(
+        self,
+        *,
+        owner: str | None = None,
+        material_id: str | None = None,
+        disabled: bool = False,
+        limit: int = 100,
+    ) -> list[Material]:
+        """管理端找资料：按所有者、编号，或只看禁用了的；新的在前。"""
+        query = select(UserDataItem).where(UserDataItem.purged_at.is_(None))
+        if owner is not None:
+            query = query.where(UserDataItem.owner_subject == owner)
+        if material_id is not None:
+            key = _uuid(material_id)
+            if key is None:
+                return []
+            query = query.where(UserDataItem.id == key)
+        if disabled:
+            query = query.where(UserDataItem.disabled_at.is_not(None))
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                query.order_by(UserDataItem.created_at.desc()).limit(limit)
+            )
+            return [_material(r) for r in rows.scalars()]
 
     # —— 账号设置、名下专家 ——
 

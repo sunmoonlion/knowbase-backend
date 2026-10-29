@@ -25,6 +25,7 @@ from app.domain.user_library import (
     Use,
 )
 from app.domain.vocabulary import class_of, snapshot
+from app.infrastructure.external.first_page import read_first_page
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
@@ -53,6 +54,9 @@ from app.interfaces.schemas.user_library import (
     HistoryEntryRead,
     HoldingRead,
     LicenseIn,
+    MarketOffersIn,
+    MarketOffersRead,
+    MarketOfferStateRead,
     MaterialRead,
     PlatformConsentIn,
     PublicOriginalRead,
@@ -84,6 +88,7 @@ def get_user_library_service(
         SqlUserLibraryRepository(lambda: get_postgres().session_factory),
         S3UserObjects(settings),
         prefix=settings.user_data_prefix,
+        first_page=read_first_page,
     )
 
 
@@ -183,12 +188,14 @@ async def upload_material(
     language: str | None = Query(default=None, max_length=8),
     confirm: bool = False,
     license: str = Query(default="self", max_length=16),
+    attest: bool = False,
     process: bool = False,
     owner: Owner = Depends(require_user_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     """请求体就是文件本身；描述放在查询参数里，勾了 `confirm` 才算用户确认过。
-    研报的几维（来源机构、研究员等）上传后经改描述填。
+    研报的几维（来源机构、研究员等）上传后经改描述填。许可档选高于「只许本人用」的
+    要勾 `attest`（本人勾了「我有权」）。
 
     `process`：本人按页面说明采用加工（交 knowfeed 加工这一版）。
     """
@@ -212,6 +219,7 @@ async def upload_material(
             description=description,
             confirm=confirm,
             license_=license,
+            attest=attest,
             process=process,
         )
     )
@@ -601,6 +609,27 @@ async def unsubscribe(
     await _call(lambda: service.unsubscribe(owner.subject, subscription_id, revision))
 
 
+@router.get(
+    "/service/subscriptions/{subscription_id}/revisions/{revision}",
+    response_model=SubscriptionRead,
+)
+async def check_subscription(
+    subscription_id: str,
+    revision: int,
+    subject: str = Query(min_length=1, max_length=255),
+    caller: ServiceCaller = Depends(require_supply_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowfeed 后台生成新需求前核订阅范围同意还在（本人可能已在 knowbase 撤了）；
+    撤了回 404。只读，只认 knowfeed。"""
+    use = await _call(
+        lambda: service.live_subscription(
+            caller.caller, subject, subscription_id, revision
+        )
+    )
+    return _subscription(use)
+
+
 @router.post(
     "/materials/{material_id}/versions/{version_no}/processing",
     response_model=UseRead,
@@ -796,4 +825,27 @@ async def purchase(
         buyer=holding.subject,
         version_no=holding.version_no,
         license=holding.license,
+    )
+
+
+@router.post("/service/market-offers/check", response_model=MarketOffersRead)
+async def check_market_offers(
+    payload: MarketOffersIn,
+    caller: ServiceCaller = Depends(require_purchase_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowmart 后台定时成批核条目里的资料还能不能卖（「待你决定」第 7 条）；只读。
+
+    没有卖家本人的令牌，用成交那条服务关系（`user-data-purchase`），只认 knowmart。
+    """
+    states = await _call(
+        lambda: service.offer_states(
+            caller.caller, [(i.seller, i.material_id) for i in payload.items]
+        )
+    )
+    return MarketOffersRead(
+        items=[
+            MarketOfferStateRead(seller=seller, material_id=material_id, state=state)  # type: ignore[arg-type]
+            for seller, material_id, state in states
+        ]
     )

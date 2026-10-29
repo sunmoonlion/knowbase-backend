@@ -2,10 +2,11 @@
 
 knowbase 的用户资料接口（`user-data/v2`）接受六种关系：knowlab 签测试与平台过程的
 授权（user-data-grant-test）、运行方凭授权读（user-data-read）、knowmart 成交给买家
-加使用权（user-data-purchase）、knowlab 推名下专家的名录与交付时冻结绑定
-（user-data-directory，SDD 0044 第三节）、应用替用户写产出区（user-data-output，
-knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
-领授权与写回读法、受理前核确认（user-data-supply，SDD 0043 第 2.7、3.3 节）。
+加使用权与成批核条目里的资料还能不能卖（user-data-purchase）、knowlab 推名下专家的
+名录与交付时冻结绑定（user-data-directory，SDD 0044 第三节）、应用替用户写产出区
+（user-data-output，knowbench、knowlab，SDD 0043 第 2.6 节）、knowfeed 凭加工依据
+领授权与写回读法、受理前核确认、生成新需求前核订阅范围同意（user-data-supply，
+SDD 0043 第 2.7、3.3 节，0044 第 2.6 节）。
 一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，
 每个调用方一组 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id，即
 Casdoor 给 client_credentials 令牌的 aud）、`_SUBJECT_ALLOWLIST`

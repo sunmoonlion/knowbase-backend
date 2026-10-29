@@ -843,6 +843,30 @@ class SqlUserRunRepository:
                 or 0
             )
 
+    async def platform_summary(
+        self, subject: str, use: str
+    ) -> tuple[datetime | None, int]:
+        """凭这条平台过程依据签的授权最晚到什么时候、运营读过几次（0044 第 2.6 节）。"""
+        grants = select(UserDataRunGrant.id).where(
+            UserDataRunGrant.beneficiary == subject,
+            UserDataRunGrant.platform_use == use,
+        )
+        async with self._sessions()() as session:
+            until = await session.scalar(
+                select(func.max(UserDataRunGrant.expires_at)).where(
+                    UserDataRunGrant.beneficiary == subject,
+                    UserDataRunGrant.platform_use == use,
+                    UserDataRunGrant.revoked_at.is_(None),
+                )
+            )
+            reads = await session.scalar(
+                select(func.count()).where(
+                    UserDataRead.grant_id.in_(grants),
+                    UserDataRead.reader_role == "operator",
+                )
+            )
+            return until, int(reads or 0)
+
     async def owned_material_ids(self, subject: str) -> list[str]:
         async with self._sessions()() as session:
             rows = await session.execute(

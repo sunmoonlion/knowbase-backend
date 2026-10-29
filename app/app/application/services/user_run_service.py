@@ -629,6 +629,61 @@ class UserRunService:
             raise not_found()
         return await self.runs.reads_of(material.id)
 
+    async def impact(self, subject: str, material_id: str) -> dict[str, object]:
+        """删、改低许可之前列出受影响的（0044 第 2.2 节、0043 第 2.8 节）。
+
+        买家与引用的使用权、冻结在专家版本里的绑定、钉住它的在跑授权都照旧可读，
+        但要让本人先看到；交给 knowmart 的、绑给专家（下一版）的会跟着失效。
+        """
+        material = await self.library.get_material(material_id)
+        if material is None or material.owner != subject or not material.live:
+            raise not_found()
+        uses = [u.use for u in await self.library.uses_of(subject, material.id)]
+        grants = await self.runs.grant_ids(
+            material_id=material.id, active_at=self.now()
+        )
+        return {
+            "other_holders": await self.runs.other_holders(material.id, subject),
+            "market": "market" in uses,
+            "bound_experts": sorted(
+                u.removeprefix("expert:")
+                for u in uses
+                if u.startswith("expert:") and "@" not in u
+            ),
+            "frozen_experts": sorted(
+                u.removeprefix("expert:")
+                for u in uses
+                if u.startswith("expert:") and "@" in u
+            ),
+            "active_grants": len(grants),
+        }
+
+    async def platform_overview(self, subject: str) -> list[dict[str, object]]:
+        """我给平台的授权（0044 第 2.6 节）：每次过程一条，哪几份、到什么时候、运营
+        读过几次。只列还有效的；撤回、过程结束的不再列。"""
+        grouped: dict[str, list] = {}
+        for use in await self.library.named(subject, "platform:"):
+            grouped.setdefault(use.use, []).append(use)
+        found: list[dict[str, object]] = []
+        for name, uses in grouped.items():
+            _, app, kind, ref = name.split(":", 3)
+            until, reads = await self.runs.platform_summary(subject, name)
+            found.append(
+                {
+                    "app": app,
+                    "kind": kind,
+                    "ref": ref,
+                    "created_at": min(u.created_at for u in uses),
+                    "until": until,
+                    "operator_reads": reads,
+                    "items": [
+                        {"material_id": u.material_id, "version_no": u.version_no}
+                        for u in uses
+                    ],
+                }
+            )
+        return found
+
     # —— 加工：knowfeed 领授权、读、写回读法 ——
 
     async def pending_processing(
@@ -1132,6 +1187,17 @@ class UserRunService:
             at=now,
             pending=[],
         )
+
+    async def deletions_of_material(self, material_id: str) -> list[dict[str, object]]:
+        """管理端看一份资料的删除事件（禁用、清除、撤关系），按时间。"""
+        material = await self.library.get_material(material_id)
+        if material is None:
+            raise not_found()
+        return [
+            e
+            for e in await self.runs.deletions_of(material.owner)
+            if e["material_id"] == material.id
+        ]
 
     async def purge_material(
         self, actor: str, material_id: str, reason: str, *, personal_info: bool

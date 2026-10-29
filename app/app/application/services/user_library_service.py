@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import uuid
@@ -17,9 +18,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 
-from app.application.ports.user_data import UserObjects
+from app.application.ports.user_data import FirstPageReader, UserObjects
 from app.application.ports.user_library import UserLibraryRepository
+from app.domain.recognition import Recognition, recognize
 from app.domain.user_data import (
+    MAX_ITEM_BYTES,
+    QUOTA_BYTES,
     UserDataError,
     check_size,
     clean_name,
@@ -32,6 +36,7 @@ from app.domain.user_library import (
     CATEGORY_OF_BASIS,
     COLUMN_USES,
     DEFAULT_DISPLAY_USES,
+    DIRECT_UPLOAD_APPS,
     PUBLIC_OWNER,
     Account,
     ContentVersion,
@@ -39,6 +44,7 @@ from app.domain.user_library import (
     Expert,
     Holding,
     License,
+    LogEntry,
     Material,
     ShelfEntry,
     SubscriptionScope,
@@ -75,14 +81,35 @@ class UserLibraryService:
         prefix: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
+        first_page: FirstPageReader | None = None,
     ) -> None:
         self.repo = repo
         self.objects = objects
         self.prefix = prefix
         self.now = clock
         self.new_id = new_id
+        self.first_page = first_page
 
     # —— 上传与版本 ——
+
+    def recognize(self, name: str | None, content: bytes) -> Recognition:
+        """选文件后先识别描述（文件名、首页文字、表头），交本人确认或改
+        （0044 第 2.3 节）。
+
+        只读不存：文件不落盘，读出来的字不留。
+        """
+        filename = clean_name(name)
+        media_type = kind_of(filename, content)
+        if not content:
+            raise refused("empty", "file is empty")
+        if len(content) > MAX_ITEM_BYTES:
+            raise UserDataError(413, "too_large", "file is larger than 50 MB")
+        text = self.first_page(media_type, content) if self.first_page else ""
+        return recognize(filename, text, format_of_media(media_type))
+
+    async def usage(self, subject: str) -> tuple[int, int]:
+        """空间用量：已用多少、上限多少（1 GB，0044 第 2.1 节）。"""
+        return await self.repo.bytes_used(subject), QUOTA_BYTES
 
     async def upload(
         self,
@@ -93,17 +120,30 @@ class UserLibraryService:
         description: Description | None = None,
         confirm: bool = False,
         license_: str = "self",
+        attest: bool = False,
         process: bool = False,
+        display_to: str | None = None,
     ) -> tuple[Material, ContentVersion]:
         """用户上传一份新资料：记资料、第 1 版、所有者的使用权（取得依据 upload）。
 
         描述是本人填的、勾了确认才算「用户确认过」（参与解析）；没填的格式按内容类型补。
-        `process`：本人按页面说明采用加工，就是这一版的加工依据。
+        许可档选高于「只许本人用」的要本人勾「我有权」，和改高一样留痕（0044 第 2.2、
+        2.3 节）。上传时按文件名与首页识别一次，把用的规则版本与认出的值记进留痕
+        （0049 第六节）。`process`：本人按页面说明采用加工，就是这一版的加工依据。
+
+        `display_to`：直达上传的来源应用（0044 第 2.4 节）。本人在 knowbase 页面上传就是
+        依据，「展示给来源应用」和资料在同一个事务里记下，应用不能事后调接口声明。
         """
         filename = clean_name(name)
         media_type = kind_of(filename, content)
         check_size(len(content), await self.repo.bytes_used(subject))
         license_value = check_license(license_)
+        if license_rank(license_value) > license_rank("self") and not attest:
+            raise refused("attest_required", "raising the license needs an attestation")
+        if display_to is not None and display_to not in DIRECT_UPLOAD_APPS:
+            raise refused("display_app_invalid", "no column in this app")
+        # 读 PDF 首页是算力活，放到线程里
+        recognition = await asyncio.to_thread(self.recognize, filename, content)
         material_id = self.new_id()
         now = self.now()
         version = await self._store(subject, material_id, 1, media_type, content, now)
@@ -125,11 +165,44 @@ class UserLibraryService:
             license=license_value,
             created_at=now,
         )
-        saved = await self.repo.add_material(material, version, holding)
         # 账号级「新数据默认展示给我的全部应用」：本人看过点过才算依据
+        shown: dict[str, str] = {}
         if (await self.repo.account(subject)).displays_by_default:
-            for use in DEFAULT_DISPLAY_USES:
-                await self._add_use(subject, saved.id, use, "default-display")
+            shown = dict.fromkeys(DEFAULT_DISPLAY_USES, "default-display")
+        if display_to is not None:
+            shown[f"app:{display_to}"] = "direct-upload"
+        logs = [
+            LogEntry(
+                "recognized",
+                {},
+                {**recognition.as_log(), "confirmed": confirm},
+            )
+        ]
+        if license_rank(license_value) > license_rank("self"):
+            logs.append(
+                LogEntry(
+                    "license",
+                    {"license": None},
+                    {"license": license_value, "attested": attest, "at": "upload"},
+                )
+            )
+        saved = await self.repo.add_material(
+            material,
+            version,
+            holding,
+            uses=[
+                Use(
+                    id=self.new_id(),
+                    subject=subject,
+                    use=use,
+                    created_at=now,
+                    created_via=via,
+                    material_id=material_id,
+                )
+                for use, via in shown.items()
+            ],
+            logs=logs,
+        )
         if process:
             await self._add_processing(subject, version)
         return saved, version
@@ -332,6 +405,45 @@ class UserLibraryService:
         shown = await self.repo.material_ids_with_use(subject, use)
         return [e for e in await self.repo.shelf(subject) if e.material.id in shown]
 
+    async def shown(self, subject: str) -> dict[str, list[str]]:
+        """总栏里每份资料展示到哪里（几个小标签，0044 第 2.1 节）：资料 → 用途。"""
+        return await self.repo.live_uses(subject)
+
+    # —— knowmart 成批核条目里的资料（后台定时下架用） ——
+
+    async def offer_states(
+        self, caller: str, items: list[tuple[str, str]]
+    ) -> list[tuple[str, str, str]]:
+        """（卖家, 资料）→ offered / not_for_sale / gone。只读，只认 knowmart。
+
+        offered：是这位卖家的、还在、还交给着 knowmart、许可「可以出售」；
+        not_for_sale：还在、还交给着 knowmart，许可改低了；其余（没有、不是这位卖家的、
+        删了、禁用了、不再交给 knowmart）都是 gone。不是谁的与没有的一样，不多说。
+        """
+        if caller != "knowmart":
+            raise UserDataError(
+                403, "service_scope_denied", "only knowmart checks market offers"
+            )
+        if not 1 <= len(items) <= 200:
+            raise refused("items_invalid", "give 1 to 200 items")
+        handed: dict[str, set[str]] = {}
+        states: list[tuple[str, str, str]] = []
+        for seller, material_id in items:
+            material = await self.repo.get_material(material_id)
+            if material is None or material.owner != seller or not material.live:
+                states.append((seller, material_id, "gone"))
+                continue
+            if seller not in handed:
+                handed[seller] = await self.repo.material_ids_with_use(seller, "market")
+            if material.id not in handed[seller]:
+                state = "gone"
+            elif material.license != "sale":
+                state = "not_for_sale"
+            else:
+                state = "offered"
+            states.append((seller, material_id, state))
+        return states
+
     # —— 平台过程、订阅、加工（块 1b 余下） ——
 
     async def consent_platform(
@@ -418,6 +530,22 @@ class UserLibraryService:
 
     async def subscriptions(self, subject: str) -> list[Use]:
         return await self.repo.named(subject, "subscription:")
+
+    async def live_subscription(
+        self, caller: str, subject: str, subscription_id: str, revision: int
+    ) -> Use:
+        """knowfeed 生成新需求前核：这一修订的订阅范围同意还在不在。
+
+        本人可以在 knowbase web端撤（0044 第 2.6 节），knowfeed 后台跑订阅时没有本人的
+        令牌，只能凭服务身份来问；撤了回 404，knowfeed 就不再生成新需求。
+        """
+        if caller != "knowfeed":
+            raise denied_scope()
+        use = subscription_use(subscription_id, revision)
+        for found in await self.repo.named(subject, use):
+            if found.use == use:
+                return found
+        raise not_found("subscription")
 
     async def consent_processing(
         self, subject: str, material_id: str, version_no: int
@@ -665,6 +793,27 @@ class UserLibraryService:
                 version_no=material.current_version,
                 ref=transaction_ref,
             )
+        )
+
+    # —— 管理端（0044 第四节）：用户资料用量、词表、禁用资料 ——
+
+    async def usage_overview(self, limit: int = 100) -> list[dict[str, object]]:
+        return await self.repo.usage_by_subject(max(1, min(limit, 500)))
+
+    async def description_overview(self) -> list[dict[str, object]]:
+        return await self.repo.description_stats()
+
+    async def find_for_admin(
+        self,
+        *,
+        owner: str | None = None,
+        material_id: str | None = None,
+        disabled: bool = False,
+    ) -> list[Material]:
+        if owner is None and material_id is None and not disabled:
+            raise refused("filter_required", "give an owner, an id, or disabled")
+        return await self.repo.find_materials(
+            owner=owner, material_id=material_id, disabled=disabled
         )
 
     # —— 内部 ——

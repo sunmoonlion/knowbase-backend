@@ -323,7 +323,8 @@ class UserDataHolding(Base):
 class UserDataMaterialLog(Base):
     """资料的改动记录：描述、许可档改了都留痕（SDD 0043 第 2.5 节、第三轮评审 K 7）。
 
-    改描述不产生新的内容版本；许可档改高要记下本人勾了「我有权」。
+    改描述不产生新的内容版本；许可档改高（上传时选高档也算）要记下本人勾了「我有权」；
+    上传时的识别记规则版本与认出的值（`recognized`，0049 第六节）。
     """
 
     __tablename__ = "user_data_material_log"
@@ -342,7 +343,8 @@ class UserDataMaterialLog(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "what IN ('description', 'license')", name="ck_user_data_material_log_what"
+            "what IN ('description', 'license', 'recognized')",
+            name="ck_user_data_material_log_what",
         ),
         Index("ix_user_data_material_log_item", "item_id", "at"),
     )

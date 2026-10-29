@@ -95,7 +95,8 @@ class LicenseIn(BaseModel):
 
 class HistoryEntryRead(BaseModel):
     at: datetime
-    what: Literal["description", "license"]
+    # recognized：上传时的识别（规则版本、认出的值，0049 第六节）
+    what: Literal["description", "license", "recognized"]
     before: dict
     after: dict
 
@@ -277,3 +278,31 @@ class ReferencesIn(BaseModel):
 
 class ReferencesRead(BaseModel):
     recorded: int
+
+
+# —— knowmart 成批核条目里的资料（后台定时下架，「待你决定」第 7 条） ——
+
+
+class MarketOfferItemIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    seller: str = Field(min_length=1, max_length=255)
+    material_id: str = Field(min_length=1, max_length=64)
+
+
+class MarketOffersIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[MarketOfferItemIn] = Field(min_length=1, max_length=200)
+
+
+class MarketOfferStateRead(BaseModel):
+    seller: str
+    material_id: str
+    # offered：还交给着 knowmart、是卖家的、可以出售；not_for_sale：许可改低了；
+    # gone：没有、不是卖家的、删了、不再交给 knowmart
+    state: Literal["offered", "not_for_sale", "gone"]
+
+
+class MarketOffersRead(BaseModel):
+    items: list[MarketOfferStateRead]

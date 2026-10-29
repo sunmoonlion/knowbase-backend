@@ -136,7 +136,13 @@ async def test_upload_describe_version_download_and_remove(api):
     )
     assert raised.json()["material"]["license"] == "sale"
     history = await client.get(f"{BASE}/materials/{material_id}/history")
-    assert [h["what"] for h in history.json()] == ["description", "license"]
+    # 上传时的识别也留痕：记规则版本（0049 第六节）
+    assert [h["what"] for h in history.json()] == [
+        "recognized",
+        "description",
+        "license",
+    ]
+    assert history.json()[0]["after"]["rules_version"] == 1
 
     state["owner"] = Owner("bob", "knowbench")
     hidden = await client.get(f"{BASE}/materials/{material_id}")

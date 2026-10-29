@@ -425,6 +425,19 @@ class Use:
 
 
 @dataclass(frozen=True)
+class LogEntry:
+    """资料的一条改动留痕：改了什么（描述、许可档、识别）、改前、改后。"""
+
+    what: Literal["description", "license", "recognized"]
+    before: dict[str, object]
+    after: dict[str, object]
+
+
+# 直达上传能顺带展示给的应用：来源应用就是要这份资料的那个（0044 第 2.4 节）
+DIRECT_UPLOAD_APPS: tuple[str, ...] = ("knowbench", "knowlab")
+
+
+@dataclass(frozen=True)
 class Account:
     subject: str
     default_display: bool = True

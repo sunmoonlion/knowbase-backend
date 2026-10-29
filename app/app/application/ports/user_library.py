@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
@@ -11,6 +12,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    LogEntry,
     Material,
     ShelfEntry,
     Use,
@@ -19,9 +21,15 @@ from app.domain.user_library import (
 
 class UserLibraryRepository(Protocol):
     async def add_material(
-        self, material: Material, version: ContentVersion, holding: Holding
+        self,
+        material: Material,
+        version: ContentVersion,
+        holding: Holding,
+        *,
+        uses: Sequence[Use] = (),
+        logs: Sequence[LogEntry] = (),
     ) -> Material:
-        """一个事务里记资料、第 1 版与所有者的使用权。"""
+        """一个事务里记资料、第 1 版、所有者的使用权，连同上传时的同意依据与留痕。"""
         ...
 
     async def add_version(self, version: ContentVersion) -> Material:
@@ -91,6 +99,23 @@ class UserLibraryRepository(Protocol):
     async def uses_of(self, subject: str, material_id: str) -> list[Use]: ...
 
     async def material_ids_with_use(self, subject: str, use: str) -> set[str]: ...
+
+    async def live_uses(self, subject: str) -> dict[str, list[str]]:
+        """这个用户每份资料有效的用途（按资料记的那几种）。"""
+        ...
+
+    async def usage_by_subject(self, limit: int) -> list[dict[str, object]]: ...
+
+    async def description_stats(self) -> list[dict[str, object]]: ...
+
+    async def find_materials(
+        self,
+        *,
+        owner: str | None = None,
+        material_id: str | None = None,
+        disabled: bool = False,
+        limit: int = 100,
+    ) -> list[Material]: ...
 
     async def account(self, subject: str) -> Account: ...
 

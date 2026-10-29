@@ -226,7 +226,9 @@ async def test_session_hints_once_when_reads_pass_fifty(world):
 
 
 async def test_frozen_binding_reads_the_authors_version_for_the_beneficiary(world):
-    material, v1 = await world.upload(ALICE, "binding.csv", license_="via_expert")
+    material, v1 = await world.upload(
+        ALICE, "binding.csv", license_="via_expert", attest=True
+    )
     private, p1 = await world.upload(ALICE, "private.csv", CSV + b"3,3\n")
     await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
     await world.lib.show(ALICE, material.id, "expert:fa-1")
@@ -626,7 +628,7 @@ async def test_outputs_are_idempotent_immutable_and_convert_into_data(world):
 
 
 async def test_owner_delete_keeps_buyers_but_disable_stops_everyone(world):
-    material, v1 = await world.upload(ALICE, license_="sale")
+    material, v1 = await world.upload(ALICE, license_="sale", attest=True)
     await world.lib.purchase(ALICE, material.id, BOB, "tx-1")
     await world.lib.show(BOB, material.id, "app:knowbench")
     ask = [item(v1, "display", "app:knowbench")]
@@ -651,7 +653,7 @@ async def test_owner_delete_keeps_buyers_but_disable_stops_everyone(world):
 
 
 async def test_purge_respects_other_holders_unless_personal_info(world):
-    sold, _ = await world.upload(ALICE, "sold.csv", license_="sale")
+    sold, _ = await world.upload(ALICE, "sold.csv", license_="sale", attest=True)
     await world.lib.purchase(ALICE, sold.id, BOB, "tx-1")
     mine, mine_v1 = await world.upload(ALICE, "mine.csv", CSV + b"2,2\n")
     assert mine_v1.object_key in world.objects.data
