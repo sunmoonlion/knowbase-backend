@@ -8,7 +8,8 @@ SDD 0043 块 1c。
 - knowlab（服务身份）：凭展示依据签测试授权，凭 `platform:` 依据签平台过程授权
   （运营、机器分开签）；过程结束、不受理时撤。
 - knowbench、knowlab（服务身份）：替用户往产出区写，按（任务，运行，名字）幂等。
-- knowfeed（服务身份）：凭本人的加工依据领加工授权，读那一版、写回读法。
+- knowfeed（服务身份）：凭本人的加工依据领加工授权，读那一版、写回读法。正文、按页文字
+  存进 PostgreSQL（0043 第五节，数据拓扑第 16.2 节），表格读法是一批事实行。
 - 执行的应用：凭授权读钉住的那一版（或那个读法），用完交还。
 - 管理端：禁用（违规处置）、注销与依法删除。
 """
@@ -20,12 +21,13 @@ import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from app.application.ports.user_data import UserObjects
 from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.domain.chart_of_accounts import CHART_VERSION, METRICS
+from app.domain.public_access import PublicGate
 from app.domain.user_data import (
     FormatView,
     UserDataError,
@@ -64,6 +66,15 @@ from app.domain.user_library import (
     processing_use,
     version_object_key,
 )
+from app.domain.user_readings import (
+    Page,
+    TextReading,
+    pages_bytes,
+    pages_digest,
+    parse_pages,
+    parse_text,
+    text_digest,
+)
 from app.domain.user_resolution import Resolution
 from app.domain.user_runs import (
     BASES_OF,
@@ -91,8 +102,11 @@ OUTPUT_CALLERS = ("knowbench", "knowlab")
 # 专家与测试的运行方（knowbot-test-run 契约）：模型经它读数据
 RUNTIME_APP = "knowbench"
 PROCESSORS = ("knowfeed",)
-# knowfeed 写回的读法；扫描版与检索索引由 knowbase 经 RAGFlow 做（块 9）
+# knowfeed 写回的读法；扫描版与检索索引由 knowbase 经 RAGFlow 做（块 9）。
+# 表格的内容走事实批（write_facts），这里只收它没成的
 PROCESSOR_KINDS = ("text", "pages", "table")
+# 找证据时一次最多取多少页来打分（块 9 换成 RAGFlow 的混合检索）
+MAX_SEARCH_PAGES = 1000
 _FROZEN = re.compile(r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$")
 _PROVENANCE_KEYS = ("expert_id", "expert_version", "input_set_id")
 # 块 9（RAGFlow 删除同步）之前，真删要等的回执
@@ -109,6 +123,18 @@ class ReadResult:
     rendition: Rendition | None = None
 
 
+@dataclass(frozen=True)
+class Reading:
+    """读到的一种读法：正文给 `text`；按页文字给要的那几页与总页数。"""
+
+    item: GrantItem
+    version: ContentVersion
+    rendition: Rendition
+    text: TextReading | None = None
+    pages: tuple[Page, ...] = ()
+    total_pages: int = 0
+
+
 class UserRunService:
     def __init__(
         self,
@@ -119,7 +145,7 @@ class UserRunService:
         prefix: str,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
-        public_access: bool = True,
+        gate: PublicGate | None = None,
     ) -> None:
         self.library = library
         self.runs = runs
@@ -127,8 +153,8 @@ class UserRunService:
         self.prefix = prefix
         self.now = clock
         self.new_id = new_id
-        # 平台总开关（0047 第 5.2 节）：公开原件全市场可读、跨全市场查事实
-        self.public_access = public_access
+        # 公开原件全市场读、跨全市场查事实的一道门：资格、权限、平台总开关（0047）
+        self.gate = gate or PublicGate()
 
     # —— 签发 ——
 
@@ -264,10 +290,10 @@ class UserRunService:
             raise not_found()
         holdings = await self.library.holdings_of(subject, material.id)
         if material.owner == PUBLIC_OWNER:
-            # 公开原件：他名下有引用就凭引用，否则开关开着时凭「公开」读当前版
+            # 公开原件：他名下有引用就凭引用，否则过了门凭「公开」读当前版
             reference = next((h for h in holdings if h.basis == "reference"), None)
-            if reference is None and not self.public_access:
-                raise denied("public_access_closed", "public access is closed")
+            if reference is None:
+                self.gate.check(subject, material)
             number = (reference.version_no if reference else None) or (
                 material.current_version
             )
@@ -457,11 +483,19 @@ class UserRunService:
             )
             if rendition is None or rendition.sha256 != pin.rendition_sha256:
                 raise conflict("sha256_mismatch", "the pinned rendition does not match")
-            content = await self._fetch(rendition.object_key or "", rendition.sha256)
+            # 正文、按页文字在库里（0043 第五节）；表格读法是事实行，按运行查事实
+            if rendition.kind == "text":
+                text = await self.runs.reading_text(rendition.id)
+                if text is None:
+                    raise not_found("rendition")
+                media_type, content = "text/plain; charset=utf-8", text.body.encode()
+            elif rendition.kind == "pages":
+                pages = await self.runs.reading_pages(rendition.id)
+                media_type, content = "application/json", pages_bytes(pages)
+            else:
+                raise refused("kind_invalid", "read a table reading as facts")
             await self._log(grant, item, version, reader, operation)
-            return ReadResult(
-                item, version, "application/octet-stream", content, rendition=rendition
-            )
+            return ReadResult(item, version, media_type, content, rendition=rendition)
         content = await self._fetch(version.object_key, version.sha256)
         await self._log(grant, item, version, reader, operation)
         if what == "format":
@@ -482,8 +516,11 @@ class UserRunService:
         material_id: str,
         version_no: int | None,
         kind: str,
-    ) -> tuple[ReadResult, Rendition]:
-        """读钉住那一版的某种读法（正文 `text`、按页文字 `pages`）。
+        *,
+        page_from: int | None = None,
+        page_to: int | None = None,
+    ) -> Reading:
+        """读钉住那一版的某种读法（正文 `text`、按页文字 `pages`，可只取几页）。
 
         钉了这种读法的读那一版，没钉的读最新就绪的一版（出处里写明读法版本）；
         授权、留痕同 `read`。
@@ -498,36 +535,55 @@ class UserRunService:
         item = grant.item(material_id, version_no)
         if item is None:
             raise not_found()
-        if grant.scope != "content":
-            raise denied("format_only", "this grant reads formats only")
-        material = await self.library.get_material(item.material_id)
-        if material is None or not material.readable:
-            raise not_found()
-        version = await self.library.version(item.material_id, item.version_no)
-        pins = await self._pins(grant, item)
-        if version is None or version.sha256 != pins[0].sha256:
-            raise conflict("sha256_mismatch", "the pinned version does not match")
-        pinned = next((p for p in pins if p.rendition_kind == kind), None)
-        if pinned is not None:
-            rendition = await self.runs.rendition(
-                version.id, kind, pinned.rendition_no or 0
-            )
-            if rendition is None or rendition.sha256 != pinned.rendition_sha256:
-                raise conflict("sha256_mismatch", "the pinned rendition does not match")
-        else:
-            ready = [
-                r
-                for r in await self.runs.renditions(version.id)
-                if r.kind == kind and r.status == "ready"
-            ]
-            if not ready:
+        version, rendition = await self._reading_of(grant, item, kind)
+        if kind == "text":
+            text = await self.runs.reading_text(rendition.id)
+            if text is None:
                 raise not_found("rendition")
-            rendition = max(ready, key=lambda r: r.rendition_no)
-        content = await self._fetch(rendition.object_key or "", rendition.sha256)
+            await self._log(grant, item, version, reader, "rendition")
+            return Reading(item, version, rendition, text=text)
+        pages = await self.runs.reading_pages(rendition.id, page_from, page_to)
+        total = await self.runs.page_count(rendition.id)
         await self._log(grant, item, version, reader, "rendition")
-        return ReadResult(item, version, "text/plain", content, rendition=rendition), (
-            rendition
-        )
+        return Reading(item, version, rendition, pages=tuple(pages), total_pages=total)
+
+    async def search_pages(
+        self,
+        executor_app: str,
+        reader: str,
+        targets: list[tuple[RunGrant, GrantItem]],
+        terms: list[str],
+    ) -> tuple[list[tuple[Reading, Page]], int]:
+        """在这几项钉住的按页文字里找含任一关键词的页（数据 MCP 的 `search_evidence`）。
+
+        授权与读法的选法同 `read_reading`；还没有按页文字的跳过。命中的每份记一条读数
+        （同查事实：只记真交出去的那几份）。返回命中的页、找了几份。
+        """
+        now = self.now()
+        found: dict[str, tuple[RunGrant, Reading]] = {}
+        for grant, item in targets:
+            if grant.executor_app != executor_app or not grant.active(now):
+                continue
+            try:
+                version, rendition = await self._reading_of(grant, item, "pages")
+            except UserDataError:
+                continue
+            found[rendition.id] = (grant, Reading(item, version, rendition))
+        if not found or not terms:
+            return [], len(found)
+        hits: list[tuple[Reading, Page]] = []
+        logged: set[str] = set()
+        for rendition_id, page in await self.runs.search_pages(
+            list(found), terms, MAX_SEARCH_PAGES
+        ):
+            grant, reading = found[rendition_id]
+            if rendition_id not in logged:
+                logged.add(rendition_id)
+                await self._log(
+                    grant, reading.item, reading.version, reader, "rendition"
+                )
+            hits.append((reading, page))
+        return hits, len(found)
 
     async def run_grants(
         self, executor_app: str, beneficiary: str, run_ref: str
@@ -632,14 +688,21 @@ class UserRunService:
         processor_version: str,
         content: bytes | None,
         detail: dict[str, object] | None = None,
+        *,
+        title: str | None = None,
+        published_on: date | None = None,
     ) -> Rendition:
         """knowfeed 写回读法：只能凭加工授权、只能写那一版。
 
-        没成的不带内容、写明原因。
+        正文（可带标题、发布日期）存一行，按页文字每页一行，都在 PostgreSQL（0043
+        第五节）；读法版本的摘要按规范化内容算。表格的内容走 `write_facts`，这里只收
+        它没成的。没成的不带内容、写明原因。
         """
         self._processor(caller)
         if kind not in PROCESSOR_KINDS:
             raise refused("kind_invalid", "knowfeed writes text, pages or table")
+        if kind != "text" and (title is not None or published_on is not None):
+            raise refused("title_not_allowed", "only a text reading has a title")
         if not processor_version or len(processor_version) > 40:
             raise refused("processor_version_invalid", "processor_version is invalid")
         grant = await self.runs.get_grant(grant_id)
@@ -657,14 +720,24 @@ class UserRunService:
         if version is None or material is None or not material.readable:
             raise not_found()
         now = self.now()
-        sha256 = key = None
+        info = dict(detail or {})
+        sha256 = text = None
+        pages: tuple[Page, ...] = ()
         if content is not None:
             if not content:
                 raise refused("empty", "rendition is empty")
-            key = f"{version.object_key}/renditions/{kind}/{self.new_id()}"
-            await self.objects.put(key, content, "application/octet-stream")
-            sha256 = hashlib.sha256(content).hexdigest()
-        elif not (detail or {}).get("reason"):
+            if kind == "text":
+                text, removed = parse_text(content, title, published_on)
+                sha256 = text_digest(text)
+            elif kind == "pages":
+                pages, removed = parse_pages(content)
+                sha256 = pages_digest(pages)
+                info["pages"] = len(pages)
+            else:
+                raise refused("kind_invalid", "write a table reading as facts")
+            if removed:
+                info["nul_removed"] = removed
+        elif not info.get("reason"):
             raise refused("reason_required", "a failed rendition says why")
         return await self.runs.add_rendition(
             Rendition(
@@ -677,10 +750,11 @@ class UserRunService:
                 status="ready" if content is not None else "failed",
                 created_at=now,
                 sha256=sha256,
-                object_key=key,
-                detail=dict(detail or {}),
+                detail=info,
                 ready_at=now if content is not None else None,
-            )
+            ),
+            text=text,
+            pages=pages,
         )
 
     async def write_facts(
@@ -792,11 +866,11 @@ class UserRunService:
                 await self._log(grant, item, version, reader, "rendition")
         return rows
 
-    async def query_market(self, query: FactQuery) -> list[FactRow]:
-        """跨全市场查公开原件的事实（筛选、排序、排名、统计），平台总开关管；
-        条件由用户或他的专家给（决定 ⑪）。公开数据不逐份记读数。"""
-        if not self.public_access:
-            raise denied("public_access_closed", "public access is closed")
+    async def query_market(self, subject: str, query: FactQuery) -> list[FactRow]:
+        """跨全市场查公开原件的事实（筛选、排序、排名、统计）：过资格、权限、平台总开关
+        那道门；条件由用户或他的专家给（决定 ⑪）。只查公开原件的行（权限）。
+        公开数据不逐份记读数。"""
+        self.gate.check(subject)
         return await self.runs.facts(query.checked())
 
     async def query_metric(
@@ -804,12 +878,14 @@ class UserRunService:
         metric_key: str,
         query: FactQuery,
         *,
+        subject: str | None = None,
         executor_app: str | None = None,
         reader: str | None = None,
         beneficiary: str | None = None,
         run_ref: str | None = None,
     ) -> list[MetricRow]:
-        """按指标算：给 `run_ref` 的只用钉住的那几份，不给的查全市场公开原件。"""
+        """按指标算：给 `run_ref` 的只用钉住的那几份，不给的查全市场公开原件（`subject`
+        是谁在查，过那道门）。"""
         metric = METRICS.get(metric_key)
         if metric is None:
             raise refused("metric_invalid", "unknown metric")
@@ -835,7 +911,8 @@ class UserRunService:
                 executor_app, reader, beneficiary, run_ref, wide
             )
         else:
-            rows = await self.query_market(wide)
+            assert subject is not None
+            rows = await self.query_market(subject, wide)
         results = compute_metric(metric, rows)
         if query.period_from is not None:
             results = [r for r in results if r.period_end >= query.period_from]
@@ -1062,7 +1139,8 @@ class UserRunService:
         """依法清除一份：没有别人的使用权，或内容本身是必须删的个人信息时真删。
 
         别人还合法用着、又不是必须删的个人信息的，不删内容（只撤所有者的关系），
-        返回 False。真删：所有版本与读法的对象、描述与名字；撤全部授权；买家的使用权
+        返回 False。真删：所有版本的原件对象，库里的读法内容（正文、按页文字、事实行），
+        描述与名字；撤全部授权；买家的使用权
         结束（通知、补偿买家在 knowmart）。RAGFlow、knowfeed 的回执到之前，事件是
         「处理中」。
         """
@@ -1078,9 +1156,6 @@ class UserRunService:
                 await self.library.remove(material.id, material.owner, now)
             return False
         for version in await self.library.versions(material.id):
-            for rendition in await self.runs.renditions(version.id):
-                if rendition.object_key:
-                    await self.objects.delete(rendition.object_key)
             await self.objects.delete(version.object_key)
         await self.runs.mark_purged(material.id, now)
         ids = await self.runs.grant_ids(material_id=material.id, active_at=now)
@@ -1255,11 +1330,10 @@ class UserRunService:
                 raise denied("no_reference", "no usable reference to this original")
             ref = "reference"
         elif basis == "public":
-            # 公开原件层全市场可读，平台总开关管（0047 第 2.2 节）
+            # 公开原件层全市场可读，过资格、权限、平台总开关那道门（0047 第 2.2 节）
             if material.owner != PUBLIC_OWNER:
                 raise refused("basis_ref_invalid", "only public originals are public")
-            if not self.public_access:
-                raise denied("public_access_closed", "public access is closed")
+            self.gate.check(beneficiary, material)
             ref = PUBLIC_OWNER
         else:
             raise refused("basis_unsupported", "this basis is not available")
@@ -1270,6 +1344,36 @@ class UserRunService:
             basis_ref=ref,
             content_owner=material.owner,
         )
+
+    async def _reading_of(
+        self, grant: RunGrant, item: GrantItem, kind: str
+    ) -> tuple[ContentVersion, Rendition]:
+        """授权里这一项要读的那个读法版本：钉了这种读法的就是那一版，没钉的取最新就绪的。"""
+        if grant.scope != "content":
+            raise denied("format_only", "this grant reads formats only")
+        material = await self.library.get_material(item.material_id)
+        if material is None or not material.readable:
+            raise not_found()
+        version = await self.library.version(item.material_id, item.version_no)
+        pins = await self._pins(grant, item)
+        if version is None or version.sha256 != pins[0].sha256:
+            raise conflict("sha256_mismatch", "the pinned version does not match")
+        pinned = next((p for p in pins if p.rendition_kind == kind), None)
+        if pinned is not None:
+            rendition = await self.runs.rendition(
+                version.id, kind, pinned.rendition_no or 0
+            )
+            if rendition is None or rendition.sha256 != pinned.rendition_sha256:
+                raise conflict("sha256_mismatch", "the pinned rendition does not match")
+            return version, rendition
+        ready = [
+            r
+            for r in await self.runs.renditions(version.id)
+            if r.kind == kind and r.status == "ready"
+        ]
+        if not ready:
+            raise not_found("rendition")
+        return version, max(ready, key=lambda r: r.rendition_no)
 
     async def _run_grants(
         self, executor_app: str, beneficiary: str, run_ref: str

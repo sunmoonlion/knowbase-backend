@@ -400,25 +400,39 @@ class DataMcp:
         what = _text(args, "what")
         grant = await self._grant_for(runs, token, args, material_id)
         reader = f"mcp:{token.sandbox}"
-        if what in ("text", "pages"):
-            got, rendition = await runs.read_reading(
-                token.executor, reader, grant.id, material_id, version_no, what
+        if what == "pages":
+            first = max(_int(args, "page_from") or 1, 1)
+            last = min(
+                _int(args, "page_to") or first + MAX_PAGES - 1,
+                first + MAX_PAGES - 1,
             )
-            source = _source(got.item.material_id, got.version, rendition)
-            text = (got.content or b"").decode("utf-8", "replace")
-            if what == "pages":
-                pages = json.loads(text)
-                first = _int(args, "page_from") or 1
-                last = min(
-                    _int(args, "page_to") or first + MAX_PAGES - 1,
-                    first + MAX_PAGES - 1,
-                )
-                chosen = [p for p in pages if first <= int(p["page"]) <= last]
-                return {"source": source, "pages": chosen, "total_pages": len(pages)}
+            got = await runs.read_reading(
+                token.executor,
+                reader,
+                grant.id,
+                material_id,
+                version_no,
+                "pages",
+                page_from=first,
+                page_to=last,
+            )
+            return {
+                "source": _source(got.item.material_id, got.version, got.rendition),
+                "pages": [{"page": p.number, "text": p.text} for p in got.pages],
+                "total_pages": got.total_pages,
+            }
+        if what == "text":
+            got = await runs.read_reading(
+                token.executor, reader, grant.id, material_id, version_no, "text"
+            )
+            assert got.text is not None
+            text = got.text.body
             offset = max(_int(args, "offset") or 0, 0)
             part = text[offset : offset + MAX_TEXT_CHARS]
             return {
-                "source": source,
+                "source": _source(got.item.material_id, got.version, got.rendition),
+                "title": got.text.title,
+                "published_on": got.text.published_on,
                 "text": part,
                 "offset": offset,
                 "more": offset + len(part) < len(text),
@@ -453,7 +467,7 @@ class DataMcp:
         runs = self.runs()
         query = _query(args)
         if args.get("scope") == "market":
-            rows = await runs.query_market(query)
+            rows = await runs.query_market(token.user, query)
         else:
             rows = await runs.query_facts(
                 token.executor,
@@ -481,7 +495,7 @@ class DataMcp:
                 limit=len(ids),
             )
             if ref is None:
-                rows += await runs.query_market(query)
+                rows += await runs.query_market(token.user, query)
             else:
                 rows += await runs.query_facts(
                     token.executor, f"mcp:{token.sandbox}", token.user, ref, query
@@ -497,7 +511,7 @@ class DataMcp:
         metric = _text(args, "metric")
         query = _query(args)
         if args.get("scope") == "market":
-            rows = await runs.query_metric(metric, query)
+            rows = await runs.query_metric(metric, query, subject=token.user)
         else:
             rows = await runs.query_metric(
                 metric,
@@ -527,6 +541,7 @@ class DataMcp:
 
     async def _search_evidence(self, token: DataToken, args: dict[str, Any]) -> Any:
         """在钉住的版本（会话里是读过的）的按页文字里按关键词找，回页级片段与出处。
+        按页文字在 knowbase 的 PostgreSQL 里，由库先挑出含关键词的页再打分。
         块 9（RAGFlow 一版本一文档）上线后换成关键词加向量的混合检索。"""
         runs = self.runs()
         terms = [t for t in re.split(r"\s+", _text(args, "query")) if t]
@@ -542,44 +557,38 @@ class DataMcp:
             grants = await runs.run_grants(
                 token.executor, token.user, _text(args, "run")
             )
-        hits: list[tuple[int, dict[str, Any]]] = []
-        reader = f"mcp:{token.sandbox}"
-        searched = 0
+        targets = []
         for grant in grants:
             for item in grant.items:
                 if not narrow.empty:
                     material = await runs.library.get_material(item.material_id)
                     if material is None or not narrow.matches(material.description):
                         continue
-                searched += 1
-                try:
-                    got, rendition = await runs.read_reading(
-                        token.executor,
-                        reader,
-                        grant.id,
-                        item.material_id,
-                        item.version_no,
-                        "pages",
-                    )
-                except UserDataError:
-                    continue
-                source = _source(item.material_id, got.version, rendition)
-                for page in json.loads((got.content or b"[]").decode("utf-8")):
-                    body = str(page.get("text") or "")
-                    score = sum(body.count(t) for t in terms)
-                    if score:
-                        at = min(body.find(t) for t in terms if t in body)
-                        start = max(at - SNIPPET_CHARS // 3, 0)
-                        hits.append(
-                            (
-                                score,
-                                {
-                                    "source": {**source, "page": page.get("page")},
-                                    "snippet": body[start : start + SNIPPET_CHARS],
-                                    "score": score,
-                                },
-                            )
-                        )
+                targets.append((grant, item))
+        found, searched = await runs.search_pages(
+            token.executor, f"mcp:{token.sandbox}", targets, terms
+        )
+        hits: list[tuple[int, dict[str, Any]]] = []
+        for reading, page in found:
+            body = page.text
+            score = sum(body.count(t) for t in terms)
+            if not score:
+                continue
+            at = min(body.find(t) for t in terms if t in body)
+            start = max(at - SNIPPET_CHARS // 3, 0)
+            source = _source(
+                reading.item.material_id, reading.version, reading.rendition
+            )
+            hits.append(
+                (
+                    score,
+                    {
+                        "source": {**source, "page": page.number},
+                        "snippet": body[start : start + SNIPPET_CHARS],
+                        "score": score,
+                    },
+                )
+            )
         hits.sort(key=lambda h: -h[0])
         return {
             "method": "keyword",

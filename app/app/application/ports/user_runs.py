@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.domain.user_facts import FactQuery, FactRow, RawFact, StandardFact
 from app.domain.user_library import ContentVersion, Holding, Material, Rendition
+from app.domain.user_readings import Page, TextReading
 from app.domain.user_runs import InputSet, Output, RunGrant, Session
 
 
@@ -27,7 +28,25 @@ class UserRunRepository(Protocol):
         self, version_id: str, kind: str, rendition_no: int
     ) -> Rendition | None: ...
 
-    async def add_rendition(self, rendition: Rendition) -> Rendition: ...
+    async def add_rendition(
+        self,
+        rendition: Rendition,
+        *,
+        text: TextReading | None = None,
+        pages: tuple[Page, ...] = (),
+    ) -> Rendition: ...
+
+    async def reading_text(self, rendition_id: str) -> TextReading | None: ...
+
+    async def reading_pages(
+        self, rendition_id: str, first: int | None = None, last: int | None = None
+    ) -> list[Page]: ...
+
+    async def page_count(self, rendition_id: str) -> int: ...
+
+    async def search_pages(
+        self, rendition_ids: list[str], terms: list[str], limit: int
+    ) -> list[tuple[str, Page]]: ...
 
     async def add_fact_batch(
         self,

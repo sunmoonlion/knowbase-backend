@@ -300,7 +300,11 @@ class ContentVersion:
 
 @dataclass(frozen=True)
 class Rendition:
-    """一个读法版本：某个内容版本的一种派生形态（正文、按页文字、表格、检索索引）。"""
+    """一个读法版本：某个内容版本的一种派生形态（正文、按页文字、表格、检索索引）。
+
+    内容不在这一行：正文、按页文字、表格的事实行各在自己的表里（0043 第五节）；
+    `sha256` 是按规范化内容算的摘要。
+    """
 
     id: str
     version_id: str
@@ -311,7 +315,6 @@ class Rendition:
     status: RenditionStatus
     created_at: datetime
     sha256: str | None = None
-    object_key: str | None = None
     detail: dict[str, object] = field(default_factory=dict)
     ready_at: datetime | None = None
 

@@ -33,6 +33,7 @@ from app.infrastructure.security.relation_auth import (
 )
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
+from app.interfaces.endpoints.public_access import public_gate
 from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_resolution import (
@@ -69,7 +70,7 @@ def get_user_resolution_service() -> UserResolutionService:
         SqlUserResolutionRepository(sessions),
         SqlUserLibraryRepository(sessions),
         SqlUserRunRepository(sessions),
-        public_access=get_settings().public_access_enabled,
+        gate=public_gate(get_settings()),
     )
 
 

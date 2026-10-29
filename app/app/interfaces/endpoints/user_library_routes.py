@@ -32,7 +32,10 @@ from app.infrastructure.security.relation_auth import (
     require_purchase_service,
     require_supply_service,
 )
-from app.infrastructure.security.user_token import require_user_owner
+from app.infrastructure.security.user_token import (
+    require_subscribing_owner,
+    require_user_owner,
+)
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
 from app.interfaces.endpoints.user_data_errors import call as _call
@@ -544,7 +547,7 @@ async def platform_consents(
 
 @router.get("/subscriptions", response_model=list[SubscriptionRead])
 async def subscriptions(
-    owner: Owner = Depends(require_user_owner),
+    owner: Owner = Depends(require_subscribing_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     return [
@@ -561,7 +564,7 @@ async def subscribe(
     subscription_id: str,
     revision: int,
     payload: SubscriptionScopeIn,
-    owner: Owner = Depends(require_user_owner),
+    owner: Owner = Depends(require_subscribing_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     """建订阅、续订：同一修订重放回原来那条；范围不同要出新修订（409）。"""
@@ -591,7 +594,7 @@ async def subscribe(
 async def unsubscribe(
     subscription_id: str,
     revision: int,
-    owner: Owner = Depends(require_user_owner),
+    owner: Owner = Depends(require_subscribing_owner),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
     _subscribing_app(owner)

@@ -14,6 +14,8 @@ from app.domain.cross_app import Source, Target, parse_sources, parse_targets
 from core.ingestion_policy import parse_bindings
 
 BrowserSurface = Literal["admin", "web"]
+# 本人令牌认的代办应用（SDD 0043 第十节）
+USER_TOKEN_APPS = ("knowbench", "knowlab", "knowmart", "knowfeed")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,12 +135,16 @@ class Settings(BaseSettings):
 
     # 用户资料（SDD 0042）。用户本人的令牌：应用后端经 Casdoor 令牌交换换来，
     # aud 是下面这个值；代办的应用由令牌的 azp 认，只认这里登记的客户端编号
-    # （JSON：客户端编号 → knowbench / knowlab / knowmart）。
+    # （JSON：客户端编号 → knowbench / knowlab / knowmart / knowfeed；knowfeed
+    # 只转交订阅范围的同意，SDD 0043 第十节、0045 第 2.1 节）。
     user_token_audience: str = ""
     user_token_apps_json: str = "{}"
-    # 平台总开关（SDD 0047 第 5.2 节）：公开原件层全市场可读、跨全市场查事实、
-    # 网页全文搜；现在各环境默认开，正式对外开放前按律师意见确认
+    # 公开原件全市场读、跨全市场查事实的一道门（SDD 0047，决定 ②⑪，见
+    # app/domain/public_access.py）：平台总开关现在各环境默认开，正式对外开放前按律师
+    # 意见确认；资格 none 是不要资格，listed 是只认登记的用户（JSON 数组，用户编号）
     public_access_enabled: bool = True
+    public_access_qualification: Literal["none", "listed"] = "none"
+    public_access_qualified_subjects_json: str = "[]"
     # 用户资料存哪个桶、键的前缀。对象存储单独一套身份 USER_DATA_S3_*：S3_* 是
     # 知识源只读身份（只读 knowfeed 的桶），不能写；没配这套就回「未配置」
     user_data_bucket: str = ""
@@ -304,6 +310,8 @@ class Settings(BaseSettings):
     def validate_base_security(self) -> Settings:
         if not self.deployment_id.strip():
             raise ValueError("DEPLOYMENT_ID cannot be empty")
+        # 资格登记配错了起不来，不在第一次读的时候才报
+        self.public_access_qualified_subjects  # noqa: B018
         if not self.app_slug or any(
             char not in "abcdefghijklmnopqrstuvwxyz0123456789-"
             for char in self.app_slug
@@ -673,15 +681,31 @@ class Settings(BaseSettings):
         except json.JSONDecodeError as exc:
             raise ValueError("USER_TOKEN_APPS_JSON must be valid JSON") from exc
         if not isinstance(raw, dict) or any(
-            not isinstance(k, str)
-            or not k.strip()
-            or v not in ("knowbench", "knowlab", "knowmart")
+            not isinstance(k, str) or not k.strip() or v not in USER_TOKEN_APPS
             for k, v in raw.items()
         ):
             raise ValueError(
-                "USER_TOKEN_APPS_JSON maps client ids to knowbench/knowlab/knowmart"
+                "USER_TOKEN_APPS_JSON maps client ids to"
+                " knowbench/knowlab/knowmart/knowfeed"
             )
         return {k.strip(): v for k, v in raw.items()}
+
+    @property
+    def public_access_qualified_subjects(self) -> frozenset[str]:
+        """资格登记的用户（`PUBLIC_ACCESS_QUALIFICATION=listed` 时才看）。"""
+        try:
+            raw = json.loads(self.public_access_qualified_subjects_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "PUBLIC_ACCESS_QUALIFIED_SUBJECTS_JSON must be valid JSON"
+            ) from exc
+        if not isinstance(raw, list) or any(
+            not isinstance(s, str) or not s.strip() or len(s) > 255 for s in raw
+        ):
+            raise ValueError(
+                "PUBLIC_ACCESS_QUALIFIED_SUBJECTS_JSON is a list of user ids"
+            )
+        return frozenset(s.strip() for s in raw)
 
     def require_service_identity(self) -> None:
         if not self.service_auth_audience.strip():

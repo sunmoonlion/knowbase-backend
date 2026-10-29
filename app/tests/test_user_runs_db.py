@@ -5,11 +5,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
+import json
 import os
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 
 import pytest
 from alembic.migration import MigrationContext
@@ -24,6 +24,7 @@ from test_user_data import CSV, Clock, MemoryObjects
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import UserDataError
+from app.domain.user_readings import Page, TextReading, pages_digest, text_digest
 from app.domain.user_runs import GrantRequestItem, InputPin
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
@@ -384,10 +385,12 @@ async def test_processing_reads_one_version_and_writes_renditions(world):
         "knowfeed", "worker", grant.id, material.id, 1, "content"
     )
     assert got.content == CSV
+    stored = dict(world.objects.data)
     text = await world.runs.write_rendition(
         "knowfeed", grant.id, "text", "0.1", b"plain text"
     )
     assert (text.rendition_no, text.status) == (1, "ready")
+    assert text.sha256 == text_digest(TextReading("plain text"))
     failed = await world.runs.write_rendition(
         "knowfeed", grant.id, "table", "0.1", None, {"reason": "no tables"}
     )
@@ -397,11 +400,26 @@ async def test_processing_reads_one_version_and_writes_renditions(world):
         422,
         "kind_invalid",
     )
+    # 表格的内容走事实批；标题只有正文有
+    await refused(
+        world.runs.write_rendition("knowfeed", grant.id, "table", "0.1", b"x"),
+        422,
+        "kind_invalid",
+    )
+    await refused(
+        world.runs.write_rendition(
+            "knowfeed", grant.id, "pages", "0.1", b"[]", title="年报"
+        ),
+        422,
+        "title_not_allowed",
+    )
     assert await world.runs.pending_processing("knowfeed") == []
     kinds = [
         (r.kind, r.status) for r in await world.runs.renditions(ALICE, material.id, 1)
     ]
     assert kinds == [("table", "failed"), ("text", "ready")]
+    # 读法内容在库里，不往对象存储写（0043 第五节）
+    assert world.objects.data == stored
     reads = await world.runs.reads(ALICE, material.id)
     assert reads[0]["operation"] == "process"
 
@@ -413,7 +431,7 @@ async def test_processing_reads_one_version_and_writes_renditions(world):
         "app:knowbench",
         rendition_kind="text",
         rendition_no=1,
-        rendition_sha256=hashlib.sha256(b"plain text").hexdigest(),
+        rendition_sha256=text.sha256,
     )
     grant = await world.runs.grant_by_user(
         ALICE, "knowbench", "delegation", "t-r", [pinned]
@@ -427,6 +445,111 @@ async def test_processing_reads_one_version_and_writes_renditions(world):
         403,
         "no_processing_consent",
     )
+
+
+async def test_text_and_pages_live_in_postgres(world):
+    """正文一行、按页文字每页一行，都在库里（0043 第五节，数据拓扑第 16.2 节）。"""
+    material, v1 = await world.upload(ALICE, "report.csv", process=True)
+    grant = await world.runs.issue_processing("knowfeed", ALICE, material.id, 1)
+    for body, code in (
+        (b"{}", "pages_invalid"),
+        (b"[]", "pages_invalid"),
+        (b'[{"page": 0, "text": "x"}]', "pages_invalid"),
+        (b'[{"page": 1, "text": "x", "more": 1}]', "pages_invalid"),
+        (b'[{"page": 1, "text": "a"}, {"page": 1, "text": "b"}]', "pages_duplicate"),
+    ):
+        await refused(
+            world.runs.write_rendition("knowfeed", grant.id, "pages", "p", body),
+            422,
+            code,
+        )
+    await refused(
+        world.runs.write_rendition("knowfeed", grant.id, "text", "t", b"\xff\xfe"),
+        422,
+        "text_invalid",
+    )
+    # 页的先后不影响摘要；NUL 存不进 PostgreSQL，去掉并照实记下
+    given = [
+        {"page": 3, "text": "第三页：渠道库存"},
+        {"page": 1, "text": "封面\x00"},
+        {"page": 2, "text": ""},
+    ]
+    pages = await world.runs.write_rendition(
+        "knowfeed", grant.id, "pages", "p-1", json.dumps(given).encode()
+    )
+    expected = (Page(1, "封面"), Page(2, ""), Page(3, "第三页：渠道库存"))
+    assert pages.sha256 == pages_digest(expected)
+    assert pages.detail == {"pages": 3, "nul_removed": 1}
+    text = await world.runs.write_rendition(
+        "knowfeed",
+        grant.id,
+        "text",
+        "t-1",
+        "正文".encode(),
+        title="2025 年年度报告",
+        published_on=date(2026, 3, 28),
+    )
+    assert text.sha256 == text_digest(
+        TextReading("正文", "2025 年年度报告", date(2026, 3, 28))
+    )
+    again = await world.runs.write_rendition(
+        "knowfeed", grant.id, "pages", "p-2", b'[{"page": 1, "text": "new"}]'
+    )
+    assert again.rendition_no == 2
+
+    await world.lib.show(ALICE, material.id, "app:knowbench")
+    run = await world.runs.grant_by_user(
+        ALICE,
+        "knowbench",
+        "delegation",
+        "t-p",
+        [
+            item(
+                v1,
+                "display",
+                "app:knowbench",
+                rendition_kind="pages",
+                rendition_no=1,
+                rendition_sha256=pages.sha256,
+            )
+        ],
+    )
+    # 钉了第 1 版读法的读第 1 版，可只取几页
+    got = await world.runs.read_reading(
+        "knowbench", "r", run.id, material.id, 1, "pages", page_from=2, page_to=3
+    )
+    assert (got.rendition.rendition_no, got.total_pages) == (1, 3)
+    assert got.pages == expected[1:]
+    raw = await world.runs.read("knowbench", "r", run.id, material.id, 1, "rendition")
+    assert raw.media_type == "application/json"
+    assert json.loads(raw.content or b"") == [
+        {"page": p.number, "text": p.text} for p in expected
+    ]
+    # 没钉正文的读最新就绪的那一版，标题、发布日期一起回
+    got = await world.runs.read_reading(
+        "knowbench", "r", run.id, material.id, 1, "text"
+    )
+    assert got.text == TextReading("正文", "2025 年年度报告", date(2026, 3, 28))
+
+    hits, searched = await world.runs.search_pages(
+        "knowbench", "r", [(run, run.items[0])], ["渠道", "没有的词"]
+    )
+    assert searched == 1
+    assert [(h.rendition.rendition_no, p.number) for h, p in hits] == [(1, 3)]
+
+    # 依法清除：库里的读法内容一起删
+    await world.runs.purge_material(
+        "admin-1", material.id, "依法删除", personal_info=True
+    )
+    remaining = await sql(
+        world.db,
+        "SELECT (SELECT count(*) FROM user_data_page p JOIN user_data_rendition r"
+        " ON r.id = p.rendition_id WHERE r.version_id = :v)"
+        " + (SELECT count(*) FROM user_data_text t JOIN user_data_rendition r"
+        " ON r.id = t.rendition_id WHERE r.version_id = :v)",
+        v=uuid.UUID(v1.id),
+    )
+    assert remaining == 0
 
 
 async def test_outputs_are_idempotent_immutable_and_convert_into_data(world):

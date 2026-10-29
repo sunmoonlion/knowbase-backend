@@ -2,7 +2,9 @@
 
 应用后端拿用户登录时 Casdoor 发给本应用的访问令牌，按 RFC 8693 换一张
 `aud` = knowbase 的令牌，连同请求一起送来。这里验：签名（JWKS）、`iss`、`aud`、
-`exp`、`iat`，再按 `azp` 认是哪个应用代办；只认配置里登记的三个应用。
+`exp`、`iat`，再按 `azp` 认是哪个应用代办；只认配置里登记的应用（knowbench、
+knowlab、knowmart、knowfeed）。knowfeed 只转交订阅范围的同意（SDD 0043 第十节、
+0045 第 2.1 节），它代办的令牌只进订阅的几个接口，别的本人接口一律 403。
 光有服务身份加一个用户名不算本人（数据拓扑第 5.1 节）。
 2026-10-23 在临时 Casdoor 4.12.0 上实测过换出来的令牌长什么样
 （k8s 仓 scripts/results/opus-0042-token-exchange-lab）。
@@ -69,12 +71,35 @@ def _get_verifier() -> UserTokenVerifier:
     return _verifier
 
 
-async def require_user_owner(
-    authorization: str | None = Header(default=None, alias="Authorization"),
-) -> Owner:
+# 只转交订阅范围同意的应用：代办的令牌只认 `require_subscribing_owner` 的接口
+SUBSCRIPTION_ONLY_APPS = ("knowfeed",)
+
+
+async def _owner(authorization: str | None) -> Owner:
     scheme, _, encoded = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not encoded or " " in encoded:
         raise UnauthorizedError(
             "A Bearer user token is required", code="user_auth_required"
         )
     return await _get_verifier().verify(encoded)
+
+
+async def require_user_owner(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Owner:
+    owner = await _owner(authorization)
+    if owner.app in SUBSCRIPTION_ONLY_APPS:
+        raise ForbiddenError(
+            "The acting application is not allowed", code="user_token_app_denied"
+        )
+    return owner
+
+
+async def require_subscribing_owner(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> Owner:
+    """订阅的接口：登记的应用都认，knowfeed 也认。
+
+    建、续、撤只许 knowfeed，路由里核。
+    """
+    return await _owner(authorization)

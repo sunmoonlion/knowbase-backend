@@ -157,8 +157,9 @@ async def market_facts(
     owner: Owner = Depends(require_user_owner),
     service: UserRunService = Depends(get_user_run_service),
 ):
-    """跨全市场查公开原件的事实（筛选、排序、排名），条件由用户给；平台总开关管。"""
-    rows = await _call(lambda: service.query_market(_query(payload)))
+    """跨全市场查公开原件的事实（筛选、排序、排名），条件由用户给；过资格、权限、
+    平台总开关那道门（SDD 0047 第 4.4 节）。"""
+    rows = await _call(lambda: service.query_market(owner.subject, _query(payload)))
     return [_row(r) for r in rows]
 
 
@@ -168,5 +169,9 @@ async def market_metrics(
     owner: Owner = Depends(require_user_owner),
     service: UserRunService = Depends(get_user_run_service),
 ):
-    rows = await _call(lambda: service.query_metric(payload.metric, _query(payload)))
+    rows = await _call(
+        lambda: service.query_metric(
+            payload.metric, _query(payload), subject=owner.subject
+        )
+    )
     return [_metric(m) for m in rows]

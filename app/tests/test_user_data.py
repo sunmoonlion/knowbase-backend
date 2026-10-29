@@ -126,6 +126,48 @@ async def test_user_tokens_that_are_refused(claims, settings, status, code):
     assert (caught.value.status_code, caught.value.code) == (status, code)
 
 
+async def test_knowfeed_tokens_only_reach_the_subscription_endpoints(monkeypatch):
+    """本人令牌认 knowfeed（SDD 0043 第十节）：它只转交订阅范围的同意（0045 第 2.1
+    节），别的本人接口一律 403。"""
+    from app.application.errors.exceptions import AppException
+    from app.infrastructure.security import user_token
+
+    apps = json.dumps({"feed-client": "knowfeed", "bench-client": "knowbench"})
+    for azp, app in (("feed-client", "knowfeed"), ("bench-client", "knowbench")):
+        v, _ = verifier({"sub": "alice", "azp": azp}, user_token_apps_json=apps)
+        monkeypatch.setattr(user_token, "_verifier", v)
+        assert await user_token.require_subscribing_owner("Bearer t") == Owner(
+            "alice",
+            app,  # type: ignore[arg-type]
+        )
+        if app == "knowbench":
+            assert await user_token.require_user_owner("Bearer t") == Owner(
+                "alice", app
+            )
+            continue
+        with pytest.raises(AppException) as caught:
+            await user_token.require_user_owner("Bearer t")
+        assert (caught.value.status_code, caught.value.code) == (
+            403,
+            "user_token_app_denied",
+        )
+
+
+def test_user_token_apps_and_qualified_subjects_are_checked():
+    apps = Settings(user_token_apps_json=json.dumps({"feed": "knowfeed"}))
+    assert apps.user_token_apps == {"feed": "knowfeed"}
+    with pytest.raises(ValueError, match="USER_TOKEN_APPS_JSON"):
+        _ = Settings(user_token_apps_json=json.dumps({"x": "knowbase"})).user_token_apps
+    listed = Settings(
+        public_access_qualification="listed",
+        public_access_qualified_subjects_json='["alice", " bob "]',
+    )
+    assert listed.public_access_qualified_subjects == frozenset({"alice", "bob"})
+    for bad in ('{"alice": 1}', '[""]', "not json"):
+        with pytest.raises(ValueError, match="PUBLIC_ACCESS_QUALIFIED_SUBJECTS_JSON"):
+            Settings(public_access_qualified_subjects_json=bad)
+
+
 # —— 对象存储 ——
 
 

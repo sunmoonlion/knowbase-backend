@@ -63,6 +63,7 @@ def api(db):
     overrides = app.dependency_overrides
     overrides[user_library_routes.internal_host_only] = lambda: None
     overrides[user_library_routes.require_user_owner] = lambda: state["owner"]
+    overrides[user_library_routes.require_subscribing_owner] = lambda: state["owner"]
     overrides[user_library_routes.get_user_library_service] = lambda: service
     overrides[user_run_routes.get_user_run_service] = lambda: runs
     overrides[user_resolution_routes.get_user_resolution_service] = lambda: resolver
@@ -486,10 +487,26 @@ async def test_run_grants_reads_outputs_and_processing(api):
     processing_id = processing.json()["grant_id"]
     text = await client.post(
         f"{BASE}/processing/grants/{processing_id}/renditions/text",
-        params={"processor_version": "0.1"},
-        content=b"plain",
+        params={
+            "processor_version": "0.1",
+            "title": "2025 年年度报告",
+            "published_on": "2026-03-28",
+        },
+        content="正文".encode(),
     )
     assert text.status_code == 201 and text.json()["status"] == "ready"
+    pages = await client.post(
+        f"{BASE}/processing/grants/{processing_id}/renditions/pages",
+        params={"processor_version": "0.1"},
+        content=b'[{"page": 2, "text": "b"}, {"page": 1, "text": "a"}]',
+    )
+    assert pages.status_code == 201 and pages.json()["detail"] == {"pages": 2}
+    bad = await client.post(
+        f"{BASE}/processing/grants/{processing_id}/renditions/pages",
+        params={"processor_version": "0.1"},
+        content=b'{"page": 1}',
+    )
+    assert (bad.status_code, bad.json()["code"]) == (422, "pages_invalid")
     failed = await client.post(
         f"{BASE}/processing/grants/{processing_id}/renditions/table",
         params={"processor_version": "0.1", "failed_reason": "no tables"},
@@ -497,9 +514,42 @@ async def test_run_grants_reads_outputs_and_processing(api):
     assert failed.json()["detail"] == {"reason": "no tables"}
     listed = await client.get(f"{BASE}/materials/{material_id}/versions/1/renditions")
     assert [(r["kind"], r["status"]) for r in listed.json()] == [
+        ("pages", "ready"),
         ("table", "failed"),
         ("text", "ready"),
     ]
+
+    # 钉住按页文字读：回的就是写回时那个格式，页按页码排
+    state["owner"] = Owner("alice", "knowbench")
+    pinned = await client.post(
+        f"{BASE}/run-grants",
+        json={
+            "process": "delegation",
+            "ref": "task-p",
+            "items": [
+                {
+                    "material_id": material_id,
+                    "version_no": 1,
+                    "sha256": sha,
+                    "basis": "display",
+                    "basis_ref": "app:knowbench",
+                    "rendition_kind": "pages",
+                    "rendition_no": 1,
+                    "rendition_sha256": pages.json()["sha256"],
+                }
+            ],
+        },
+    )
+    assert pinned.status_code == 201, pinned.text
+    state["service"] = "knowbench"
+    got = await client.get(
+        f"{BASE}/run-grants/{pinned.json()['grant_id']}"
+        f"/materials/{material_id}/rendition"
+    )
+    assert got.status_code == 200, got.text
+    assert got.headers["X-Rendition"] == "pages/1"
+    assert got.headers["X-Content-SHA256"] == pages.json()["sha256"]
+    assert got.json() == [{"page": 1, "text": "a"}, {"page": 2, "text": "b"}]
 
 
 async def test_knowlab_platform_grants_end_with_the_process(api):

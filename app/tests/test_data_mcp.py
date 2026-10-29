@@ -20,6 +20,7 @@ from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
 from app.domain import chart_of_accounts
+from app.domain.public_access import PublicGate
 from app.domain.user_facts import RawFact, StandardFact
 from app.domain.user_library import PUBLIC_OWNER, Description
 from app.domain.user_runs import GrantRequestItem, InputPin
@@ -51,19 +52,22 @@ def token(sub="alice", aud="knowbase-data", azp="knowbench", exp=None) -> str:
 
 
 class World:
-    def __init__(self, db) -> None:
+    def __init__(self, db, gate: PublicGate | None = None) -> None:
         clock = Clock()
         objects = MemoryObjects()
         library = SqlUserLibraryRepository(lambda: db)
         runs_repo = SqlUserRunRepository(lambda: db)
         self.lib = UserLibraryService(library, objects, prefix="p", clock=clock)
-        self.runs = UserRunService(library, runs_repo, objects, prefix="p", clock=clock)
+        self.runs = UserRunService(
+            library, runs_repo, objects, prefix="p", clock=clock, gate=gate
+        )
         self.resolver = UserResolutionService(
             SqlUserResolutionRepository(lambda: db),
             library,
             runs_repo,
             clock=clock,
             limiter=RateLimiter(1000),
+            gate=gate,
         )
         server = data_mcp.DataMcp(
             lambda: self.runs, lambda: self.resolver, lambda: self.lib
@@ -300,6 +304,56 @@ async def test_a_session_queries_facts_of_what_it_has_read(world):
         "query_facts", auth=token(sub="bob"), session=session.id, codes=["IS.REVENUE"]
     )
     assert "error" in stranger
+
+
+async def test_text_reading_carries_title_and_date(world):
+    """正文读法在库里一行：标题、发布日期、正文（0043 第五节）。"""
+    material, version = await world.publish()
+    grant = await world.runs.issue_processing("knowfeed", PUBLIC_OWNER, material.id, 1)
+    await world.runs.write_rendition(
+        "knowfeed",
+        grant.id,
+        "text",
+        "t-0.1",
+        "第一节 重要提示……".encode(),
+        title="贵州茅台 2025 年年度报告",
+        published_on=date(2026, 3, 28),
+    )
+    await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "task-t",
+        [
+            GrantRequestItem(
+                InputPin(material.id, 1, version.sha256), "public", PUBLIC_OWNER
+            )
+        ],
+    )
+    text = await world.call(
+        "read_input", run="task-t", material_id=material.id, what="text", offset=4
+    )
+    assert text["title"] == "贵州茅台 2025 年年度报告"
+    assert text["published_on"] == "2026-03-28"
+    assert (text["text"], text["more"]) == ("重要提示……", False)
+    assert text["source"]["reading"] == "text/1"
+
+
+async def test_market_scope_goes_through_the_one_gate(db):
+    """跨全市场查事实过资格、权限、平台总开关那道门（0047 第 4.4 节，0048）。"""
+    world = World(
+        db, PublicGate(qualification="listed", qualified=frozenset({"alice"}))
+    )
+    await world.publish()
+    ranked = await world.call("query_facts", scope="market", codes=["IS.REVENUE"])
+    assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
+    for name, args in (
+        ("query_facts", {"codes": ["IS.REVENUE"]}),
+        ("query_metric", {"metric": "gross_margin"}),
+        ("read_facts", {"refs": [ranked["facts"][0]["ref"]]}),
+    ):
+        refused = await world.call(name, auth=token(sub="bob"), scope="market", **args)
+        assert refused["error"].startswith("qualification_required"), name
 
 
 async def test_search_evidence_narrows_by_description_dimensions(world):

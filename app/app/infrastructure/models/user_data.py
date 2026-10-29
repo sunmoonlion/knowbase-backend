@@ -220,7 +220,6 @@ class UserDataRendition(Base):
     processor_version: Mapped[str] = mapped_column(String(40), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     sha256: Mapped[str | None] = mapped_column(String(64))
-    object_key: Mapped[str | None] = mapped_column(Text)
     detail: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
@@ -241,6 +240,36 @@ class UserDataRendition(Base):
         ),
         CheckConstraint("rendition_no >= 1", name="ck_user_data_rendition_no"),
     )
+
+
+class UserDataText(Base):
+    """正文读法（SDD 0043 第五节）：每个读法版本一行，标题、发布日期、正文。
+
+    只增不改。
+    """
+
+    __tablename__ = "user_data_text"
+
+    rendition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_rendition.id"), primary_key=True
+    )
+    title: Mapped[str | None] = mapped_column(String(500))
+    published_on: Mapped[date | None] = mapped_column(Date)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class UserDataPage(Base):
+    """按页文字读法：每个读法版本每页一行；只增不改。"""
+
+    __tablename__ = "user_data_page"
+
+    rendition_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("user_data_rendition.id"), primary_key=True
+    )
+    page: Mapped[int] = mapped_column(Integer, primary_key=True)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (CheckConstraint("page >= 1", name="ck_user_data_page_no"),)
 
 
 class UserDataHolding(Base):

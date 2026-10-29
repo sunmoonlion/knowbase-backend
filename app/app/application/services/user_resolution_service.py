@@ -22,6 +22,7 @@ from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_resolution import ResolutionRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.application.services.call_rate import RateLimiter
+from app.domain.public_access import PublicGate
 from app.domain.user_data import UserDataError, not_found, refused
 from app.domain.user_library import Holding
 from app.domain.user_resolution import (
@@ -64,7 +65,7 @@ class UserResolutionService:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         limiter: RateLimiter | None = None,
-        public_access: bool = True,
+        gate: PublicGate | None = None,
     ) -> None:
         self.repo = repo
         self.library = library
@@ -72,8 +73,8 @@ class UserResolutionService:
         self.now = clock
         self.new_id = new_id
         self.limiter = limiter or _lookups
-        # 平台总开关（0047 第 5.2 节）：开着时公开原件层全市场可读，算候选
-        self.public_access = public_access
+        # 公开原件那道门（资格、权限、平台总开关，0047）：过得去时公开原件层算候选
+        self.gate = gate or PublicGate()
 
     # —— 按描述查 ——
 
@@ -87,7 +88,7 @@ class UserResolutionService:
         if not self.limiter.allow(f"lookup:{subject}"):
             raise UserDataError(429, "too_many_lookups", "slow down")
         found = await self.repo.candidates(
-            subject, app, key, public_access=self.public_access
+            subject, app, key, public_access=self.gate.allows(subject)
         )
         usable = [c for c in found if c.usable]
         shown = [c for c in usable if c.shown]
@@ -337,7 +338,7 @@ class UserResolutionService:
         found = [
             c
             for c in await self.repo.candidates(
-                subject, app, key, public_access=self.public_access
+                subject, app, key, public_access=self.gate.allows(subject)
             )
             if c.data_format in need.formats
             and (not need.sources or c.content_origin in need.sources)

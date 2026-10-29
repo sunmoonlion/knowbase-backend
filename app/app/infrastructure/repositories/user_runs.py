@@ -1,4 +1,8 @@
-"""运行的记录：输入组合、运行授权、读法、产出区、删除事件（SDD 0043 块 1c）。"""
+"""运行的记录：输入组合、运行授权、读法、产出区、删除事件（SDD 0043 块 1c）。
+
+读法的内容在库里：正文 `user_data_text`、按页文字 `user_data_page`、表格的事实行
+`user_data_fact_raw` 与 `user_data_fact`（0043 第五节）。
+"""
 
 from __future__ import annotations
 
@@ -6,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime
 
-from sqlalchemy import exists, func, select, text, update
+from sqlalchemy import delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +25,7 @@ from app.domain.user_library import (
     Material,
     Rendition,
 )
+from app.domain.user_readings import Page, TextReading
 from app.domain.user_runs import (
     GrantItem,
     InputPin,
@@ -37,11 +42,13 @@ from app.infrastructure.models.user_data import (
     UserDataInputSet,
     UserDataItem,
     UserDataOutput,
+    UserDataPage,
     UserDataRead,
     UserDataRendition,
     UserDataRunGrant,
     UserDataRunGrantItem,
     UserDataSession,
+    UserDataText,
     UserDataUse,
     UserDataVersion,
 )
@@ -59,7 +66,6 @@ def _rendition(row: UserDataRendition) -> Rendition:
         status=row.status,  # type: ignore[arg-type]
         created_at=row.created_at,
         sha256=row.sha256,
-        object_key=row.object_key,
         detail=dict(row.detail or {}),
         ready_at=row.ready_at,
     )
@@ -189,8 +195,15 @@ class SqlUserRunRepository:
             )
             return _rendition(row) if row is not None else None
 
-    async def add_rendition(self, rendition: Rendition) -> Rendition:
-        """读法号取这一版这一种的下一个（锁住内容版本那一行排队）。"""
+    async def add_rendition(
+        self,
+        rendition: Rendition,
+        *,
+        text: TextReading | None = None,
+        pages: tuple[Page, ...] = (),
+    ) -> Rendition:
+        """一个事务里记读法版本与它的内容（正文一行、按页文字每页一行）；读法号取这一版
+        这一种的下一个（锁住内容版本那一行排队）。"""
         async with self._sessions()() as session:
             version = await session.get(
                 UserDataVersion, uuid.UUID(rendition.version_id), with_for_update=True
@@ -212,16 +225,84 @@ class SqlUserRunRepository:
                 processor_version=rendition.processor_version,
                 status=rendition.status,
                 sha256=rendition.sha256,
-                object_key=rendition.object_key,
                 detail=dict(rendition.detail),
                 created_at=rendition.created_at,
                 ready_at=rendition.ready_at,
             )
             session.add(row)
             await session.flush()
+            if text is not None:
+                session.add(
+                    UserDataText(
+                        rendition_id=row.id,
+                        title=text.title,
+                        published_on=text.published_on,
+                        body=text.body,
+                    )
+                )
+            session.add_all(
+                UserDataPage(rendition_id=row.id, page=p.number, text=p.text)
+                for p in pages
+            )
+            await session.flush()
             entity = _rendition(row)
             await session.commit()
             return entity
+
+    async def reading_text(self, rendition_id: str) -> TextReading | None:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataText, uuid.UUID(rendition_id))
+            if row is None:
+                return None
+            return TextReading(
+                body=row.body, title=row.title, published_on=row.published_on
+            )
+
+    async def reading_pages(
+        self, rendition_id: str, first: int | None = None, last: int | None = None
+    ) -> list[Page]:
+        """按页文字，按页码排；给了起止的只取那几页。"""
+        query = select(UserDataPage.page, UserDataPage.text).where(
+            UserDataPage.rendition_id == uuid.UUID(rendition_id)
+        )
+        if first is not None:
+            query = query.where(UserDataPage.page >= first)
+        if last is not None:
+            query = query.where(UserDataPage.page <= last)
+        async with self._sessions()() as session:
+            rows = await session.execute(query.order_by(UserDataPage.page))
+            return [Page(n, t) for n, t in rows.all()]
+
+    async def page_count(self, rendition_id: str) -> int:
+        async with self._sessions()() as session:
+            return int(
+                await session.scalar(
+                    select(func.count()).where(
+                        UserDataPage.rendition_id == uuid.UUID(rendition_id)
+                    )
+                )
+                or 0
+            )
+
+    async def search_pages(
+        self, rendition_ids: list[str], terms: list[str], limit: int
+    ) -> list[tuple[str, Page]]:
+        """这几个读法版本里含任一关键词的页（区分大小写，同 `str.count`）。"""
+        if not rendition_ids or not terms:
+            return []
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataPage.rendition_id, UserDataPage.page, UserDataPage.text)
+                .where(
+                    UserDataPage.rendition_id.in_(
+                        [uuid.UUID(r) for r in rendition_ids]
+                    ),
+                    or_(*(func.strpos(UserDataPage.text, t) > 0 for t in terms)),
+                )
+                .order_by(UserDataPage.rendition_id, UserDataPage.page)
+                .limit(limit)
+            )
+            return [(str(r), Page(n, t)) for r, n, t in rows.all()]
 
     # —— 事实（抽好的表） ——
 
@@ -256,7 +337,6 @@ class SqlUserRunRepository:
                 processor_version=rendition.processor_version,
                 status="ready",
                 sha256=rendition.sha256,
-                object_key=None,
                 detail=dict(rendition.detail),
                 created_at=rendition.created_at,
                 ready_at=rendition.ready_at,
@@ -799,13 +879,27 @@ class SqlUserRunRepository:
             return int(result.rowcount or 0)
 
     async def mark_purged(self, material_id: str, at: datetime) -> None:
-        """清除：描述字段、名字清掉，标清除时间；内容与读法由服务先删掉对象。"""
+        """清除：描述字段、名字清掉，库里的读法内容（正文、按页文字、事实行）删掉，标清除
+        时间；原件对象由服务先删。读法版本那一行留着（编号、摘要，留痕用）。"""
         async with self._sessions()() as session:
             row = await session.get(
                 UserDataItem, uuid.UUID(material_id), with_for_update=True
             )
             if row is None:
                 raise not_found()
+            renditions = (
+                select(UserDataRendition.id)
+                .join(
+                    UserDataVersion, UserDataVersion.id == UserDataRendition.version_id
+                )
+                .where(UserDataVersion.item_id == row.id)
+            )
+            for table in (UserDataText, UserDataPage):
+                await session.execute(
+                    delete(table).where(table.rendition_id.in_(renditions))
+                )
+            for table in (UserDataFactRaw, UserDataFact):
+                await session.execute(delete(table).where(table.item_id == row.id))
             row.purged_at = at
             row.deleted_at = row.deleted_at or at
             row.name = "(cleared)"

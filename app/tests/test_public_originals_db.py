@@ -15,6 +15,7 @@ from app.application.services.call_rate import RateLimiter
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
+from app.domain.public_access import PublicGate
 from app.domain.user_data import UserDataError
 from app.domain.user_library import PUBLIC_OWNER, Description
 from app.domain.user_resolution import (
@@ -53,14 +54,14 @@ NEED = NeedSpec(
 
 
 class World:
-    def __init__(self, db, *, public_access: bool) -> None:
+    def __init__(self, db, *, gate: PublicGate) -> None:
         clock = Clock()
         objects = MemoryObjects()
         library = SqlUserLibraryRepository(lambda: db)
         runs = SqlUserRunRepository(lambda: db)
         self.lib = UserLibraryService(library, objects, prefix="p", clock=clock)
         self.runs = UserRunService(
-            library, runs, objects, prefix="p", clock=clock, public_access=public_access
+            library, runs, objects, prefix="p", clock=clock, gate=gate
         )
         self.resolver = UserResolutionService(
             SqlUserResolutionRepository(lambda: db),
@@ -68,7 +69,7 @@ class World:
             runs,
             clock=clock,
             limiter=RateLimiter(1000),
-            public_access=public_access,
+            gate=gate,
         )
 
     async def deliver(self, content=CSV, references=None, doc="cninfo:1219876543"):
@@ -96,12 +97,12 @@ class World:
 
 @pytest.fixture
 def open_world(db) -> World:
-    return World(db, public_access=True)
+    return World(db, gate=PublicGate())
 
 
 @pytest.fixture
 def closed_world(db) -> World:
-    return World(db, public_access=False)
+    return World(db, gate=PublicGate(enabled=False))
 
 
 async def refused(work, status: int, code: str) -> None:
@@ -217,3 +218,49 @@ async def test_closed_access_goes_through_references_and_confirmation(closed_wor
         "resolved",
         "reference",
     )
+
+
+async def test_qualification_is_part_of_the_one_gate(db):
+    """资格、权限、平台总开关同一道门（0047 第二、四、五节，决定 ⑪）：要资格时只认登记的
+    用户；签授权、会话首读、解析候选、按描述查走的是同一个门。引用不过这道门。"""
+    w = World(db, gate=PublicGate(qualification="listed", qualified=frozenset({BOB})))
+    material, v1, _ = await w.deliver(references=[(ALICE, "basis-1")])
+    carol = "carol"
+    await refused(
+        w.runs.grant_by_user(
+            carol, "knowbench", "delegation", "t-1", ask(v1, "public", PUBLIC_OWNER)
+        ),
+        403,
+        "qualification_required",
+    )
+    session = await w.runs.register_session(carol, "knowbench")
+    await refused(
+        w.runs.session_read(carol, "knowbench", session.id, material.id),
+        403,
+        "qualification_required",
+    )
+    assert (await w.resolve(carol)).items[0].status == "to_confirm"
+    assert await w.resolver.lookup(carol, "knowbench", KEY_2025) == ("absent", None)
+    # 登记了资格的照常
+    grant = await w.runs.grant_by_user(
+        BOB, "knowbench", "delegation", "t-2", ask(v1, "public", PUBLIC_OWNER)
+    )
+    assert grant.items[0].basis == "public"
+    assert (await w.resolve(BOB)).items[0].chosen[0].basis == "public"
+    # 名下有引用的不看资格
+    held = await w.runs.grant_by_user(
+        ALICE, "knowbench", "delegation", "t-3", ask(v1, "reference", "reference")
+    )
+    assert held.items[0].basis == "reference"
+
+
+async def test_the_gate_only_lets_readable_public_originals_through(open_world):
+    """权限：门上核这一份是公开原件、没禁用（0047 第 5.2 节「谁能看」）。"""
+    w = open_world
+    material, v1, _ = await w.deliver()
+    await w.runs.disable("admin-1", material.id, "违规")
+    gate = PublicGate()
+    gate.check(BOB)
+    with pytest.raises(UserDataError) as caught:
+        gate.check(BOB, await w.lib.repo.get_material(material.id))
+    assert (caught.value.status, caught.value.code) == (403, "not_public")

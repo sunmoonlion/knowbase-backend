@@ -14,6 +14,7 @@ from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
+from app.domain.public_access import PublicGate
 from app.domain.user_data import UserDataError
 from app.domain.user_facts import FactQuery, RawFact, StandardFact
 from app.domain.user_library import PUBLIC_OWNER, Description
@@ -122,7 +123,7 @@ def statements(revenue: int, cost: int, prior_revenue: int, *, assets=1000, ok=T
 
 
 class World:
-    def __init__(self, db, *, public_access: bool = True) -> None:
+    def __init__(self, db, *, gate: PublicGate | None = None) -> None:
         clock = Clock()
         objects = MemoryObjects()
         library = SqlUserLibraryRepository(lambda: db)
@@ -133,7 +134,7 @@ class World:
             objects,
             prefix="p",
             clock=clock,
-            public_access=public_access,
+            gate=gate,
         )
 
     async def publish(self, subject: str, revenue: int, cost: int, prior: int, **kw):
@@ -179,7 +180,7 @@ async def test_facts_are_a_table_reading_with_quality_recorded(world):
     assert Decimal(broken.detail["quality"][0]["diff"]) == Decimal(1_000_000)
 
     rows = await world.runs.query_market(
-        FactQuery(subjects=("600519.SH",), codes=("IS.REVENUE",))
+        ALICE, FactQuery(subjects=("600519.SH",), codes=("IS.REVENUE",))
     )
     assert [(r.period_end, r.value, r.page, r.unit) for r in rows] == [
         (Y2025, Decimal("15000000.000000"), 88, "元"),
@@ -187,7 +188,7 @@ async def test_facts_are_a_table_reading_with_quality_recorded(world):
     ]
     assert (rows[0].material_id, rows[0].rendition_no) == (material.id, 1)
     raw = await world.runs.query_market(
-        FactQuery(layer="raw", subjects=("600519.SH",), labels=("营业成本",))
+        ALICE, FactQuery(layer="raw", subjects=("600519.SH",), labels=("营业成本",))
     )
     assert [(r.label, r.value, r.unit) for r in raw] == [
         ("营业成本", Decimal("300.000000"), "万元")
@@ -199,23 +200,26 @@ async def test_market_screening_ranking_and_metrics(world):
     await world.publish("000858.SZ", 900, 400, 800)
     await world.publish("000568.SZ", 400, 100, 350)
     ranked = await world.runs.query_market(
-        FactQuery(codes=("IS.REVENUE",), period_from=Y2025, order="value_desc")
+        ALICE, FactQuery(codes=("IS.REVENUE",), period_from=Y2025, order="value_desc")
     )
     assert [r.subject for r in ranked] == ["600519.SH", "000858.SZ", "000568.SZ"]
     screened = await world.runs.query_market(
+        ALICE,
         FactQuery(
             codes=("IS.REVENUE",), period_from=Y2025, value_min=Decimal(5_000_000)
-        )
+        ),
     )
     assert sorted(r.subject for r in screened) == ["000858.SZ", "600519.SH"]
     margins = await world.runs.query_metric(
-        "gross_margin", FactQuery(period_from=Y2025)
+        "gross_margin", FactQuery(period_from=Y2025), subject=ALICE
     )
     by_subject = {m.subject: m.value for m in margins}
     assert by_subject["600519.SH"] == Decimal("0.8")
     assert by_subject["000568.SZ"] == Decimal("0.75")
     growth = await world.runs.query_metric(
-        "revenue_growth", FactQuery(subjects=("000858.SZ",), period_from=Y2025)
+        "revenue_growth",
+        FactQuery(subjects=("000858.SZ",), period_from=Y2025),
+        subject=ALICE,
     )
     assert [(g.period_end, g.value.quantize(Decimal("0.0001"))) for g in growth] == [
         (Y2025, Decimal("0.1250"))
@@ -223,13 +227,15 @@ async def test_market_screening_ranking_and_metrics(world):
     assert {i.period_end for i in growth[0].inputs} == {Y2025, Y2024}
     await refused(
         world.runs.query_market(
-            FactQuery(codes=("IS.REVENUE", "IS.COST"), order="value_desc")
+            ALICE, FactQuery(codes=("IS.REVENUE", "IS.COST"), order="value_desc")
         ),
         422,
         "order_invalid",
     )
     await refused(
-        world.runs.query_market(FactQuery(codes=("IS.NOPE",))), 422, "code_invalid"
+        world.runs.query_market(ALICE, FactQuery(codes=("IS.NOPE",))),
+        422,
+        "code_invalid",
     )
 
 
@@ -273,11 +279,35 @@ async def test_run_scope_reads_only_what_the_grant_pinned(world):
 
 
 async def test_market_queries_follow_the_switch(db):
-    closed = World(db, public_access=False)
+    closed = World(db, gate=PublicGate(enabled=False))
     await refused(
-        closed.runs.query_market(FactQuery(codes=("IS.REVENUE",))),
+        closed.runs.query_market(ALICE, FactQuery(codes=("IS.REVENUE",))),
         403,
         "public_access_closed",
+    )
+    await refused(
+        closed.runs.query_metric("gross_margin", FactQuery(), subject=ALICE),
+        403,
+        "public_access_closed",
+    )
+
+
+async def test_market_queries_need_the_qualification_when_required(db):
+    """跨全市场的筛选、排名是资格问题（决定 ⑪）：要资格时只认登记的用户。"""
+    world = World(
+        db, gate=PublicGate(qualification="listed", qualified=frozenset({ALICE}))
+    )
+    await world.publish("600519.SH", 1500, 300, 1300)
+    assert await world.runs.query_market(ALICE, FactQuery(codes=("IS.REVENUE",)))
+    await refused(
+        world.runs.query_market(BOB, FactQuery(codes=("IS.REVENUE",))),
+        403,
+        "qualification_required",
+    )
+    await refused(
+        world.runs.query_metric("gross_margin", FactQuery(), subject=BOB),
+        403,
+        "qualification_required",
     )
 
 

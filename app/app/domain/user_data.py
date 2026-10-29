@@ -15,8 +15,9 @@ import zipfile
 from dataclasses import dataclass
 from typing import Literal
 
-App = Literal["knowbench", "knowlab", "knowmart"]
-APPS: tuple[App, ...] = ("knowbench", "knowlab", "knowmart")
+# 凭本人令牌代办的应用；knowfeed 只转交订阅范围的同意（SDD 0043 第十节、0045 第 2.1 节）
+App = Literal["knowbench", "knowlab", "knowmart", "knowfeed"]
+APPS: tuple[App, ...] = ("knowbench", "knowlab", "knowmart", "knowfeed")
 
 MAX_ITEM_BYTES = 50 * 1024 * 1024
 QUOTA_BYTES = 1024 * 1024 * 1024

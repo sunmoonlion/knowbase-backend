@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
@@ -30,6 +32,7 @@ from app.infrastructure.security.relation_auth import (
 from app.infrastructure.security.user_token import require_user_owner
 from app.infrastructure.storage.postgres import get_postgres
 from app.infrastructure.storage.user_objects import S3UserObjects
+from app.interfaces.endpoints.public_access import public_gate
 from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.endpoints.user_library_routes import (
     _body,
@@ -80,7 +83,7 @@ def get_user_run_service(
         SqlUserRunRepository(lambda: get_postgres().session_factory),
         S3UserObjects(settings),
         prefix=settings.user_data_prefix,
-        public_access=settings.public_access_enabled,
+        gate=public_gate(settings),
     )
 
 
@@ -428,7 +431,10 @@ async def read_rendition(
     executor: tuple[str, str] = Depends(require_executor),
     service: UserRunService = Depends(get_user_run_service),
 ):
-    """读钉住的那个读法版本。"""
+    """读钉住的那个读法版本。
+
+    正文回文字，按页文字回 `[{page, text}]`（同写回的格式）。
+    """
     reader, app = executor
     got = await _call(
         lambda: service.read(
@@ -578,10 +584,14 @@ async def write_rendition(
     request: Request,
     processor_version: str = Query(min_length=1, max_length=40),
     failed_reason: str | None = Query(default=None, max_length=500),
+    title: str | None = Query(default=None, max_length=500),
+    published_on: date | None = None,
     caller: ServiceCaller = Depends(require_supply_service),
     service: UserRunService = Depends(get_user_run_service),
 ):
-    """写回读法：请求体是读法内容；没成的不带请求体，给 `failed_reason`。"""
+    """写回读法，存进 knowbase 的 PostgreSQL（SDD 0043 第五节）：正文的请求体是 UTF-8
+    文字，可带标题、发布日期；按页文字的请求体是 `[{"page": 1, "text": "…"}]`。
+    表格写成事实行（`/facts`）。没成的不带请求体，给 `failed_reason`。"""
     content = await _body(request)
     if failed_reason is not None and content:
         raise AppException(
@@ -597,6 +607,8 @@ async def write_rendition(
             processor_version,
             None if failed_reason is not None else content,
             {"reason": failed_reason} if failed_reason is not None else None,
+            title=title,
+            published_on=published_on,
         )
     )
     return _rendition(rendition)
