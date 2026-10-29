@@ -57,9 +57,6 @@ class MemoryObjects:
     async def delete(self, key: str) -> None:
         self.data.pop(key, None)
 
-    async def copy(self, source_key: str, target_key: str) -> None:
-        self.data[target_key] = self.data[source_key]
-
 
 class Clock:
     def __init__(self) -> None:
@@ -151,7 +148,7 @@ def test_sigv4_matches_the_aws_get_object_example():
     )
 
 
-async def test_object_store_puts_gets_copies_and_deletes_in_its_bucket():
+async def test_object_store_puts_gets_and_deletes_in_its_bucket():
     seen: list[httpx.Request] = []
 
     def answer(request: httpx.Request) -> httpx.Response:
@@ -171,17 +168,14 @@ async def test_object_store_puts_gets_copies_and_deletes_in_its_bucket():
     )
     await store.put("users/ab/x/knowbench/1", b"abc", "text/csv")
     assert await store.get("users/ab/x/knowbench/1") == b"body"
-    await store.copy("users/ab/x/knowmart/2", "users/cd/y/knowlab/3")
     await store.delete("users/ab/x/knowbench/1")
     assert [(r.method, r.url.path) for r in seen] == [
         ("PUT", "/user-data/users/ab/x/knowbench/1"),
         ("GET", "/user-data/users/ab/x/knowbench/1"),
-        ("PUT", "/user-data/users/cd/y/knowlab/3"),
         ("DELETE", "/user-data/users/ab/x/knowbench/1"),
     ]
     assert seen[0].headers["x-amz-content-sha256"] == hashlib.sha256(b"abc").hexdigest()
-    assert seen[2].headers["x-amz-copy-source"] == "/user-data/users/ab/x/knowmart/2"
-    assert "x-amz-copy-source" in seen[2].headers["authorization"]
+    assert "content-type" in seen[0].headers["authorization"]  # 带的头也签进去
 
 
 def test_object_store_refuses_to_start_without_configuration():

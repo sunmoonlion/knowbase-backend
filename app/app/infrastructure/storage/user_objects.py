@@ -72,16 +72,6 @@ class S3UserObjects:
         if response.status_code not in (200, 204, 404):
             self._ok(response)
 
-    async def copy(self, source_key: str, target_key: str) -> None:
-        source = "/" + quote(f"{self._bucket}/{source_key}", safe="/")
-        response = await self._request(
-            "PUT", target_key, extra={"x-amz-copy-source": source}
-        )
-        self._ok(response)
-        # S3 复制出错时可能回 200、错误写在正文里
-        if b"<Error>" in response.content[:200]:
-            raise UserDataError(503, "storage_failed", "object copy failed")
-
     async def _request(
         self,
         method: str,
