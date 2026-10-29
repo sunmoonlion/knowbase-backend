@@ -51,9 +51,11 @@ GRANT_TTL: dict[str, timedelta] = {
     "incubation": timedelta(hours=6),
     "processing": timedelta(days=3),
 }
-# 平台过程的上限按过程配（拟：孵化 7 天、测试 14 天、交付审核 30 天；重跑同测试）
+# 平台过程的上限按过程配：孵化 30 天（decisions 10-29「孵化第 5 步的三件」①：
+# 到作者点「我自己来」或交还为止，最长 30 天，续期再签一张）；
+# 测试 14 天、交付审核 30 天；重跑同测试
 PLATFORM_TTL: dict[str, timedelta] = {
-    "incubate": timedelta(days=7),
+    "incubate": timedelta(days=30),
     "test": timedelta(days=14),
     "review": timedelta(days=30),
     "rerun": timedelta(days=14),
