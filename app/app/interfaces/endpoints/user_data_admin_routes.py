@@ -14,9 +14,9 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
+from app.domain.chart_of_accounts import CHART_VERSION
 from app.domain.security import Principal
 from app.domain.user_data import QUOTA_BYTES
 from app.domain.vocabulary import VOCAB_VERSION, snapshot
@@ -190,3 +190,40 @@ async def purge(material_id: str, payload: PurgeIn, user: Disposer, runs: Runs):
         )
     )
     return PurgeRead(purged=purged, result="purged" if purged else "relation_only")
+
+
+class HoldingMatchRead(BaseModel):
+    material_id: str
+    content_version: int
+    digest: str
+
+
+class PublicHoldingsRead(BaseModel):
+    queried_at: datetime
+    chart_version: int
+    matches: list[HoldingMatchRead]
+
+
+materials_router = APIRouter(prefix="/admin/v1/materials", tags=["管理-资料主档"])
+
+
+@materials_router.get("/holdings", response_model=PublicHoldingsRead)
+async def public_holdings(
+    _: Viewer,
+    service: Library,
+    subject: str = Query(min_length=1, max_length=64),
+    doc_type: str = Query(min_length=1, max_length=32),
+    period: str = Query(min_length=4, max_length=21),
+    edition: Literal["full", "summary", "english"] = "full",
+) -> PublicHoldingsRead:
+    """核验公开披露原件的可用主档；空集不代表私有库或外部渠道没有资料。"""
+    queried_at, matches = await _call(
+        lambda: service.public_holdings(
+            subject=subject, doc_type=doc_type, period=period, edition=edition
+        )
+    )
+    return PublicHoldingsRead(
+        queried_at=queried_at,
+        chart_version=CHART_VERSION,
+        matches=[HoldingMatchRead(**match.__dict__) for match in matches],
+    )

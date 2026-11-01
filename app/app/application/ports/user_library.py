@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import date, datetime
 from typing import Protocol
 
 from app.domain.user_library import (
@@ -12,6 +12,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     LogEntry,
     Material,
     ShelfEntry,
@@ -49,6 +50,10 @@ class UserLibraryRepository(Protocol):
     async def find_public(
         self, channel: str, channel_doc_id: str
     ) -> Material | None: ...
+
+    async def public_holdings(
+        self, *, subject: str, doc_type: str, start: date, end: date, edition: str
+    ) -> list[HoldingMatch]: ...
 
     async def get_material(self, material_id: str) -> Material | None: ...
 

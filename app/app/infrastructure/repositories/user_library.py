@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,6 +21,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     LogEntry,
     Material,
     ShelfEntry,
@@ -276,6 +277,34 @@ class SqlUserLibraryRepository:
                 )
             )
             return _material(row) if row is not None else None
+
+    async def public_holdings(
+        self, *, subject: str, doc_type: str, start: date, end: date, edition: str
+    ) -> list[HoldingMatch]:
+        """只查公共原件主档；许可档不是公开性，披露日不是报告期。"""
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(
+                    UserDataItem.id, UserDataItem.current_version, UserDataItem.sha256
+                )
+                .where(
+                    UserDataItem.owner_subject == PUBLIC_OWNER,
+                    UserDataItem.content_origin == "disclosure",
+                    UserDataItem.subject_code == subject,
+                    UserDataItem.doc_type == doc_type,
+                    UserDataItem.doc_edition == edition,
+                    UserDataItem.period_start == start,
+                    UserDataItem.period_end == end,
+                    UserDataItem.purged_at.is_(None),
+                    UserDataItem.deleted_at.is_(None),
+                    UserDataItem.disabled_at.is_(None),
+                )
+                .order_by(UserDataItem.id)
+            )
+            return [
+                HoldingMatch(str(row.id), row.current_version, row.sha256)
+                for row in rows
+            ]
 
     async def get_material(self, material_id: str) -> Material | None:
         key = _uuid(material_id)

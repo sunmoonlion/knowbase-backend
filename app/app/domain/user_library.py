@@ -244,6 +244,15 @@ def _within(day: date | None, start: date | None, end: date | None) -> bool:
 
 
 @dataclass(frozen=True)
+class HoldingMatch:
+    """公开原件主档的当前版本，仅供管理端收录核验。"""
+
+    material_id: str
+    content_version: int
+    digest: str
+
+
+@dataclass(frozen=True)
 class Material:
     """一份资料（逻辑的一份）：挂描述、许可档、所有者、状态。"""
 

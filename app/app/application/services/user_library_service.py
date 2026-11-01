@@ -43,6 +43,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     License,
     LogEntry,
     Material,
@@ -58,7 +59,16 @@ from app.domain.user_library import (
     subscription_use,
     version_object_key,
 )
-from app.domain.vocabulary import VOCAB_VERSION, format_of_media
+from app.domain.vocabulary import (
+    VOCAB_VERSION,
+    VocabularyError,
+    check_doc_type,
+    check_edition,
+    format_of_media,
+    is_periodic,
+    report_period,
+    subject_kind,
+)
 
 # 公开原件不算谁的空间；招股书这类比用户上传的上限（50 MB）大
 MAX_PUBLIC_BYTES = 200 * 1024 * 1024
@@ -1109,6 +1119,33 @@ class UserLibraryService:
 
     async def description_overview(self) -> list[dict[str, object]]:
         return await self.repo.description_stats()
+
+    async def public_holdings(
+        self, *, subject: str, doc_type: str, period: str, edition: str = "full"
+    ) -> tuple[datetime, list[HoldingMatch]]:
+        # 年份按统一词表展开定期报告；显式区间则逐端点匹配，不猜披露年。
+        try:
+            subject_kind(subject)
+            check_doc_type(doc_type)
+            check_edition(edition)
+            if re.fullmatch(r"[0-9]{4}", period) and is_periodic(doc_type):
+                start, end = report_period(doc_type, int(period))
+            else:
+                if not re.fullmatch(
+                    r"[0-9]{4}-[0-9]{2}-[0-9]{2}/"
+                    r"[0-9]{4}-[0-9]{2}-[0-9]{2}", period
+                ):
+                    raise ValueError("use a report year or YYYY-MM-DD/YYYY-MM-DD")
+                start, end = (date.fromisoformat(part) for part in period.split("/"))
+                if start > end:
+                    raise ValueError("period starts after it ends")
+        except (ValueError, VocabularyError) as exc:
+            raise refused("holdings_query_invalid", str(exc)) from None
+        queried_at = self.now()
+        matches = await self.repo.public_holdings(
+            subject=subject, doc_type=doc_type, start=start, end=end, edition=edition
+        )
+        return queried_at, matches
 
     async def find_for_admin(
         self,
