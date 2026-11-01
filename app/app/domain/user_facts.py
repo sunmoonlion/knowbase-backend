@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from app.domain.chart_of_accounts import CHART, CHART_VERSION
 from app.domain.user_data import refused
@@ -355,3 +355,50 @@ def compute_metric(metric, rows: list[FactRow]) -> list[MetricRow]:
             )
         )
     return out
+
+
+def from_structured_feed(
+    payload: dict[str, Any],
+) -> tuple[list[RawFact], list[StandardFact]]:
+    """将动态补采（如 knowfeed Wind）的结构化报表转为原样与标准化事实（WP-6）。"""
+    raw_list: list[RawFact] = []
+    std_list: list[StandardFact] = []
+
+    facts = payload.get("facts") or {}
+    report_date_str = str(payload.get("report_date") or "")
+    if not report_date_str:
+        return [], []
+    period_end = date.fromisoformat(report_date_str)
+    duration = "year" if period_end.month == 12 and period_end.day == 31 else "half"
+    consolidation = "consolidated"
+
+    for idx, (chart_code, val_str) in enumerate(facts.items()):
+        if chart_code not in CHART:
+            continue
+        val = Decimal(str(val_str))
+        item = CHART[chart_code]
+        raw_fact = RawFact(
+            label=item.name,
+            value=val,
+            unit="元",
+            currency="CNY",
+            period_end=period_end,
+            duration=duration,
+            consolidation=consolidation,
+            statement_label=item.statement,
+        ).checked()
+        raw_list.append(raw_fact)
+
+        std_fact = StandardFact(
+            code=chart_code,
+            value=val,
+            period_end=period_end,
+            duration=duration,
+            consolidation=consolidation,
+            derived_from=(idx,),
+            rule=f"feed:{payload.get('source', 'wind')}:direct",
+            currency="CNY",
+        ).checked(raw_count=len(raw_list))
+        std_list.append(std_fact)
+
+    return raw_list, std_list

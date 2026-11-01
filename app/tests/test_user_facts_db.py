@@ -353,3 +353,53 @@ async def test_bad_batches_are_refused(world):
         403,
         "service_scope_denied",
     )
+
+
+async def test_write_and_query_facts_from_structured_wind_feed(world):
+    """WP-6: 将 Wind 结构化报表数据转为事实表记录并持久化，支持精确事实查询。"""
+    material, version, _ = await world.lib.deliver_public(
+        "knowfeed",
+        "wind",
+        "wind:600519:2024",
+        "maotai_2024.csv",
+        CSV,
+        report("600519.SH"),
+    )
+    grant = await world.runs.issue_processing(
+        "knowfeed", PUBLIC_OWNER, material.id, version.version_no
+    )
+
+    feed_payload = {
+        "source": "wind",
+        "subject": "600519.SH",
+        "doc_type": "annual_report",
+        "report_date": "2025-12-31",
+        "facts": {
+            "IS.REVENUE": "170987192572.76",
+            "IS.COST": "14142389864.71",
+            "CF.NET_OPERATING": "92442166423.51",
+            "CF.CAPEX": "5671234180.20",
+        },
+    }
+    from app.domain.user_facts import from_structured_feed
+
+    raw, standard = from_structured_feed(feed_payload)
+    assert len(raw) == 4
+    assert len(standard) == 4
+
+    rendition = await world.runs.write_facts(
+        "knowfeed", grant.id, "processor-v1", raw, standard
+    )
+    assert rendition.status == "ready"
+
+    # 查全市场事实
+    query = FactQuery(
+        layer="standard",
+        codes=("IS.REVENUE", "CF.NET_OPERATING"),
+        subjects=("600519.SH",),
+    )
+    rows = await world.runs.query_market(ALICE, query)
+    assert len(rows) == 2
+    fact_map = {r.code: r.value for r in rows}
+    assert fact_map["IS.REVENUE"] == Decimal("170987192572.76")
+    assert fact_map["CF.NET_OPERATING"] == Decimal("92442166423.51")
