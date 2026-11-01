@@ -102,6 +102,10 @@ def _version(row: UserDataVersion) -> ContentVersion:
         object_key=row.object_key,
         created_at=row.created_at,
         created_by=row.created_by,
+        ragflow_dataset_id=getattr(row, "ragflow_dataset_id", None),
+        ragflow_document_id=getattr(row, "ragflow_document_id", None),
+        ragflow_job_id=getattr(row, "ragflow_job_id", None),
+        ragflow_status=getattr(row, "ragflow_status", None),
     )
 
 
@@ -235,6 +239,31 @@ class SqlUserLibraryRepository:
             entity = _material(row)
             await session.commit()
             return entity
+
+    async def find_collected_by_beneficiary(
+        self, subject: str, channel: str, channel_doc_id: str, item_ref: str
+    ) -> tuple[Material, ContentVersion] | None:
+        async with self._sessions()() as session:
+            row = await session.scalar(
+                select(UserDataItem).where(
+                    UserDataItem.owner_subject == subject,
+                    UserDataItem.content_origin == "collected",
+                    UserDataItem.provenance["channel"].astext == channel,
+                    UserDataItem.provenance["channel_doc_id"].astext == channel_doc_id,
+                    UserDataItem.provenance["item_ref"].astext == item_ref,
+                )
+            )
+            if row is None:
+                return None
+            mat = _material(row)
+            ver_row = await session.scalar(
+                select(UserDataVersion).where(
+                    UserDataVersion.item_id == row.id,
+                    UserDataVersion.version_no == row.current_version,
+                )
+            )
+            assert ver_row is not None
+            return mat, _version(ver_row)
 
     async def find_public(self, channel: str, channel_doc_id: str) -> Material | None:
         """公开原件按「渠道 × 渠道里的编号」认，同一份只存一份。"""

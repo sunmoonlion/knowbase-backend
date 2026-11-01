@@ -194,6 +194,10 @@ class UserDataVersion(Base):
         DateTime(timezone=True), nullable=False
     )
     created_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    ragflow_dataset_id: Mapped[str | None] = mapped_column(String(64))
+    ragflow_document_id: Mapped[str | None] = mapped_column(String(64))
+    ragflow_job_id: Mapped[str | None] = mapped_column(String(64))
+    ragflow_status: Mapped[str | None] = mapped_column(String(32))
 
     __table_args__ = (
         UniqueConstraint("item_id", "version_no", name="uq_user_data_version_no"),
@@ -763,4 +767,25 @@ class UserDataFact(Base):
         Index("ix_user_data_fact_rendition", "rendition_id"),
         Index("ix_user_data_fact_subject_code", "subject_code", "code", "period_end"),
         Index("ix_user_data_fact_code_period", "code", "period_end"),
+    )
+
+
+class UserDataReleasedRef(Base):
+    """已交还的运行标识（SDD 0043）：交还后同（executor_app, ref）拒签新授权（ref_released）。"""
+
+    __tablename__ = "user_data_released_ref"
+
+    executor_app: Mapped[str] = mapped_column(String(16), primary_key=True)
+    ref: Mapped[str] = mapped_column(String(255), primary_key=True)
+    beneficiary: Mapped[str | None] = mapped_column(String(255))
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_user_data_released_ref_beneficiary",
+            "beneficiary",
+            postgresql_where=text("beneficiary IS NOT NULL"),
+        ),
     )

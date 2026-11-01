@@ -35,6 +35,7 @@ from app.domain.user_runs import (
     Session,
 )
 from app.infrastructure.models.user_data import (
+    UserDataReleasedRef,
     UserDataDeletion,
     UserDataFact,
     UserDataFactRaw,
@@ -287,22 +288,28 @@ class SqlUserRunRepository:
     async def search_pages(
         self, rendition_ids: list[str], terms: list[str], limit: int
     ) -> list[tuple[str, Page]]:
-        """这几个读法版本里含任一关键词的页（区分大小写，同 `str.count`）。"""
+        """这几个读法版本里含任一关键词的页（区分大小写，同 `str.count`）。每个读法独立限额防漏掉。"""
         if not rendition_ids or not terms:
             return []
+        per_doc_limit = max(50, limit // len(rendition_ids)) if len(rendition_ids) <= 20 else 50
+        results: list[tuple[str, Page]] = []
         async with self._sessions()() as session:
-            rows = await session.execute(
-                select(UserDataPage.rendition_id, UserDataPage.page, UserDataPage.text)
-                .where(
-                    UserDataPage.rendition_id.in_(
-                        [uuid.UUID(r) for r in rendition_ids]
-                    ),
-                    or_(*(func.strpos(UserDataPage.text, t) > 0 for t in terms)),
+            for rid in rendition_ids:
+                uid = uuid.UUID(rid)
+                rows = await session.execute(
+                    select(UserDataPage.rendition_id, UserDataPage.page, UserDataPage.text)
+                    .where(
+                        UserDataPage.rendition_id == uid,
+                        or_(*(func.strpos(UserDataPage.text, t) > 0 for t in terms)),
+                    )
+                    .order_by(UserDataPage.page)
+                    .limit(per_doc_limit)
                 )
-                .order_by(UserDataPage.rendition_id, UserDataPage.page)
-                .limit(limit)
-            )
-            return [(str(r), Page(n, t)) for r, n, t in rows.all()]
+                for r, n, t in rows.all():
+                    results.append((str(r), Page(n, t)))
+                    if len(results) >= limit:
+                        return results
+        return results
 
     # —— 事实（抽好的表） ——
 
@@ -1008,3 +1015,57 @@ class SqlUserRunRepository:
                 }
                 for r in rows.scalars()
             ]
+
+    async def record_released_ref(
+        self, executor_app: str, ref: str, beneficiary: str | None, released_at: datetime
+    ) -> None:
+        async with self._sessions()() as session:
+            stmt = (
+                insert(UserDataReleasedRef)
+                .values(
+                    executor_app=executor_app,
+                    ref=ref,
+                    beneficiary=beneficiary,
+                    released_at=released_at,
+                )
+                .on_conflict_do_nothing(index_elements=["executor_app", "ref"])
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+    async def is_ref_released(self, executor_app: str, ref: str) -> bool:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataReleasedRef, (executor_app, ref))
+            return row is not None
+
+    async def has_frozen_bindings(self, material_id: str) -> bool:
+        async with self._sessions()() as session:
+            mid = uuid.UUID(material_id)
+            # 检查在跑或历史授权中的 frozen_binding 项，或者 user_data_holding/expert 绑定
+            row = await session.execute(
+                select(UserDataRunGrantItem.item_id)
+                .where(
+                    UserDataRunGrantItem.item_id == mid,
+                    UserDataRunGrantItem.basis == "frozen_binding",
+                )
+                .limit(1)
+            )
+            return row.scalar() is not None
+
+    async def active_grants_for_others(
+        self, material_id: str, owner: str, now: datetime
+    ) -> bool:
+        async with self._sessions()() as session:
+            mid = uuid.UUID(material_id)
+            row = await session.execute(
+                select(UserDataRunGrant.id)
+                .join(UserDataRunGrantItem, UserDataRunGrantItem.grant_id == UserDataRunGrant.id)
+                .where(
+                    UserDataRunGrantItem.item_id == mid,
+                    UserDataRunGrant.beneficiary != owner,
+                    UserDataRunGrant.revoked_at.is_(None),
+                    UserDataRunGrant.expires_at > now,
+                )
+                .limit(1)
+            )
+            return row.scalar() is not None

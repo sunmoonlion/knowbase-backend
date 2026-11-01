@@ -63,6 +63,7 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261028_0018_drop_legacy_data.py",
         "20261029_0019_readings_in_postgres.py",
         "20261029_0020_recognized_log.py",
+            "20261101_0021_ragflow_and_released_refs.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert (

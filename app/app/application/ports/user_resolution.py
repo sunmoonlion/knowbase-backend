@@ -39,5 +39,15 @@ class ResolutionRepository(Protocol):
     ) -> list[Confirmation]: ...
 
     async def preferences(self, subject: str, consumer: str) -> list[Preference]: ...
+    async def record_preference(
+        self,
+        subject: str,
+        consumer: str,
+        key_id: str,
+        material_ids: list[str],
+        vocab_version: int,
+        updated_at: datetime,
+    ) -> Preference: ...
+
 
     async def save_preference(self, preference: Preference) -> Preference: ...

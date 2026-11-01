@@ -280,6 +280,24 @@ class FrozenBindingRead(BaseModel):
     license: LicenseName
 
 
+class BeneficiaryIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str = Field(min_length=1, max_length=255)
+    item_ref: str = Field(min_length=1, max_length=160)
+    prefill: dict[str, Any] | None = None
+    basis: dict[str, Any] | None = None
+
+
+class CollectedOriginalRead(BaseModel):
+    subject: str
+    item_ref: str
+    material_id: str
+    version_no: int
+    created: bool
+    has_readings: bool = False
+
+
 class PublicOriginalRead(BaseModel):
     """knowfeed 交来的公开原件存下的那一份：资料、交来的那一版。"""
 

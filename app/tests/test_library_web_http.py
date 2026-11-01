@@ -123,7 +123,7 @@ async def test_recognize_then_upload_with_the_confirmed_description(api):
     )
     assert found.status_code == 200, found.text
     body = found.json()
-    assert body["rules_version"] == 1 and body["read_first_page"] is True
+    assert body["rules_version"] == 2 and body["read_first_page"] is True
     d = body["description"]
     assert (d["subject"], d["doc_type"], d["doc_class"]) == (
         "300750.SZ",
@@ -161,7 +161,7 @@ async def test_recognize_then_upload_with_the_confirmed_description(api):
     history = (await client.get(f"{WEB}/materials/{material_id}/history")).json()
     assert history[0]["what"] == "recognized"
     recognized = history[0]["after"]
-    assert recognized["rules_version"] == 1 and recognized["confirmed"] is True
+    assert recognized["rules_version"] == 2 and recognized["confirmed"] is True
     assert recognized["values"]["attributes"]["rating"] == "增持"
     broken = await client.post(
         f"{WEB}/materials", params={"name": "a.csv", "attributes": "["}, content=CSV

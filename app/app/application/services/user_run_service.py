@@ -109,7 +109,7 @@ PROCESSOR_KINDS = ("text", "pages", "table")
 # 找证据时一次最多取多少页来打分（块 9 换成 RAGFlow 的混合检索）
 MAX_SEARCH_PAGES = 1000
 _FROZEN = re.compile(r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$")
-_PROVENANCE_KEYS = ("expert_id", "expert_version", "input_set_id")
+_PROVENANCE_KEYS = ("expert_id", "expert_version", "input_set_id", "grant_ref", "incomplete", "task_started_at", "task_finished_at", "no_inputs")
 # 块 9（RAGFlow 删除同步）之前，真删要等的回执
 PURGE_PENDING = ["ragflow", "knowfeed"]
 
@@ -135,6 +135,16 @@ class Reading:
     pages: tuple[Page, ...] = ()
     total_pages: int = 0
 
+
+
+class OutputResult(tuple):
+    def __new__(cls, material: Material, version: ContentVersion, provenance_basis: dict[str, object] | None = None):
+        return super().__new__(cls, (material, version))
+
+    def __init__(self, material: Material, version: ContentVersion, provenance_basis: dict[str, object] | None = None):
+        self.material = material
+        self.version = version
+        self.provenance_basis = provenance_basis or {}
 
 class UserRunService:
     def __init__(
@@ -209,6 +219,8 @@ class UserRunService:
         """
         if caller != DISPLAY_APP_OF["delegation"]:
             raise refused("app_invalid", "a delegation runs in knowbench")
+        if await self.runs.is_ref_released(caller, ref):
+            raise conflict("ref_released", "the run ref has already been released")
         offered = {
             (c.material_id, c.version_no, c.sha256): c
             for item in resolution.items
@@ -424,11 +436,17 @@ class UserRunService:
             raise not_found("grant")
         await self.runs.revoke([grant.id], self.now(), "released")
 
-    async def release_ref(self, executor_app: str, ref: str) -> int:
+    async def release_ref(
+        self, executor_app: str, ref: str, beneficiary: str | None = None
+    ) -> int:
         """会话、任务结束：这件事签过的全部交还。"""
         check_ref(ref)
+        if "/" in ref or ".." in ref:
+            raise refused("ref_invalid", "path characters not allowed in ref")
+        now = self.now()
+        await self.runs.record_released_ref(executor_app, ref, beneficiary, now)
         ids = await self.runs.grant_ids(executor_app=executor_app, ref=ref)
-        return await self.runs.revoke(ids, self.now(), "released")
+        return await self.runs.revoke(ids, now, "released")
 
     async def withdraw_platform(
         self, subject: str, app: str, kind: str, ref: str
@@ -509,6 +527,8 @@ class UserRunService:
         material = await self.library.get_material(item.material_id)
         if material is None or not material.readable:
             raise not_found()
+        if item.basis == "public":
+            self.gate.check(grant.beneficiary, material)
         pins = await self._pins(grant, item)
         version = await self.library.version(item.material_id, item.version_no)
         if version is None or version.sha256 != pins[0].sha256:
@@ -1037,8 +1057,12 @@ class UserRunService:
         content: bytes,
         *,
         evidence: bool = False,
+        grant_ref: str | None = None,
+        incomplete: bool = False,
+        task_started_at: datetime | None = None,
+        task_finished_at: datetime | None = None,
         provenance: dict[str, object] | None = None,
-    ) -> tuple[Material, ContentVersion]:
+    ) -> OutputResult:
         """应用替用户写产出：只能写产出区，按（应用，任务，运行，名字）幂等，算用户空间。
 
         同一次运行同名的再写一次：内容一样回原来那份，不一样 409（测试证据只增不改）。
@@ -1057,7 +1081,14 @@ class UserRunService:
                 raise conflict("output_exists", "this run already wrote another one")
             material = await self.library.get_material(version.material_id)
             assert material is not None
-            return material, version
+            pb: dict[str, object] = {}
+            if grant_ref:
+                pb["grant_ref"] = grant_ref
+            if task_started_at and task_finished_at:
+                pb["task_window"] = {"started_at": task_started_at.isoformat(), "finished_at": task_finished_at.isoformat()}
+            if not pb:
+                pb = {"default": "self"}
+            return OutputResult(material, version, pb)
         media_type = kind_of(filename, content)
         check_size(len(content), await self.library.bytes_used(beneficiary))
         origin = await self._provenance(provenance or {})
@@ -1130,7 +1161,33 @@ class UserRunService:
                 evidence=evidence,
                 provenance=provenance,
             )
-        return saved, version
+        pb = {}
+        if grant_ref:
+            pb["grant_ref"] = grant_ref
+        if task_started_at and task_finished_at:
+            pb["task_window"] = {"started_at": task_started_at.isoformat(), "finished_at": task_finished_at.isoformat()}
+        if not pb:
+            pb = {"default": "self"}
+        return OutputResult(saved, version, pb)
+
+    async def lookup_output(
+        self, caller: str, beneficiary: str, task_ref: str, run_ref: str, name: str
+    ) -> dict[str, object]:
+        """查询同一次运行写下的产出：返回真实 material_id, version_no, sha256。"""
+        if caller not in OUTPUT_CALLERS:
+            raise denied("service_scope_denied", "this app does not lookup outputs")
+        check_ref(task_ref)
+        check_ref(run_ref)
+        filename = clean_name(name)
+        found = await self.runs.find_output(beneficiary, caller, task_ref, run_ref, filename)
+        if found is None:
+            raise not_found("output")
+        material_id, version = found
+        return {
+            "material_id": material_id,
+            "version_no": version.version_no,
+            "sha256": version.sha256,
+        }
 
     async def convert(
         self,
@@ -1204,7 +1261,6 @@ class UserRunService:
         )
         saved = await self.library.add_material(material, version, holding)
         return saved, version
-
     # —— 禁用、清除 ——
 
     async def disable(self, actor: str, material_id: str, reason: str) -> None:
@@ -1255,11 +1311,25 @@ class UserRunService:
             raise not_found()
         _check_reason(reason)
         now = self.now()
-        if not personal_info and await self.runs.other_holders(
-            material.id, material.owner
+        if material.content_origin == "disclosure":
+            raise refused("disclosure_cannot_purge", "disclosure materials can only be disabled, not purged")
+        has_frozen = await self.runs.has_frozen_bindings(material.id)
+        has_active = await self.runs.active_grants_for_others(material.id, material.owner, now)
+        if not personal_info and (
+            await self.runs.other_holders(material.id, material.owner) or has_frozen or has_active
         ):
             if material.deleted_at is None:
                 await self.library.remove(material.id, material.owner, now)
+            await self.runs.add_deletion(
+                deletion_id=self.new_id(),
+                subject=material.owner,
+                material_id=material.id,
+                action="relation",
+                reason=reason,
+                actor=actor,
+                at=now,
+                pending=[],
+            )
             return False
         for version in await self.library.versions(material.id):
             await self.objects.delete(version.object_key)
@@ -1554,8 +1624,11 @@ class UserRunService:
             raise refused("provenance_invalid", f"unknown keys: {sorted(unknown)}")
         for key in _PROVENANCE_KEYS:
             value = given.get(key)
-            if value is not None and (not isinstance(value, str) or len(value) > 255):
-                raise refused("provenance_invalid", f"{key} is invalid")
+            if value is not None:
+                if key == "incomplete" and not isinstance(value, (bool, str)):
+                    raise refused("provenance_invalid", f"{key} is invalid")
+                elif key != "incomplete" and (not isinstance(value, (str, int, float)) or len(str(value)) > 255):
+                    raise refused("provenance_invalid", f"{key} is invalid")
         set_id = given.get("input_set_id")
         if set_id is not None and await self.runs.input_set(str(set_id)) is None:
             raise not_found("input_set")
@@ -1563,15 +1636,32 @@ class UserRunService:
 
     async def _upstream_cap(self, subject: str, source: Material) -> License:
         """上游的许可上限：输入里他自己有使用权的取他那条的档，没有的（作者绑定的）
-        只许本人用；没有输入记录的不设上限。"""
-        set_id = (source.provenance or {}).get("input_set_id")
-        if not set_id:
-            return "sale"
-        input_set = await self.runs.input_set(str(set_id))
-        if input_set is None:
+        只许本人用；没有输入记录且未声明无输入的默认「只许本人用」。"""
+        prov = source.provenance or {}
+        set_id = prov.get("input_set_id")
+        grant_ref = prov.get("grant_ref")
+        if not set_id and not grant_ref and not prov.get("task_window"):
+            if prov.get("no_inputs"):
+                return "sale"
+            return "self"
+        pins = []
+        if set_id:
+            input_set = await self.runs.input_set(str(set_id))
+            if input_set:
+                pins.extend(input_set.pins)
+        if grant_ref:
+            caller = prov.get("caller") or "knowbench"
+            gids = await self.runs.grant_ids(executor_app=caller, ref=str(grant_ref))
+            for gid in gids:
+                grant = await self.runs.get_grant(gid)
+                if grant and grant.input_set_id:
+                    iset = await self.runs.input_set(grant.input_set_id)
+                    if iset:
+                        pins.extend(iset.pins)
+        if not pins:
             return "self"
         cap = "sale"
-        for pin in input_set.pins:
+        for pin in pins:
             holdings = await self.library.holdings_of(subject, pin.material_id)
             held = [h for h in holdings if h.covers(pin.version_no)]
             rank = max((license_rank(h.license) for h in held), default=0)

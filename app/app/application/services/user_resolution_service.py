@@ -685,4 +685,7 @@ def _confirm_item(
     title = given.get("title")
     if isinstance(title, str):
         item["title"] = title[:200]
+    follow_links = given.get("follow_links")
+    if follow_links is not None:
+        item["follow_links"] = bool(follow_links)
     return item

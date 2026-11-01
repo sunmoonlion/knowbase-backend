@@ -25,7 +25,7 @@ from app.domain.vocabulary import (
 )
 
 # 识别规则的版本：改了下面任何一条规则（关键词、先后、取值）就加一
-RULES_VERSION = 1
+RULES_VERSION = 2
 # 首页文字最多看多少字
 MAX_TEXT_CHARS = 6000
 

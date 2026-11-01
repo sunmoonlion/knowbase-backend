@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
 from app.domain.security import Principal
@@ -134,12 +135,13 @@ async def vocabulary(_: Viewer, service: Library):
 
 @router.get("/materials", response_model=list[AdminMaterialRead])
 async def materials(
-    _: Viewer,
+    viewer: Viewer,
     service: Library,
     owner: str | None = Query(default=None, min_length=1, max_length=255),
     material_id: str | None = Query(default=None, min_length=1, max_length=64),
     disabled: bool = False,
 ):
+
     found = await _call(
         lambda: service.find_for_admin(
             owner=owner, material_id=material_id, disabled=disabled

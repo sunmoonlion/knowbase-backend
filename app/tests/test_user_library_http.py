@@ -142,7 +142,7 @@ async def test_upload_describe_version_download_and_remove(api):
         "description",
         "license",
     ]
-    assert history.json()[0]["after"]["rules_version"] == 1
+    assert history.json()[0]["after"]["rules_version"] == 2
 
     state["owner"] = Owner("bob", "knowbench")
     hidden = await client.get(f"{BASE}/materials/{material_id}")

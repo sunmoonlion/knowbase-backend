@@ -33,6 +33,8 @@ KINDS: dict[str, tuple[str, bytes | None]] = {
     ".csv": ("text/csv; charset=utf-8", None),
     ".txt": ("text/plain; charset=utf-8", None),
     ".md": ("text/markdown; charset=utf-8", None),
+    ".html": ("text/html; charset=utf-8", None),
+    ".htm": ("text/html; charset=utf-8", None),
 }
 
 _BAD_NAME = re.compile(r"[\x00-\x1f\x7f/\\]")

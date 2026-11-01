@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from datetime import date
 
+from email.parser import BytesParser
+from email.policy import default
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
@@ -65,6 +67,8 @@ from app.interfaces.schemas.user_library import (
     MarketOfferStateRead,
     MaterialRead,
     PlatformConsentIn,
+    BeneficiaryIn,
+    CollectedOriginalRead,
     PublicOriginalRead,
     PurchaseIn,
     PurchaseRead,
@@ -754,6 +758,63 @@ async def raise_frozen_license(
         basis_ref=use.use,
         license=str(use.scope.get("license")),  # type: ignore[arg-type]
     )
+
+
+@router.post(
+    "/service/collected-originals",
+    response_model=list[CollectedOriginalRead],
+    status_code=status.HTTP_201_CREATED,
+)
+async def deliver_collected(
+    request: Request,
+    channel: str = Query(min_length=2, max_length=40),
+    channel_doc_id: str = Query(min_length=1, max_length=200),
+    name: str = Query(min_length=1, max_length=200),
+    license: str = Query(default="self", max_length=20),
+    source_url: str | None = Query(default=None, max_length=2000),
+    caller: ServiceCaller = Depends(require_supply_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """knowfeed 交一份非公开采集的原件（multipart）：内容存一份，每位受益人各得名下一份。"""
+    body = await _public_body(request)
+    content_type = request.headers.get("content-type", "")
+    file_content: bytes = b""
+    beneficiaries_raw: str = ""
+
+    if "multipart/form-data" in content_type:
+        header = f"Content-Type: {content_type}\r\n\r\n".encode()
+        msg = BytesParser(policy=default).parsebytes(header + body)
+        for part in msg.iter_parts():
+            part_name = part.get_param("name", header="content-disposition")
+            payload = part.get_payload(decode=True) or b""
+            if part_name == "file":
+                file_content = payload
+            elif part_name == "beneficiaries":
+                beneficiaries_raw = payload.decode("utf-8", "replace")
+    else:
+        file_content = body
+
+    if not file_content:
+        raise refused("file_missing", "multipart missing file part")
+    try:
+        raw_bens = json.loads(beneficiaries_raw) if beneficiaries_raw else []
+        b_list = [BeneficiaryIn(**b).model_dump(mode="json") for b in raw_bens]
+    except Exception as exc:
+        raise refused("beneficiaries_invalid", f"invalid beneficiaries JSON: {exc}")
+
+    results = await _call(
+        lambda: service.deliver_collected(
+            caller.caller,
+            channel,
+            channel_doc_id,
+            name,
+            file_content,
+            b_list,
+            license_=license,
+            source_url=source_url,
+        )
+    )
+    return [CollectedOriginalRead(**r) for r in results]
 
 
 @router.post(

@@ -140,6 +140,7 @@ class ConfirmItemIn(BaseModel):
     url: str | None = Field(default=None, max_length=2000)
     candidate_ref: str | None = Field(default=None, max_length=255)
     title: str | None = Field(default=None, max_length=200)
+    follow_links: bool | None = None
 
 
 class ConfirmIn(BaseModel):
@@ -185,6 +186,14 @@ class ConfirmationCheckRead(BaseModel):
     supply: dict[str, object]
     expires_at: datetime
 
+
+
+class PreferenceIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    consumer: str = Field(min_length=1, max_length=160)
+    key: DescriptionKeyModel
+    material_ids: list[str] = Field(min_length=1, max_length=20)
 
 class PreferenceRead(BaseModel):
     key_id: str

@@ -46,6 +46,7 @@ from app.interfaces.schemas.user_resolution import (
     DescriptionKeyModel,
     LookupRead,
     NeedSpecIn,
+    PreferenceIn,
     PreferenceRead,
     ResolutionRead,
     ResolveIn,
@@ -349,6 +350,26 @@ async def confirm(
         expires_at=confirmation.expires_at,
         items=list(confirmation.items),
         branches=[BranchRead(**b) for b in branches],  # type: ignore[arg-type]
+    )
+
+
+@router.put("/preferences", response_model=PreferenceRead)
+async def record_preference(
+    payload: PreferenceIn,
+    owner: Owner = Depends(require_user_owner),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    """记录用户偏好：使用者 × 描述 → 挑选的资料。"""
+    key = DescriptionKey.from_dict(payload.key.model_dump(mode="json", exclude_none=True))
+    p = await _call(
+        lambda: service.record_preference(
+            owner.subject, payload.consumer, key, payload.material_ids
+        )
+    )
+    return PreferenceRead(
+        key_id=p.key_id,
+        material_ids=list(p.material_ids),
+        updated_at=p.updated_at,
     )
 
 

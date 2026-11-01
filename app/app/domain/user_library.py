@@ -296,6 +296,10 @@ class ContentVersion:
     object_key: str
     created_at: datetime
     created_by: str
+    ragflow_dataset_id: str | None = None
+    ragflow_document_id: str | None = None
+    ragflow_job_id: str | None = None
+    ragflow_status: str | None = None
 
 
 @dataclass(frozen=True)

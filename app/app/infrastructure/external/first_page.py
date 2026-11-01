@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import io
 import logging
 
@@ -19,7 +20,9 @@ logger = logging.getLogger(__name__)
 def read_first_page(media_type: str, content: bytes) -> str:
     try:
         if media_type == "application/pdf":
-            return _pdf_first_page(content)[:MAX_TEXT_CHARS]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_pdf_first_page, content)
+                return future.result(timeout=3.0)[:MAX_TEXT_CHARS]
         if media_type.startswith("text/"):
             return content[: MAX_TEXT_CHARS * 4].decode("utf-8", "replace")[
                 :MAX_TEXT_CHARS
@@ -34,7 +37,10 @@ def read_first_page(media_type: str, content: bytes) -> str:
 def _pdf_first_page(content: bytes) -> str:
     from pypdf import PdfReader
 
-    reader = PdfReader(io.BytesIO(content))
-    if reader.is_encrypted or not reader.pages:
+    try:
+        reader = PdfReader(io.BytesIO(content))
+        if reader.is_encrypted or not reader.pages:
+            return ""
+        return reader.pages[0].extract_text() or ""
+    except Exception:
         return ""
-    return reader.pages[0].extract_text() or ""

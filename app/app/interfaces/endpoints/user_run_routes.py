@@ -52,6 +52,7 @@ from app.interfaces.schemas.user_runs import (
     GrantItemIn,
     GrantItemRead,
     OutputWritten,
+    OutputLookupRead,
     PendingProcessingRead,
     PinRead,
     PlatformEndIn,
@@ -529,11 +530,12 @@ async def release(
 @router.post("/runs/{ref}/release", status_code=status.HTTP_204_NO_CONTENT)
 async def release_ref(
     ref: str,
+    beneficiary: str | None = Query(default=None, max_length=255),
     executor: tuple[str, str] = Depends(require_executor),
     service: UserRunService = Depends(get_user_run_service),
 ):
     """会话、任务结束：这件事签过的全部交还。"""
-    await _call(lambda: service.release_ref(executor[1], ref))
+    await _call(lambda: service.release_ref(executor[1], ref, beneficiary=beneficiary))
 
 
 # —— 产出区：knowbench、knowlab 替用户写 ——
@@ -552,6 +554,10 @@ async def write_output(
     expert_id: str | None = Query(default=None, max_length=64),
     expert_version: str | None = Query(default=None, max_length=32),
     input_set_id: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+    grant_ref: str | None = Query(default=None, max_length=255),
+    incomplete: bool = False,
+    task_started_at: datetime | None = None,
+    task_finished_at: datetime | None = None,
     caller: ServiceCaller = Depends(require_output_service),
     service: UserRunService = Depends(get_user_run_service),
 ):
@@ -561,8 +567,12 @@ async def write_output(
         "expert_id": expert_id,
         "expert_version": expert_version,
         "input_set_id": input_set_id,
+        "grant_ref": grant_ref,
+        "incomplete": incomplete,
+        "task_started_at": task_started_at.isoformat() if task_started_at else None,
+        "task_finished_at": task_finished_at.isoformat() if task_finished_at else None,
     }
-    material, version = await _call(
+    res = await _call(
         lambda: service.write_output(
             caller.caller,
             beneficiary,
@@ -571,12 +581,37 @@ async def write_output(
             name,
             content,
             evidence=evidence,
+            grant_ref=grant_ref,
+            incomplete=incomplete,
+            task_started_at=task_started_at,
+            task_finished_at=task_finished_at,
             provenance={k: v for k, v in provenance.items() if v is not None},
         )
     )
+    material, version = res
+    provenance_basis = getattr(res, "provenance_basis", {})
     return OutputWritten(
-        material_id=material.id, version_no=version.version_no, sha256=version.sha256
+        material_id=material.id,
+        version_no=version.version_no,
+        sha256=version.sha256,
+        provenance_basis=provenance_basis,
     )
+
+
+@router.get("/outputs/lookup", response_model=OutputLookupRead)
+async def lookup_output(
+    beneficiary: str = Query(min_length=1, max_length=255),
+    task_ref: str = Query(min_length=1, max_length=255),
+    run_ref: str = Query(min_length=1, max_length=255),
+    name: str = Query(min_length=1, max_length=200),
+    caller: ServiceCaller = Depends(require_output_service),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """查询同一次运行写下的产出：返回真实 material_id, version_no, sha256。"""
+    found = await _call(
+        lambda: service.lookup_output(caller.caller, beneficiary, task_ref, run_ref, name)
+    )
+    return OutputLookupRead(**found)
 
 
 # —— 加工：knowfeed ——

@@ -67,5 +67,14 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.add_column("user_data_rendition", sa.Column("object_key", sa.Text()))
+    op.execute(
+        """
+        UPDATE user_data_rendition
+        SET status = 'failed',
+            ready_at = NULL,
+            detail = detail || '{"reason": "downgraded from 0019, content in postgres removed"}'::jsonb
+        WHERE kind IN ('text', 'pages')
+        """
+    )
     op.drop_table("user_data_page")
     op.drop_table("user_data_text")

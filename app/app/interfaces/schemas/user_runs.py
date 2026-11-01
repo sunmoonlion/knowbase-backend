@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from datetime import datetime
 from typing import Literal
 
@@ -183,6 +185,13 @@ class GrantedFormatRead(BaseModel):
 
 
 class OutputWritten(BaseModel):
+    material_id: str
+    version_no: int
+    sha256: str
+    provenance_basis: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutputLookupRead(BaseModel):
     material_id: str
     version_no: int
     sha256: str
