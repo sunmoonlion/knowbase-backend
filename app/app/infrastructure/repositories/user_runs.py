@@ -9,9 +9,11 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable
 from datetime import datetime
+from typing import cast
 
 from sqlalchemy import delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -35,7 +37,6 @@ from app.domain.user_runs import (
     Session,
 )
 from app.infrastructure.models.user_data import (
-    UserDataReleasedRef,
     UserDataDeletion,
     UserDataFact,
     UserDataFactRaw,
@@ -45,6 +46,7 @@ from app.infrastructure.models.user_data import (
     UserDataOutput,
     UserDataPage,
     UserDataRead,
+    UserDataReleasedRef,
     UserDataRendition,
     UserDataRunGrant,
     UserDataRunGrantItem,
@@ -53,23 +55,12 @@ from app.infrastructure.models.user_data import (
     UserDataUse,
     UserDataVersion,
 )
-from app.infrastructure.repositories.user_library import _version, insert_material
-
-
-def _rendition(row: UserDataRendition) -> Rendition:
-    return Rendition(
-        id=str(row.id),
-        version_id=str(row.version_id),
-        kind=row.kind,  # type: ignore[arg-type]
-        rendition_no=row.rendition_no,
-        processor=row.processor,
-        processor_version=row.processor_version,
-        status=row.status,  # type: ignore[arg-type]
-        created_at=row.created_at,
-        sha256=row.sha256,
-        detail=dict(row.detail or {}),
-        ready_at=row.ready_at,
-    )
+from app.infrastructure.repositories.user_library import (
+    _rendition,
+    _renditions,
+    _version,
+    insert_material,
+)
 
 
 def _grant(row: UserDataRunGrant, items: list[UserDataRunGrantItem]) -> RunGrant:
@@ -176,12 +167,7 @@ class SqlUserRunRepository:
 
     async def renditions(self, version_id: str) -> list[Rendition]:
         async with self._sessions()() as session:
-            rows = await session.execute(
-                select(UserDataRendition)
-                .where(UserDataRendition.version_id == uuid.UUID(version_id))
-                .order_by(UserDataRendition.kind, UserDataRendition.rendition_no)
-            )
-            return [_rendition(r) for r in rows.scalars()]
+            return await _renditions(session, version_id)
 
     async def rendition(
         self, version_id: str, kind: str, rendition_no: int
@@ -288,16 +274,20 @@ class SqlUserRunRepository:
     async def search_pages(
         self, rendition_ids: list[str], terms: list[str], limit: int
     ) -> list[tuple[str, Page]]:
-        """这几个读法版本里含任一关键词的页（区分大小写，同 `str.count`）。每个读法独立限额防漏掉。"""
+        """含任一关键词的页（区分大小写，同 `str.count`）；每个读法独立限额。"""
         if not rendition_ids or not terms:
             return []
-        per_doc_limit = max(50, limit // len(rendition_ids)) if len(rendition_ids) <= 20 else 50
+        per_doc_limit = (
+            max(50, limit // len(rendition_ids)) if len(rendition_ids) <= 20 else 50
+        )
         results: list[tuple[str, Page]] = []
         async with self._sessions()() as session:
             for rid in rendition_ids:
                 uid = uuid.UUID(rid)
                 rows = await session.execute(
-                    select(UserDataPage.rendition_id, UserDataPage.page, UserDataPage.text)
+                    select(
+                        UserDataPage.rendition_id, UserDataPage.page, UserDataPage.text
+                    )
                     .where(
                         UserDataPage.rendition_id == uid,
                         or_(*(func.strpos(UserDataPage.text, t) > 0 for t in terms)),
@@ -654,7 +644,7 @@ class SqlUserRunRepository:
                 .values(revoked_at=at, revoke_reason=reason)
             )
             await session.commit()
-            return int(result.rowcount or 0)
+            return int(cast(CursorResult, result).rowcount or 0)
 
     async def record_read(
         self,
@@ -781,6 +771,7 @@ class SqlUserRunRepository:
                     UserDataVersion.version_no == 1,
                 )
             )
+            assert version is not None
             return _output(row), _version(version)
 
     async def add_output(
@@ -834,7 +825,7 @@ class SqlUserRunRepository:
                 .values(disabled_at=at)
             )
             await session.commit()
-            return bool(result.rowcount)
+            return bool(cast(CursorResult, result).rowcount)
 
     async def other_holders(self, material_id: str, owner: str) -> int:
         """除所有者以外还有几条有效的使用权（买家、引用）。"""
@@ -913,7 +904,7 @@ class SqlUserRunRepository:
                 .values(ended_at=at, end_reason=reason)
             )
             await session.commit()
-            return int(result.rowcount or 0)
+            return int(cast(CursorResult, result).rowcount or 0)
 
     async def withdraw_all_uses(self, subject: str, at: datetime) -> int:
         async with self._sessions()() as session:
@@ -925,7 +916,7 @@ class SqlUserRunRepository:
                 .values(withdrawn_at=at)
             )
             await session.commit()
-            return int(result.rowcount or 0)
+            return int(cast(CursorResult, result).rowcount or 0)
 
     async def mark_purged(self, material_id: str, at: datetime) -> None:
         """清除：描述字段、名字清掉，库里的读法内容（正文、按页文字、事实行）删掉，标清除
@@ -1017,7 +1008,11 @@ class SqlUserRunRepository:
             ]
 
     async def record_released_ref(
-        self, executor_app: str, ref: str, beneficiary: str | None, released_at: datetime
+        self,
+        executor_app: str,
+        ref: str,
+        beneficiary: str | None,
+        released_at: datetime,
     ) -> None:
         async with self._sessions()() as session:
             stmt = (
@@ -1041,7 +1036,8 @@ class SqlUserRunRepository:
     async def has_frozen_bindings(self, material_id: str) -> bool:
         async with self._sessions()() as session:
             mid = uuid.UUID(material_id)
-            # 检查在跑或历史授权中的 frozen_binding 项，或者 user_data_holding/expert 绑定
+            # 检查在跑或历史授权中的 frozen_binding 项，
+            # 或者 user_data_holding/expert 绑定
             row = await session.execute(
                 select(UserDataRunGrantItem.item_id)
                 .where(
@@ -1059,7 +1055,10 @@ class SqlUserRunRepository:
             mid = uuid.UUID(material_id)
             row = await session.execute(
                 select(UserDataRunGrant.id)
-                .join(UserDataRunGrantItem, UserDataRunGrantItem.grant_id == UserDataRunGrant.id)
+                .join(
+                    UserDataRunGrantItem,
+                    UserDataRunGrantItem.grant_id == UserDataRunGrant.id,
+                )
                 .where(
                     UserDataRunGrantItem.item_id == mid,
                     UserDataRunGrant.beneficiary != owner,

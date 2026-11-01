@@ -7,10 +7,11 @@ v1（`user-data/v1`）10-28 已删（decisions ⑰）。本人接口的身份：
 
 from __future__ import annotations
 
+import json
 from datetime import date
-
 from email.parser import BytesParser
 from email.policy import default
+
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
 from app.application.errors.exceptions import AppException
@@ -47,11 +48,13 @@ from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_library import (
     AccountIn,
     AccountRead,
+    BeneficiaryIn,
     BindingChecksIn,
     BindingChecksRead,
     BindingStateRead,
     BulkUseIn,
     BulkUseRead,
+    CollectedOriginalRead,
     DescriptionIn,
     DescriptionRead,
     ExpertIn,
@@ -67,8 +70,6 @@ from app.interfaces.schemas.user_library import (
     MarketOfferStateRead,
     MaterialRead,
     PlatformConsentIn,
-    BeneficiaryIn,
-    CollectedOriginalRead,
     PublicOriginalRead,
     PurchaseIn,
     PurchaseRead,
@@ -775,7 +776,7 @@ async def deliver_collected(
     caller: ServiceCaller = Depends(require_supply_service),
     service: UserLibraryService = Depends(get_user_library_service),
 ):
-    """knowfeed 交一份非公开采集的原件（multipart）：内容存一份，每位受益人各得名下一份。"""
+    """knowfeed 交非公开采集的原件（multipart），每位受益人各得名下资料。"""
     body = await _public_body(request)
     content_type = request.headers.get("content-type", "")
     file_content: bytes = b""
@@ -787,6 +788,12 @@ async def deliver_collected(
         for part in msg.iter_parts():
             part_name = part.get_param("name", header="content-disposition")
             payload = part.get_payload(decode=True) or b""
+            if not isinstance(payload, bytes):
+                raise AppException(
+                    code="multipart_invalid",
+                    status_code=422,
+                    msg="invalid multipart payload",
+                )
             if part_name == "file":
                 file_content = payload
             elif part_name == "beneficiaries":
@@ -795,12 +802,20 @@ async def deliver_collected(
         file_content = body
 
     if not file_content:
-        raise refused("file_missing", "multipart missing file part")
+        raise AppException(
+            code="file_missing", status_code=422, msg="multipart missing file part"
+        )
     try:
         raw_bens = json.loads(beneficiaries_raw) if beneficiaries_raw else []
+        if not isinstance(raw_bens, list) or not raw_bens:
+            raise ValueError("at least one beneficiary is required")
         b_list = [BeneficiaryIn(**b).model_dump(mode="json") for b in raw_bens]
-    except Exception as exc:
-        raise refused("beneficiaries_invalid", f"invalid beneficiaries JSON: {exc}")
+    except (ValueError, TypeError) as exc:
+        raise AppException(
+            code="beneficiaries_invalid",
+            status_code=422,
+            msg="invalid beneficiaries JSON",
+        ) from exc
 
     results = await _call(
         lambda: service.deliver_collected(

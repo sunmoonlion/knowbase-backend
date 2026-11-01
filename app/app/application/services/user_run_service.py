@@ -109,7 +109,16 @@ PROCESSOR_KINDS = ("text", "pages", "table")
 # 找证据时一次最多取多少页来打分（块 9 换成 RAGFlow 的混合检索）
 MAX_SEARCH_PAGES = 1000
 _FROZEN = re.compile(r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$")
-_PROVENANCE_KEYS = ("expert_id", "expert_version", "input_set_id", "grant_ref", "incomplete", "task_started_at", "task_finished_at", "no_inputs")
+_PROVENANCE_KEYS = (
+    "expert_id",
+    "expert_version",
+    "input_set_id",
+    "grant_ref",
+    "incomplete",
+    "task_started_at",
+    "task_finished_at",
+    "no_inputs",
+)
 # 块 9（RAGFlow 删除同步）之前，真删要等的回执
 PURGE_PENDING = ["ragflow", "knowfeed"]
 
@@ -136,15 +145,25 @@ class Reading:
     total_pages: int = 0
 
 
-
 class OutputResult(tuple):
-    def __new__(cls, material: Material, version: ContentVersion, provenance_basis: dict[str, object] | None = None):
+    def __new__(
+        cls,
+        material: Material,
+        version: ContentVersion,
+        provenance_basis: dict[str, object] | None = None,
+    ):
         return super().__new__(cls, (material, version))
 
-    def __init__(self, material: Material, version: ContentVersion, provenance_basis: dict[str, object] | None = None):
+    def __init__(
+        self,
+        material: Material,
+        version: ContentVersion,
+        provenance_basis: dict[str, object] | None = None,
+    ):
         self.material = material
         self.version = version
         self.provenance_basis = provenance_basis or {}
+
 
 class UserRunService:
     def __init__(
@@ -1085,7 +1104,10 @@ class UserRunService:
             if grant_ref:
                 pb["grant_ref"] = grant_ref
             if task_started_at and task_finished_at:
-                pb["task_window"] = {"started_at": task_started_at.isoformat(), "finished_at": task_finished_at.isoformat()}
+                pb["task_window"] = {
+                    "started_at": task_started_at.isoformat(),
+                    "finished_at": task_finished_at.isoformat(),
+                }
             if not pb:
                 pb = {"default": "self"}
             return OutputResult(material, version, pb)
@@ -1165,7 +1187,10 @@ class UserRunService:
         if grant_ref:
             pb["grant_ref"] = grant_ref
         if task_started_at and task_finished_at:
-            pb["task_window"] = {"started_at": task_started_at.isoformat(), "finished_at": task_finished_at.isoformat()}
+            pb["task_window"] = {
+                "started_at": task_started_at.isoformat(),
+                "finished_at": task_finished_at.isoformat(),
+            }
         if not pb:
             pb = {"default": "self"}
         return OutputResult(saved, version, pb)
@@ -1179,7 +1204,9 @@ class UserRunService:
         check_ref(task_ref)
         check_ref(run_ref)
         filename = clean_name(name)
-        found = await self.runs.find_output(beneficiary, caller, task_ref, run_ref, filename)
+        found = await self.runs.find_output(
+            beneficiary, caller, task_ref, run_ref, filename
+        )
         if found is None:
             raise not_found("output")
         material_id, version = found
@@ -1261,6 +1288,7 @@ class UserRunService:
         )
         saved = await self.library.add_material(material, version, holding)
         return saved, version
+
     # —— 禁用、清除 ——
 
     async def disable(self, actor: str, material_id: str, reason: str) -> None:
@@ -1312,11 +1340,18 @@ class UserRunService:
         _check_reason(reason)
         now = self.now()
         if material.content_origin == "disclosure":
-            raise refused("disclosure_cannot_purge", "disclosure materials can only be disabled, not purged")
+            raise refused(
+                "disclosure_cannot_purge",
+                "disclosure materials can only be disabled, not purged",
+            )
         has_frozen = await self.runs.has_frozen_bindings(material.id)
-        has_active = await self.runs.active_grants_for_others(material.id, material.owner, now)
+        has_active = await self.runs.active_grants_for_others(
+            material.id, material.owner, now
+        )
         if not personal_info and (
-            await self.runs.other_holders(material.id, material.owner) or has_frozen or has_active
+            await self.runs.other_holders(material.id, material.owner)
+            or has_frozen
+            or has_active
         ):
             if material.deleted_at is None:
                 await self.library.remove(material.id, material.owner, now)
@@ -1627,7 +1662,9 @@ class UserRunService:
             if value is not None:
                 if key == "incomplete" and not isinstance(value, (bool, str)):
                     raise refused("provenance_invalid", f"{key} is invalid")
-                elif key != "incomplete" and (not isinstance(value, (str, int, float)) or len(str(value)) > 255):
+                elif key != "incomplete" and (
+                    not isinstance(value, (str, int, float)) or len(str(value)) > 255
+                ):
                     raise refused("provenance_invalid", f"{key} is invalid")
         set_id = given.get("input_set_id")
         if set_id is not None and await self.runs.input_set(str(set_id)) is None:
@@ -1651,6 +1688,8 @@ class UserRunService:
                 pins.extend(input_set.pins)
         if grant_ref:
             caller = prov.get("caller") or "knowbench"
+            if not isinstance(caller, str):
+                return "self"
             gids = await self.runs.grant_ids(executor_app=caller, ref=str(grant_ref))
             for gid in gids:
                 grant = await self.runs.get_grant(gid)

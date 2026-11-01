@@ -360,7 +360,9 @@ async def record_preference(
     service: UserResolutionService = Depends(get_user_resolution_service),
 ):
     """记录用户偏好：使用者 × 描述 → 挑选的资料。"""
-    key = DescriptionKey.from_dict(payload.key.model_dump(mode="json", exclude_none=True))
+    key = DescriptionKey.from_dict(
+        payload.key.model_dump(mode="json", exclude_none=True)
+    )
     p = await _call(
         lambda: service.record_preference(
             owner.subject, payload.consumer, key, payload.material_ids

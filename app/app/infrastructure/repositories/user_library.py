@@ -9,8 +9,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Sequence
 from datetime import date, datetime
+from typing import cast
 
 from sqlalchemy import and_, exists, func, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.user_data import conflict, not_found
@@ -24,6 +26,7 @@ from app.domain.user_library import (
     HoldingMatch,
     LogEntry,
     Material,
+    Rendition,
     ShelfEntry,
     Use,
 )
@@ -35,9 +38,36 @@ from app.infrastructure.models.user_data import (
     UserDataItem,
     UserDataMaterialLog,
     UserDataRead,
+    UserDataRendition,
     UserDataUse,
     UserDataVersion,
 )
+
+
+def _rendition(row: UserDataRendition) -> Rendition:
+    return Rendition(
+        id=str(row.id),
+        version_id=str(row.version_id),
+        kind=row.kind,  # type: ignore[arg-type]
+        rendition_no=row.rendition_no,
+        processor=row.processor,
+        processor_version=row.processor_version,
+        status=row.status,  # type: ignore[arg-type]
+        created_at=row.created_at,
+        sha256=row.sha256,
+        detail=dict(row.detail or {}),
+        ready_at=row.ready_at,
+    )
+
+
+async def _renditions(session: AsyncSession, version_id: str) -> list[Rendition]:
+    rows = await session.execute(
+        select(UserDataRendition)
+        .where(UserDataRendition.version_id == uuid.UUID(version_id))
+        .order_by(UserDataRendition.kind, UserDataRendition.rendition_no)
+    )
+    return [_rendition(row) for row in rows.scalars()]
+
 
 ORIGIN_OF_BASIS = {
     "upload": "upload",
@@ -277,6 +307,10 @@ class SqlUserLibraryRepository:
                 )
             )
             return _material(row) if row is not None else None
+
+    async def renditions(self, version_id: str) -> list[Rendition]:
+        async with self._sessions()() as session:
+            return await _renditions(session, version_id)
 
     async def public_holdings(
         self, *, subject: str, doc_type: str, start: date, end: date, edition: str
@@ -627,7 +661,7 @@ class SqlUserLibraryRepository:
                 .values(withdrawn_at=at)
             )
             await session.commit()
-            return bool(result.rowcount)
+            return bool(cast(CursorResult, result).rowcount)
 
     async def raise_frozen_license(
         self,
@@ -682,7 +716,7 @@ class SqlUserLibraryRepository:
                 .values(withdrawn_at=at)
             )
             await session.commit()
-            return int(result.rowcount or 0)
+            return int(cast(CursorResult, result).rowcount or 0)
 
     async def named(self, subject: str, prefix: str) -> list[Use]:
         """用途以 `prefix` 开头的有效依据，按时间。"""

@@ -15,6 +15,7 @@ from app.domain.user_library import (
     HoldingMatch,
     LogEntry,
     Material,
+    Rendition,
     ShelfEntry,
     Use,
 )
@@ -50,6 +51,12 @@ class UserLibraryRepository(Protocol):
     async def find_public(
         self, channel: str, channel_doc_id: str
     ) -> Material | None: ...
+
+    async def find_collected_by_beneficiary(
+        self, subject: str, channel: str, channel_doc_id: str, item_ref: str
+    ) -> tuple[Material, ContentVersion] | None: ...
+
+    async def renditions(self, version_id: str) -> list[Rendition]: ...
 
     async def public_holdings(
         self, *, subject: str, doc_type: str, start: date, end: date, edition: str
