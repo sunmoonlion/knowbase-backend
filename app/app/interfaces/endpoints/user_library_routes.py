@@ -29,6 +29,7 @@ from app.infrastructure.external.first_page import read_first_page
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
+    require_binding_check_service,
     require_directory_service,
     require_purchase_service,
     require_supply_service,
@@ -44,6 +45,9 @@ from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.schemas.user_library import (
     AccountIn,
     AccountRead,
+    BindingChecksIn,
+    BindingChecksRead,
+    BindingStateRead,
     BulkUseIn,
     BulkUseRead,
     DescriptionIn,
@@ -51,6 +55,8 @@ from app.interfaces.schemas.user_library import (
     ExpertIn,
     ExpertRead,
     FreezeIn,
+    FrozenBindingRead,
+    FrozenLicenseIn,
     HistoryEntryRead,
     HoldingRead,
     LicenseIn,
@@ -680,7 +686,7 @@ async def push_expert(
 
 @router.post(
     "/experts/{expert_id}/versions/{version}/freeze",
-    response_model=list[UseRead],
+    response_model=list[FrozenBindingRead],
     status_code=status.HTTP_201_CREATED,
 )
 async def freeze_binding(
@@ -697,10 +703,57 @@ async def freeze_binding(
             status_code=403,
             msg="only knowlab freezes bindings",
         )
-    uses = await _call(
-        lambda: service.freeze_binding(payload.author, expert_id, version)
+    frozen = await _call(
+        lambda: service.freeze_binding(
+            payload.author, expert_id, version, preview=payload.preview
+        )
     )
-    return [_use(u) for u in uses]
+    return [
+        FrozenBindingRead(
+            material_id=str(u.material_id),
+            version_no=int(u.version_no or 0),
+            sha256=sha256,
+            basis_ref=u.use,
+            license=str(u.scope.get("license") or "self"),  # type: ignore[arg-type]
+        )
+        for u, sha256 in frozen
+    ]
+
+
+@router.post(
+    "/experts/{expert_id}/versions/{version}/frozen/{material_id}/license",
+    response_model=FrozenBindingRead,
+)
+async def raise_frozen_license(
+    expert_id: str,
+    version: str,
+    material_id: str,
+    payload: FrozenLicenseIn,
+    caller: ServiceCaller = Depends(require_directory_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """自用转公开时把冻结的那一份许可往高改（只许往高、要勾「我有权」、现在的许可
+    够；留许可留痕）；knowlab 凭作者那次提交代办。"""
+    use = await _call(
+        lambda: service.raise_frozen_license(
+            caller.caller,
+            payload.author,
+            expert_id,
+            version,
+            material_id,
+            payload.license,
+            attest=payload.attest,
+        )
+    )
+    version_no = int(use.version_no or 0)
+    pinned = await _call(lambda: service.repo.version(material_id, version_no))
+    return FrozenBindingRead(
+        material_id=material_id,
+        version_no=version_no,
+        sha256=pinned.sha256 if pinned is not None else "",
+        basis_ref=use.use,
+        license=str(use.scope.get("license")),  # type: ignore[arg-type]
+    )
 
 
 @router.post(
@@ -847,5 +900,50 @@ async def check_market_offers(
         items=[
             MarketOfferStateRead(seller=seller, material_id=material_id, state=state)  # type: ignore[arg-type]
             for seller, material_id, state in states
+        ]
+    )
+
+
+@router.post("/service/expert-bindings/check", response_model=BindingChecksRead)
+async def check_expert_bindings(
+    payload: BindingChecksIn,
+    caller: ServiceCaller = Depends(require_binding_check_service),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    """专家所绑的每份数据现在的状态与许可（0043 第 4.3 节「两种许可检查」；数据拓扑
+    第十节第 5 条）；只读。
+
+    knowmart 收清单时硬查、后台定时核在售专家（成交那条关系），knowlab 运营审核门预查
+    （名录那条关系）。
+    """
+    states = await _call(
+        lambda: service.binding_states(
+            caller.caller,
+            [
+                (i.owner, i.material_id, i.version_no, i.basis_ref)
+                for i in payload.items
+            ],
+        )
+    )
+    return BindingChecksRead(
+        items=[
+            BindingStateRead(
+                owner=owner,
+                material_id=material_id,
+                version_no=version_no,
+                state=state,  # type: ignore[arg-type]
+                license=license_,  # type: ignore[arg-type]
+                shareable=shareable,
+                frozen_license=frozen,  # type: ignore[arg-type]
+            )
+            for (
+                owner,
+                material_id,
+                version_no,
+                state,
+                license_,
+                shareable,
+                frozen,
+            ) in states
         ]
     )

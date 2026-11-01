@@ -346,9 +346,11 @@ async def test_purchase_and_expert_directory(api):
         f"{BASE}/experts/e1/versions/1.0/freeze", json={"author": "bob"}
     )
     assert frozen.status_code == 201, frozen.text
-    assert [(u["use"], u["material_id"], u["version_no"]) for u in frozen.json()] == [
-        ("expert:e1@1.0", bound, 1)
-    ]
+    assert [
+        (u["basis_ref"], u["material_id"], u["version_no"], u["license"])
+        for u in frozen.json()
+    ] == [("expert:e1@1.0", bound, 1, "self")]
+    assert len(frozen.json()[0]["sha256"]) == 64
     state["owner"] = Owner("alice", "knowbench")
     assert (await client.get(f"{BASE}/experts")).json() == []
 

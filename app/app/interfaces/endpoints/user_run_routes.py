@@ -24,6 +24,7 @@ from app.infrastructure.repositories.user_library import SqlUserLibraryRepositor
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
+    require_directory_service,
     require_grant_test_service,
     require_output_service,
     require_read_service,
@@ -43,7 +44,7 @@ from app.interfaces.endpoints.user_resolution_routes import (
     get_user_resolution_service,
 )
 from app.interfaces.http.internal.host_guard import internal_host_only
-from app.interfaces.schemas.user_library import ShelfEntryRead
+from app.interfaces.schemas.user_library import FreezeIn, FrozenVoidRead, ShelfEntryRead
 from app.interfaces.schemas.user_runs import (
     ConfirmedRunGrantIn,
     ConvertIn,
@@ -54,6 +55,7 @@ from app.interfaces.schemas.user_runs import (
     PendingProcessingRead,
     PinRead,
     PlatformEndIn,
+    PlatformProcessRead,
     ProcessingGrantIn,
     ReadEventRead,
     RenditionRead,
@@ -321,6 +323,7 @@ async def grant_by_service(
             _items(payload.items),
             reader_role=payload.reader_role,
             ttl_seconds=payload.ttl_seconds,
+            platform=payload.platform_use,
         )
     )
     return _grant(grant)
@@ -352,6 +355,42 @@ async def end_platform(
     await _call(
         lambda: service.end_platform(issuer, payload.subject, kind, ref, payload.reason)
     )
+
+
+@router.get(
+    "/service/platform-processes/{kind}/{ref}", response_model=PlatformProcessRead
+)
+async def platform_process(
+    kind: str,
+    ref: str,
+    subject: str = Query(min_length=1, max_length=255),
+    caller: ServiceCaller = Depends(require_grant_test_service),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """这次平台过程的依据还有几份有效（只读）：knowlab 后台核在审的交付，作者在总栏
+    撤了审核授权就照作者撤回处理。"""
+    issuer = _knowlab(caller)
+    live = await _call(lambda: service.platform_process(issuer, subject, kind, ref))
+    return PlatformProcessRead(kind=kind, ref=ref, live=live)
+
+
+@router.post(
+    "/experts/{expert_id}/versions/{version}/freeze/void",
+    response_model=FrozenVoidRead,
+)
+async def void_frozen(
+    expert_id: str,
+    version: str,
+    payload: FreezeIn,
+    caller: ServiceCaller = Depends(require_directory_service),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """作废没交成的那次冻结（作者撤回、平台作废没交到 knowmart 的交付）；有别人凭它
+    请过这一版的不许作废（409 frozen_in_use）。"""
+    withdrawn = await _call(
+        lambda: service.void_frozen(caller.caller, payload.author, expert_id, version)
+    )
+    return FrozenVoidRead(withdrawn=withdrawn)
 
 
 # —— 执行的应用：凭授权读、交还 ——

@@ -254,6 +254,25 @@ async def require_directory_service(
     return await _verify("user-data-directory", authorization)
 
 
+async def require_binding_check_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    """核专家所绑数据的许可（0043 第 4.3 节）：knowmart 凭成交那条关系
+    （user-data-purchase）、knowlab 凭名录那条关系（user-data-directory），不另开关系。
+
+    两种都试，先过的算；都不过回第一种不是「没配」的错（都没配才回没配）。"""
+    errors: list[Exception] = []
+    for relation in ("user-data-purchase", "user-data-directory"):
+        try:
+            return await _verify(relation, authorization)  # type: ignore[arg-type]
+        except (UnauthorizedError, ForbiddenError, ServiceUnavailableError) as exc:
+            errors.append(exc)
+    configured = [
+        e for e in errors if getattr(e, "code", None) != "service_relation_unconfigured"
+    ]
+    raise (configured or errors)[0]
+
+
 async def require_output_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:

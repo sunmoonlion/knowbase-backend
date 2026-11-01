@@ -61,6 +61,7 @@ from app.domain.user_library import (
     Material,
     Rendition,
     check_license,
+    frozen_expert_use,
     license_rank,
     platform_use,
     processing_use,
@@ -342,9 +343,11 @@ class UserRunService:
         *,
         reader_role: str = "app",
         ttl_seconds: int | None = None,
+        platform: str | None = None,
     ) -> RunGrant:
         """knowlab 签：测试凭展示依据（固定测试集，不许中途追加）；平台过程凭
-        `platform:` 依据，读的一方分运营与机器，上限按过程配。
+        `platform:` 依据，读的一方分运营与机器，上限按过程配。机器重跑的一条用例可以
+        没有凭平台同意的项（全是公开原件、引用、冻结绑定），过程由 platform 给。
 
         执行的应用是真去读的那一方（0048 第六节）：测试与机器由运行方 knowbench 跑，
         运营在 knowlab 管理端看；签发方都记 knowlab。"""
@@ -370,10 +373,21 @@ class UserRunService:
             raise refused(
                 "reader_role_invalid", "a platform grant is for an operator or machine"
             )
-        uses = {i.basis_ref for i in items}
+        if reader_role == "operator" and any(i.basis != "platform" for i in items):
+            raise refused(
+                "basis_not_allowed", "operators read platform-consented items only"
+            )
+        uses = {i.basis_ref for i in items if i.basis == "platform"}
+        if platform is not None:
+            uses.add(platform)
         if len(uses) != 1:
             raise refused("basis_ref_invalid", "one platform process per grant")
         use = uses.pop()
+        if not any(i.basis == "platform" for i in items) and not [
+            u for u in await self.library.named(beneficiary, use) if u.use == use
+        ]:
+            # 只带公开原件、引用、冻结绑定的：这次过程本人的同意也要还在
+            raise denied("outside_consent", "the platform process is not consented")
         kind = _platform_kind(use)
         return await self._issue(
             "platform",
@@ -437,6 +451,32 @@ class UserRunService:
         withdrawn = await self.library.withdraw_named(subject, use, self.now())
         await self._revoke_platform(subject, use, reason)
         return withdrawn
+
+    async def void_frozen(
+        self, caller: str, author: str, expert_id: str, version: str
+    ) -> int:
+        """作废没交成的那次冻结（决定 10-30）：作者撤回、平台作废「没交到 knowmart」的
+        交付时，knowlab 来作废，下次提交照那时的绑定重新冻结。有作者以外的人凭它签过
+        授权（请过这一版）的不许作废。回撤了几份。"""
+        if caller != "knowlab":
+            raise denied("service_scope_denied", "only knowlab voids frozen bindings")
+        frozen = frozen_expert_use(expert_id, version)
+        if await self.runs.frozen_used_by_others(author, frozen):
+            raise conflict("frozen_in_use", "others have used this frozen binding")
+        return await self.library.withdraw_named(author, frozen, self.now())
+
+    async def platform_process(
+        self, caller: str, subject: str, kind: str, ref: str
+    ) -> int:
+        """本人给这次平台过程留的依据还有几份有效（只读）。knowlab 后台核在审的交付：
+        作者在 knowbase 总栏撤了审核授权（0 份），knowlab 照作者撤回处理（knowbase 按
+        架构不调别的应用，由 knowlab 来查）。"""
+        if caller != "knowlab":
+            raise denied(
+                "service_scope_denied", "only knowlab reads platform processes"
+            )
+        use = platform_use(caller, kind, ref)
+        return len([u for u in await self.library.named(subject, use) if u.use == use])
 
     # —— 凭授权读 ——
 

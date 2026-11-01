@@ -444,6 +444,100 @@ class UserLibraryService:
             states.append((seller, material_id, state))
         return states
 
+    async def binding_states(
+        self, caller: str, items: list[tuple[str, str, int, str | None]]
+    ) -> list[tuple[str, str, int, str, str | None, bool, str | None]]:
+        """专家所绑的每份（作者, 资料, 版本）现在怎样，只读（0043 第 4.3 节
+        「两种许可检查」）。
+
+        knowmart 收清单时硬查、后台定时核在售专家；knowlab 运营审核门预查。
+        回（作者, 资料, 版本, 状态, 许可, 能不能经专家给别人用）。状态：
+        live 在；deleted 删了（作者删、卖家删都算，只影响新的公开用途）；
+        disabled 禁用；gone 没有、作者没有这一版的使用权。许可：自己的是资料
+        现在的许可档，买来的是成交时定的那一档（不得升档）。不是作者的与
+        没有的一样，不多说。带了 `basis_ref`（`expert:<专家>@<版本>`）的再回冻结时的
+        许可：能不能给别人用还要冻结的那一档够（签授权看的是它）。
+        """
+        if caller not in ("knowmart", "knowlab"):
+            raise UserDataError(
+                403, "service_scope_denied", "only knowmart and knowlab check bindings"
+            )
+        if not 1 <= len(items) <= 200:
+            raise refused("items_invalid", "give 1 to 200 items")
+        out: list[tuple[str, str, int, str, str | None, bool, str | None]] = []
+        for owner, material_id, version_no, basis_ref in items:
+            material = await self.repo.get_material(material_id)
+            if (
+                material is None
+                or material.purged_at is not None
+                or await self.repo.version(material.id, version_no) is None
+            ):
+                out.append((owner, material_id, version_no, "gone", None, False, None))
+                continue
+            if material.owner == owner:
+                # 自己的：删了也还是这个人的那一份，照实说「删了」
+                license_: str = material.license
+            else:
+                holding = next(
+                    (
+                        h
+                        for h in await self.repo.holdings_of(owner, material.id)
+                        if h.active and h.covers(version_no)
+                    ),
+                    None,
+                )
+                if holding is None:
+                    out.append(
+                        (owner, material_id, version_no, "gone", None, False, None)
+                    )
+                    continue
+                license_ = holding.license
+            state = (
+                "disabled"
+                if material.disabled_at is not None
+                else "deleted"
+                if material.deleted_at is not None
+                else "live"
+            )
+            frozen_license: str | None = None
+            if basis_ref is not None:
+                # 冻结了的：签请专家的授权看冻结时记下的许可（0043 第 2.2 节），
+                # 给别人用要冻结的那一档也够；这一版没冻结这一份就是没绑
+                scope = next(
+                    (
+                        u.scope
+                        for u in await self.repo.named(owner, basis_ref)
+                        if u.use == basis_ref
+                        and u.material_id == material.id
+                        and u.version_no == version_no
+                    ),
+                    None,
+                )
+                if scope is None:
+                    out.append(
+                        (owner, material_id, version_no, "gone", None, False, None)
+                    )
+                    continue
+                frozen_license = str(scope.get("license") or "self")
+            via = license_rank("via_expert")
+            shareable = (
+                state == "live"
+                and license_rank(license_) >= via
+                and (frozen_license is None or license_rank(frozen_license) >= via)
+            )
+            out.append(
+                (
+                    owner,
+                    material_id,
+                    version_no,
+                    state,
+                    license_,
+                    shareable,
+                    frozen_license,
+                )
+            )
+        return out
+
     # —— 平台过程、订阅、加工（块 1b 余下） ——
 
     async def consent_platform(
@@ -461,11 +555,28 @@ class UserLibraryService:
         使用权里。
         """
         use = platform_use(app, kind, ref)
-        if not items or len(items) > 200:
-            raise refused("items_invalid", "give 1 to 200 items")
+        if len(items) > 200:
+            raise refused("items_invalid", "give at most 200 items")
+        if not items:
+            # 没有要看的资料也记一条（账号级）：这次过程本人同意过，撤了就没了；
+            # 只带公开原件、引用的平台重跑凭它签机器授权
+            return [
+                await self.repo.add_use(
+                    Use(
+                        id=self.new_id(),
+                        subject=subject,
+                        use=use,
+                        created_at=self.now(),
+                        created_via=f"user:{app}",
+                        scope={"kind": kind, "ref": ref},
+                    )
+                )
+            ]
         made: list[Use] = []
         for material_id, version_no in dict.fromkeys(items):
-            material, holding = await self._held(subject, material_id)
+            material, holding = await self._held_version(
+                subject, material_id, version_no
+            )
             wanted = version_no or holding.version_no or material.current_version
             if not holding.covers(wanted) or (
                 await self.repo.version(material.id, wanted) is None
@@ -598,37 +709,106 @@ class UserLibraryService:
         return await self.repo.experts_of(subject)
 
     async def freeze_binding(
-        self, author: str, expert_id: str, version: str
-    ) -> list[Use]:
+        self, author: str, expert_id: str, version: str, *, preview: bool = False
+    ) -> list[tuple[Use, str]]:
         """交付时把「绑给专家」冻结成 `expert:<专家>@<版本>`，每份钉在当时那一版。
 
-        knowlab 交付那一刻调；以后作者取消绑定、传新版，都只影响下一版。同一版重放
-        回已有的那几条。
+        knowlab 交付那一刻调；以后作者取消绑定、传新版，都只影响下一版。冻结只一次：
+        同一版再调回的是第一次冻结的那几条（版本、许可都照第一次，摘要按冻结的那一版
+        取），不会照现在的版本、许可另冻一份——买家请这一版时读的就是冻结的那一版。
+        这一版冻结时还没有、后来才绑的那几份，同一版里也不再冻进来（要出新一版）。
+        preview：不写，回「现在冻结会冻成什么」，给 knowlab 提交前预查许可用。
+        每条连同钉住那一版的摘要回去（knowlab 照它写清单 v2 的 `bindings`）。
         """
         frozen = frozen_expert_use(expert_id, version)
         if expert_id not in {e.expert_id for e in await self.repo.experts_of(author)}:
             raise not_found("expert")
-        made: list[Use] = []
+        already = await self.repo.named(author, frozen)
+        already = [u for u in already if u.use == frozen]
+        made: list[tuple[Use, str]] = []
+        if already:
+            for use in sorted(already, key=lambda u: str(u.material_id)):
+                assert use.material_id is not None and use.version_no is not None
+                pinned = await self.repo.version(use.material_id, use.version_no)
+                if pinned is None:
+                    raise not_found("version")
+                made.append((use, pinned.sha256))
+            return made
         bound = await self.repo.material_ids_with_use(author, f"expert:{expert_id}")
         for material_id in sorted(bound):
-            material, holding = await self._held(author, material_id)
-            made.append(
-                await self.repo.add_use(
-                    Use(
-                        id=self.new_id(),
-                        subject=author,
-                        use=frozen,
-                        created_at=self.now(),
-                        created_via="knowlab-delivery",
-                        material_id=material.id,
-                        version_no=holding.version_no or material.current_version,
-                        # 交付那一刻的许可：给别人用要「可以经专家给别人用」以上，
-                        # 作者后来改低只影响新的销售（0043 第 2.2 节）
-                        scope={"license": holding.license},
-                    )
-                )
+            material, holding = await self._held_version(author, material_id, None)
+            version_no = holding.version_no or material.current_version
+            pinned = await self.repo.version(material.id, version_no)
+            if pinned is None:
+                raise not_found("version")
+            # 交付那一刻的许可：给别人用要「可以经专家给别人用」以上，作者后来
+            # 改低只影响新的销售（0043 第 2.2 节）。自己的取资料现在的许可档，
+            # 买来的取成交时定的
+            license_ = (
+                material.license if holding.version_no is None else holding.license
             )
+            use = Use(
+                id=self.new_id(),
+                subject=author,
+                use=frozen,
+                created_at=self.now(),
+                created_via="knowlab-delivery",
+                material_id=material.id,
+                version_no=version_no,
+                scope={"license": license_},
+            )
+            if not preview:
+                use = await self.repo.add_use(use)
+            made.append((use, pinned.sha256))
         return made
+
+    async def raise_frozen_license(
+        self,
+        caller: str,
+        author: str,
+        expert_id: str,
+        version: str,
+        material_id: str,
+        license_: str,
+        *,
+        attest: bool,
+    ) -> Use:
+        """自用转公开时作者把冻结的那一份许可往高改（决定 10-30）：只许往高、要本人勾
+        「我有权」、作者现在对这一份的许可确实不低于目标档；留许可留痕。清单不变，不用
+        出新一版。knowlab 凭本人在场的那次提交代办。"""
+        if caller != "knowlab":
+            raise denied_scope()
+        target = check_license(license_)
+        if not attest:
+            raise refused("attest_required", "raising the license needs an attestation")
+        frozen = frozen_expert_use(expert_id, version)
+        found = next(
+            (
+                u
+                for u in await self.repo.named(author, frozen)
+                if u.use == frozen and u.material_id == material_id
+            ),
+            None,
+        )
+        if found is None or found.version_no is None:
+            raise not_found("binding")
+        old = str(found.scope.get("license") or "self")
+        if license_rank(target) <= license_rank(old):
+            raise refused("license_not_higher", "the frozen license only goes up")
+        material, holding = await self._held_version(
+            author, material_id, found.version_no
+        )
+        current = material.license if holding.version_no is None else holding.license
+        if not material.live or license_rank(current) < license_rank(target):
+            raise refused(
+                "license_too_low", "the current license is lower than the target"
+            )
+        raised = await self.repo.raise_frozen_license(
+            author, frozen, material.id, found.version_no, target, self.now()
+        )
+        if raised is None:
+            raise not_found("binding")
+        return raised
 
     # —— 公开原件：knowfeed 交来，只存一份（0047 第二节） ——
 
@@ -885,6 +1065,28 @@ class UserLibraryService:
         if material is None or material.owner != subject or not material.live:
             raise not_found()
         return material
+
+    async def _held_version(
+        self, subject: str, material_id: str, version_no: int | None
+    ) -> tuple[Material, Holding]:
+        """同 `_held`，但按版本挑使用权：所有者的那条（不限版本）优先；给了版本就挑覆盖
+        这一版的；没给就挑版本最新的那条（多次买、多版本引用时 `holdings[0]` 可能不覆盖
+        要的那一版）。"""
+        material = await self.repo.get_material(material_id)
+        if material is None or material.disabled_at is not None:
+            raise not_found()
+        holdings = await self.repo.holdings_of(subject, material.id)
+        owner = next((h for h in holdings if h.version_no is None), None)
+        if owner is not None:
+            return material, owner
+        if not holdings:
+            raise not_found()
+        if version_no is not None:
+            found = next((h for h in holdings if h.covers(version_no)), None)
+            if found is None:  # 有使用权、只是不到这一版
+                raise not_found("version")
+            return material, found
+        return material, max(holdings, key=lambda h: h.version_no or 0)
 
     async def _held(self, subject: str, material_id: str) -> tuple[Material, Holding]:
         material = await self.repo.get_material(material_id)

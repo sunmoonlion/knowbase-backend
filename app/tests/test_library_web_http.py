@@ -86,10 +86,12 @@ def api(db):
     overrides[user_library_routes.require_purchase_service] = caller
     overrides[user_library_routes.require_supply_service] = caller
     overrides[user_library_routes.require_directory_service] = caller
+    overrides[user_library_routes.require_binding_check_service] = caller
     overrides[user_library_routes.require_subscribing_owner] = lambda: SimpleNamespace(
         subject=state["user"], app="knowfeed"
     )
     overrides[user_run_routes.require_grant_test_service] = caller
+    overrides[user_run_routes.require_directory_service] = caller
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
     )
@@ -380,6 +382,48 @@ async def test_market_offer_states_for_knowmart(api):
     assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
 
 
+async def test_expert_binding_states_for_knowmart_and_knowlab(api):
+    """专家所绑数据的状态与许可（0043 第 4.3 节）：knowmart 硬查、knowlab 预查。"""
+    client, state, services = api
+    shared = (
+        await _upload(client, "可给别人.csv", license="via_expert", attest="true")
+    )["material"]["material_id"]
+    own = (await _upload(client, "只许本人.csv"))["material"]["material_id"]
+    deleted = (await _upload(client, "删了.csv", license="via_expert", attest="true"))[
+        "material"
+    ]["material_id"]
+    await client.delete(f"{WEB}/materials/{deleted}")
+    items = [
+        {"owner": "alice", "material_id": shared, "version_no": 1},
+        {"owner": "alice", "material_id": own, "version_no": 1},
+        {"owner": "alice", "material_id": deleted, "version_no": 1},
+        {"owner": "alice", "material_id": shared, "version_no": 9},
+        {"owner": "bob", "material_id": shared, "version_no": 1},
+        {"owner": "alice", "material_id": "not-a-uuid", "version_no": 1},
+    ]
+    for caller in ("knowmart", "knowlab"):
+        state["service"] = caller
+        got = await client.post(
+            f"{INTERNAL}/service/expert-bindings/check", json={"items": items}
+        )
+        assert got.status_code == 200, got.text
+        assert [
+            (i["state"], i["license"], i["shareable"]) for i in got.json()["items"]
+        ] == [
+            ("live", "via_expert", True),
+            ("live", "self", False),
+            ("deleted", "via_expert", False),
+            ("gone", None, False),
+            ("gone", None, False),
+            ("gone", None, False),
+        ]
+    state["service"] = "knowfeed"
+    denied = await client.post(
+        f"{INTERNAL}/service/expert-bindings/check", json={"items": items[:1]}
+    )
+    assert (denied.status_code, denied.json()["code"]) == (403, "service_scope_denied")
+
+
 async def test_admin_usage_vocabulary_and_disabled_materials(api):
     client, state, services = api
     material_id = (await _upload(client))["material"]["material_id"]
@@ -435,3 +479,125 @@ async def test_the_real_app_guards_web_and_admin_routes():
         and f"{ADMIN}/materials/{{material_id}}/purge" in paths
     )
     assert f"{INTERNAL}/service/market-offers/check" in paths
+    assert f"{INTERNAL}/service/expert-bindings/check" in paths
+
+
+async def test_knowlab_delivery_calls_as_knowlab_sends_them(api):
+    """knowlab 交付那几条调用（请求体照 knowlab `knowbase_delivery.py` 发的）走真规则：
+    推名录、预查冻结、冻结、带 basis_ref 核许可、只带冻结绑定的机器重跑授权、撤过程。"""
+    client, state, services = api
+    mine = (await _upload(client, "绑定.csv", license="via_expert", attest="true"))[
+        "material"
+    ]["material_id"]
+    state["service"] = "knowlab"
+    pushed = await client.put(
+        f"{INTERNAL}/experts/r-1",
+        json={"owner": "alice", "name": "财务分析与预测", "latest_version": "1.1"},
+    )
+    assert pushed.status_code == 200, pushed.text
+    bound = await client.post(
+        f"{WEB}/materials/{mine}/uses", json={"use": "expert:r-1"}
+    )
+    assert bound.status_code == 201, bound.text
+    preview = await client.post(
+        f"{INTERNAL}/experts/r-1/versions/1/freeze",
+        json={"author": "alice", "preview": True},
+    )
+    assert preview.status_code == 201, preview.text
+    frozen = await client.post(
+        f"{INTERNAL}/experts/r-1/versions/1/freeze", json={"author": "alice"}
+    )
+    [binding] = frozen.json()
+    assert binding == {**preview.json()[0]}
+    checked = await client.post(
+        f"{INTERNAL}/service/expert-bindings/check",
+        json={
+            "items": [
+                {
+                    "owner": "alice",
+                    "material_id": mine,
+                    "version_no": binding["version_no"],
+                    "basis_ref": binding["basis_ref"],
+                }
+            ]
+        },
+    )
+    assert checked.json()["items"][0]["frozen_license"] == "via_expert"
+    assert checked.json()["items"][0]["shareable"] is True
+    # 作者交审时留的重跑同意（这一次没有要看的资料，记一条账号级的）
+    await services.library.consent_platform("alice", "knowlab", "rerun", "d-1", [])
+    grant = await client.post(
+        f"{INTERNAL}/service/run-grants",
+        json={
+            "process": "platform",
+            "beneficiary": "alice",
+            "ref": "knowlab-test-x:c1",
+            "items": [
+                {
+                    "material_id": mine,
+                    "version_no": binding["version_no"],
+                    "sha256": binding["sha256"],
+                    "basis": "frozen_binding",
+                    "basis_ref": binding["basis_ref"],
+                }
+            ],
+            "reader_role": "machine",
+            "ttl_seconds": 3600,
+            "platform_use": "platform:knowlab:rerun:d-1",
+        },
+    )
+    assert grant.status_code == 201, grant.text
+    ended = await client.post(
+        f"{INTERNAL}/service/platform-processes/rerun/d-1/end",
+        json={"subject": "alice", "reason": "finished"},
+    )
+    assert ended.status_code == 204, ended.text
+
+
+async def test_knowlab_reads_whether_the_review_consent_is_still_there(api):
+    """作者在 knowbase 总栏撤了审核授权：knowlab 后台查得到（0 份），照作者撤回处理。"""
+    client, state, services = api
+    mine = (await _upload(client, "审核看的.csv"))["material"]["material_id"]
+    await services.library.consent_platform(
+        "alice", "knowlab", "review", "d-7", [(mine, None)]
+    )
+    state["service"] = "knowlab"
+    url = f"{INTERNAL}/service/platform-processes/review/d-7"
+    got = await client.get(url, params={"subject": "alice"})
+    assert got.json() == {"kind": "review", "ref": "d-7", "live": 1}
+    withdrawn = await client.delete(f"{WEB}/platform-consents/knowlab/review/d-7")
+    assert withdrawn.status_code == 204, withdrawn.text
+    got = await client.get(url, params={"subject": "alice"})
+    assert got.json()["live"] == 0
+    state["service"] = "knowmart"
+    denied = await client.get(url, params={"subject": "alice"})
+    assert denied.status_code == 403
+
+
+async def test_knowlab_voids_a_freeze_and_raises_a_frozen_license_over_http(api):
+    """作废冻结、冻结许可往高改两条服务接口（请求体照 knowlab 发的）。"""
+    client, state, services = api
+    mine = (await _upload(client, "绑定.csv"))["material"]["material_id"]
+    state["service"] = "knowlab"
+    await client.put(
+        f"{INTERNAL}/experts/r-2",
+        json={"owner": "alice", "name": "财务分析与预测", "latest_version": "1.1"},
+    )
+    await client.post(f"{WEB}/materials/{mine}/uses", json={"use": "expert:r-2"})
+    await client.post(
+        f"{INTERNAL}/experts/r-2/versions/1/freeze", json={"author": "alice"}
+    )
+    await client.put(
+        f"{WEB}/materials/{mine}/license",
+        json={"license": "via_expert", "attest": True},
+    )
+    raised = await client.post(
+        f"{INTERNAL}/experts/r-2/versions/1/frozen/{mine}/license",
+        json={"author": "alice", "license": "via_expert", "attest": True},
+    )
+    assert raised.status_code == 200, raised.text
+    assert raised.json()["license"] == "via_expert"
+    voided = await client.post(
+        f"{INTERNAL}/experts/r-2/versions/1/freeze/void", json={"author": "alice"}
+    )
+    assert voided.json() == {"withdrawn": 1}

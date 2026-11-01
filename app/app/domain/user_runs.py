@@ -75,7 +75,10 @@ BASES_OF: dict[str, tuple[GrantBasis, ...]] = {
     "delegation": ("display", "frozen_binding", "reference", "public"),
     "session": ("display", "frozen_binding", "reference", "public"),
     "incubation": ("display", "reference", "public"),
-    "platform": ("platform",),
+    # 机器重跑（作者的电脑，0043 第 2.7 节「自助重跑」）还要读测试集里钉住的公开原件、
+    # 作者的引用与冻结给这位专家的绑定：这几种不凭作者给平台的同意，各凭各的；运营只认
+    # `platform`（grant_by_service 里核）
+    "platform": ("platform", "reference", "public", "frozen_binding"),
     "processing": ("processing",),
 }
 # 展示依据要对得上执行的应用：委托与会话读 knowbench 栏，测试与孵化读 knowlab 栏

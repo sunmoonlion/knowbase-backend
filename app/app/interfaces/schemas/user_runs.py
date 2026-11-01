@@ -73,6 +73,9 @@ class ServiceRunGrantIn(BaseModel):
     items: list[GrantItemIn] = Field(min_length=1, max_length=200)
     reader_role: Literal["app", "operator", "machine"] = "app"
     ttl_seconds: int | None = Field(default=None, gt=0)
+    # 平台过程（`platform:<应用>:<过程>:<编号>`）：机器重跑的一条用例可能全是公开原件、
+    # 引用、冻结绑定，没有凭平台同意的项，过程照这里记（撤过程时一并撤）
+    platform_use: str | None = Field(default=None, max_length=160)
 
 
 class PinRead(BaseModel):
@@ -126,6 +129,14 @@ class PlatformEndIn(BaseModel):
 
     subject: str = Field(min_length=1, max_length=255)
     reason: Literal["finished", "rejected", "cancelled"]
+
+
+class PlatformProcessRead(BaseModel):
+    """本人给这次平台过程留的依据：还有几份有效，0 就是撤了（或从没留过）。"""
+
+    kind: str
+    ref: str
+    live: int
 
 
 class ConvertIn(BaseModel):

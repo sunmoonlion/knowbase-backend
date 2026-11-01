@@ -20,6 +20,16 @@ from app.domain.user_library import (
 
 
 class UserLibraryRepository(Protocol):
+    async def raise_frozen_license(
+        self,
+        subject: str,
+        use: str,
+        material_id: str,
+        version_no: int,
+        license_: str,
+        at: datetime,
+    ) -> Use | None: ...
+
     async def add_material(
         self,
         material: Material,

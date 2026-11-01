@@ -233,7 +233,7 @@ async def test_frozen_binding_reads_the_authors_version_for_the_beneficiary(worl
     await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
     await world.lib.show(ALICE, material.id, "expert:fa-1")
     await world.lib.show(ALICE, private.id, "expert:fa-1")
-    frozen = await world.lib.freeze_binding(ALICE, "fa-1", "2")
+    frozen = [u for u, _ in await world.lib.freeze_binding(ALICE, "fa-1", "2")]
     assert sorted(
         (u.material_id, u.version_no, u.scope["license"]) for u in frozen
     ) == (sorted([(material.id, 1, "via_expert"), (private.id, 1, "self")]))
@@ -357,6 +357,47 @@ async def test_platform_grants_follow_the_consent_and_die_with_it(world):
         422,
         "reader_role_invalid",
     )
+    # 重跑的机器授权还能带测试集里钉住的公开原件、引用（各凭各的，不凭平台同意）；
+    # 运营只认平台同意覆盖的那几份
+    other, o1 = await world.upload(BOB, "b.csv", CSV + b"9,9\n")
+    await world.lib.consent_platform(
+        ALICE, "knowlab", "rerun", "d-1", [(material.id, 1)]
+    )
+    rerun = "platform:knowlab:rerun:d-1"
+    await refused(
+        world.runs.grant_by_service(
+            "knowlab",
+            "platform",
+            ALICE,
+            "d-1/op2",
+            [item(v1, "platform", rerun), item(o1, "reference", "reference")],
+            reader_role="operator",
+        ),
+        422,
+        "basis_not_allowed",
+    )
+    await refused(
+        world.runs.grant_by_service(
+            "knowlab",
+            "platform",
+            ALICE,
+            "d-1/rerun",
+            [item(v1, "platform", rerun), item(o1, "reference", "reference")],
+            reader_role="machine",
+        ),
+        403,
+        "no_reference",
+    )
+    machine = await world.runs.grant_by_service(
+        "knowlab",
+        "platform",
+        ALICE,
+        "d-1/rerun",
+        [item(v1, "platform", rerun)],
+        reader_role="machine",
+    )
+    assert machine.platform_use == rerun
+    assert machine.expires_at - machine.issued_at == timedelta(days=14)
     got = await world.runs.read(
         "knowlab", "op-7", operator.id, material.id, 1, "content"
     )
@@ -742,3 +783,217 @@ async def test_migration_0011_downgrades_and_upgrades_again():
         async with engine.begin() as c:
             await c.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         await engine.dispose()
+
+
+# —— 交付审查 10-30：冻结只一次、冻结许可、重跑授权、按版本挑使用权 ——
+
+
+async def test_freezing_again_returns_what_was_frozen_and_preview_writes_nothing(world):
+    """第一次冻结后作者改许可、传新版再交：回的仍是第一次冻结的版本、许可与那一版的摘要
+    （原来按现在的版本取摘要，与冻结的版本对不上，买家请专家报 sha256_mismatch）。"""
+    material, v1 = await world.upload(ALICE, "binding.csv")  # 只许本人用
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    [(preview, sha)] = await world.lib.freeze_binding(ALICE, "fa-1", "1", preview=True)
+    assert (preview.version_no, preview.scope["license"], sha) == (1, "self", v1.sha256)
+    assert await world.lib.repo.named(ALICE, "expert:fa-1@1") == []  # 预查不写
+    [(first, sha1)] = await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    await world.lib.set_license(ALICE, material.id, "via_expert", attest=True)
+    await world.lib.add_version(ALICE, material.id, None, CSV + b"7,7\n")
+    [(again, sha2)] = await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    assert (again.version_no, again.scope["license"], sha2) == (1, "self", v1.sha256)
+    assert again.id == first.id and sha1 == sha2
+    # 摘要与冻结的版本对得上：作者自己照清单请得到
+    await world.runs.grant_by_user(
+        ALICE,
+        "knowbench",
+        "delegation",
+        "task-1",
+        [
+            GrantRequestItem(
+                pin=InputPin(material.id, again.version_no, sha2),
+                basis="frozen_binding",
+                basis_ref="expert:fa-1@1",
+            )
+        ],
+    )
+    # 冻结时只许本人用：现在的许可改高了，冻结的那一档照旧不够给别人用
+    [
+        (owner, mid, vno, state, license_, shareable, frozen)
+    ] = await world.lib.binding_states(
+        "knowmart", [(ALICE, material.id, 1, "expert:fa-1@1")]
+    )
+    assert (state, license_, frozen, shareable) == ("live", "via_expert", "self", False)
+    [(*_, shareable_now, no_frozen)] = await world.lib.binding_states(
+        "knowlab", [(ALICE, material.id, 1, None)]
+    )
+    assert (shareable_now, no_frozen) == (True, None)
+    # 这一版没冻结这一份：当没绑
+    [(*_, state2, _, _, _)] = await world.lib.binding_states(
+        "knowmart", [(ALICE, material.id, 1, "expert:fa-1@9")]
+    )
+    assert state2 == "gone"
+
+
+async def test_a_rerun_case_with_no_consented_item_still_gets_a_machine_grant(world):
+    """平台重跑的一条用例全是冻结绑定（或公开原件、引用），没有凭平台同意的项：照
+    knowlab 交的 platform_use 记过程，签得下；撤过程时一并撤。"""
+    material, v1 = await world.upload(
+        ALICE, "binding.csv", license_="via_expert", attest=True
+    )
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    rerun = "platform:knowlab:rerun:d-9"
+    frozen = [item(v1, "frozen_binding", "expert:fa-1@1")]
+    await refused(
+        world.runs.grant_by_service(
+            "knowlab", "platform", ALICE, "d-9/c1", frozen, reader_role="machine"
+        ),
+        422,
+        "basis_ref_invalid",
+    )
+    # 没有凭平台同意的项：这次过程本人的同意也要在（没留过、撤了都不签）
+    await refused(
+        world.runs.grant_by_service(
+            "knowlab",
+            "platform",
+            ALICE,
+            "d-9/c1",
+            frozen,
+            reader_role="machine",
+            platform=rerun,
+        ),
+        403,
+        "outside_consent",
+    )
+    [marker] = await world.lib.consent_platform(ALICE, "knowlab", "rerun", "d-9", [])
+    assert (marker.use, marker.material_id) == (rerun, None)
+    machine = await world.runs.grant_by_service(
+        "knowlab",
+        "platform",
+        ALICE,
+        "d-9/c1",
+        frozen,
+        reader_role="machine",
+        platform=rerun,
+    )
+    assert (machine.platform_use, machine.items[0].basis) == (rerun, "frozen_binding")
+    await refused(  # 运营照旧只认平台同意覆盖的
+        world.runs.grant_by_service(
+            "knowlab",
+            "platform",
+            ALICE,
+            "d-9/op",
+            frozen,
+            reader_role="operator",
+            platform=rerun,
+        ),
+        422,
+        "basis_not_allowed",
+    )
+    await world.runs.end_platform("knowlab", ALICE, "rerun", "d-9", "finished")
+    await refused(
+        world.runs.read("knowbench", "r", machine.id, material.id, 1, "content"),
+        403,
+        "grant_inactive",
+    )
+
+
+async def test_platform_consent_picks_the_holding_that_covers_the_version(world):
+    """买过同一份的两个版本：交审时按版本挑覆盖的那条使用权（原来取第一条，可能不覆盖
+    要的那一版，502）。"""
+    material, v1 = await world.upload(
+        ALICE, "for-sale.csv", license_="sale", attest=True
+    )
+    await world.lib.show(ALICE, material.id, "market")
+    await world.lib.purchase(ALICE, material.id, BOB, "T-1")
+    await world.lib.add_version(ALICE, material.id, None, CSV + b"8,8\n")
+    await world.lib.purchase(ALICE, material.id, BOB, "T-2")
+    holdings = await world.lib.repo.holdings_of(BOB, material.id)
+    assert sorted(h.version_no for h in holdings) == [1, 2]
+    for version in (1, 2):
+        [made] = await world.lib.consent_platform(
+            BOB, "knowlab", "review", f"d-{version}", [(material.id, version)]
+        )
+        assert made.version_no == version
+
+
+async def test_the_frozen_license_only_goes_up_with_an_attestation(world):
+    """自用转公开时作者把冻结的许可往高改（决定 10-30）：只许往高、要勾「我有权」、
+    现在的许可够；留许可留痕。"""
+    material, v1 = await world.upload(ALICE, "binding.csv")  # 只许本人用
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    raise_ = world.lib.raise_frozen_license
+    await refused(
+        raise_("knowlab", ALICE, "fa-1", "1", material.id, "via_expert", attest=False),
+        422,
+        "attest_required",
+    )
+    await refused(  # 现在的许可还只许本人用
+        raise_("knowlab", ALICE, "fa-1", "1", material.id, "via_expert", attest=True),
+        422,
+        "license_too_low",
+    )
+    await refused(
+        raise_("knowmart", ALICE, "fa-1", "1", material.id, "via_expert", attest=True),
+        403,
+        "service_scope_denied",
+    )
+    await world.lib.set_license(ALICE, material.id, "via_expert", attest=True)
+    raised = await raise_(
+        "knowlab", ALICE, "fa-1", "1", material.id, "via_expert", attest=True
+    )
+    assert (raised.version_no, raised.scope["license"]) == (1, "via_expert")
+    await refused(
+        raise_("knowlab", ALICE, "fa-1", "1", material.id, "self", attest=True),
+        422,
+        "license_not_higher",
+    )
+    [(*_, shareable, frozen)] = await world.lib.binding_states(
+        "knowmart", [(ALICE, material.id, 1, "expert:fa-1@1")]
+    )
+    assert (shareable, frozen) == (True, "via_expert")
+    history = await world.lib.history(ALICE, material.id)
+    assert any(
+        h["after"].get("frozen") == "expert:fa-1@1" and h["after"].get("attested")
+        for h in history
+    )
+    # 别人照冻结的这一份请得到
+    await world.runs.grant_by_user(
+        BOB,
+        "knowbench",
+        "delegation",
+        "t-1",
+        [item(v1, "frozen_binding", "expert:fa-1@1")],
+    )
+
+
+async def test_an_undelivered_freeze_is_voided_but_not_one_others_used(world):
+    """没交到 knowmart 的那次冻结作者撤回时作废，下次照那时的绑定重冻；有别人请过的
+    不许作废（决定 10-30）。"""
+    material, v1 = await world.upload(
+        ALICE, "binding.csv", license_="via_expert", attest=True
+    )
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    await world.lib.freeze_binding(ALICE, "fa-1", "2")
+    await world.runs.grant_by_user(
+        BOB,
+        "knowbench",
+        "delegation",
+        "t-1",
+        [item(v1, "frozen_binding", "expert:fa-1@2")],
+    )
+    await refused(
+        world.runs.void_frozen("knowlab", ALICE, "fa-1", "2"), 409, "frozen_in_use"
+    )
+    assert await world.runs.void_frozen("knowlab", ALICE, "fa-1", "1") == 1
+    assert await world.lib.repo.named(ALICE, "expert:fa-1@1") == []
+    # 作废后传了新版：再冻冻的是现在那一版
+    await world.lib.add_version(ALICE, material.id, None, CSV + b"7,7\n")
+    [(again, _)] = await world.lib.freeze_binding(ALICE, "fa-1", "1")
+    assert again.version_no == 2

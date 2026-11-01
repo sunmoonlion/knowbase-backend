@@ -571,6 +571,46 @@ class SqlUserLibraryRepository:
             await session.commit()
             return bool(result.rowcount)
 
+    async def raise_frozen_license(
+        self,
+        subject: str,
+        use: str,
+        material_id: str,
+        version_no: int,
+        license_: str,
+        at: datetime,
+    ) -> Use | None:
+        """把冻结的那一份记下的许可改成 license_（只往高改由服务核），留许可留痕。"""
+        key = uuid.UUID(material_id)
+        async with self._sessions()() as session:
+            row = await session.scalar(
+                select(UserDataUse)
+                .where(
+                    UserDataUse.subject == subject,
+                    UserDataUse.item_id == key,
+                    UserDataUse.use == use,
+                    UserDataUse.version_no == version_no,
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if row is None:
+                return None
+            before = dict(row.scope or {})
+            row.scope = {**before, "license": license_}
+            session.add(
+                UserDataMaterialLog(
+                    item_id=key,
+                    at=at,
+                    actor=subject,
+                    what="license",
+                    before={"frozen": use, "license": before.get("license")},
+                    after={"frozen": use, "license": license_, "attested": True},
+                )
+            )
+            await session.commit()
+            return _use(row)
+
     async def withdraw_named(self, subject: str, use: str, at: datetime) -> int:
         """撤这个用户这种用途的全部有效依据（平台过程每份一行、订阅账号级一行）。"""
         async with self._sessions()() as session:

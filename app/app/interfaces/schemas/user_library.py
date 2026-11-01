@@ -210,7 +210,8 @@ class PlatformConsentIn(BaseModel):
 
     kind: Literal["incubate", "test", "review", "rerun"]
     ref: str = Field(min_length=1, max_length=64)
-    items: list[PlatformItemIn] = Field(min_length=1, max_length=200)
+    # 可以空：这次过程不看任何资料也记一条本人同意（撤了就没了）
+    items: list[PlatformItemIn] = Field(default_factory=list, max_length=200)
 
 
 class SubscriptionScopeIn(BaseModel):
@@ -249,6 +250,34 @@ class FreezeIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     author: str = Field(min_length=1, max_length=255)
+    # 只回「现在冻结会冻成什么」、不写（提交前预查许可）
+    preview: bool = False
+
+
+class FrozenLicenseIn(BaseModel):
+    """自用转公开时把冻结的那一份许可往高改：作者是谁、改到哪一档、本人勾了「我有权」。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    author: str = Field(min_length=1, max_length=255)
+    license: LicenseName
+    attest: bool
+
+
+class FrozenVoidRead(BaseModel):
+    withdrawn: int
+
+
+class FrozenBindingRead(BaseModel):
+    """冻结下来的一份：资料、钉在哪一版与它的摘要、凭的
+    `expert:<专家>@<版本>`、交付那一刻的许可（knowlab 照它写进清单 v2 的
+    `bindings`）。"""
+
+    material_id: str
+    version_no: int
+    sha256: str
+    basis_ref: str
+    license: LicenseName
 
 
 class PublicOriginalRead(BaseModel):
@@ -306,3 +335,43 @@ class MarketOfferStateRead(BaseModel):
 
 class MarketOffersRead(BaseModel):
     items: list[MarketOfferStateRead]
+
+
+class BindingCheckItemIn(BaseModel):
+    """专家绑定的一份：作者（绑的那个人）、资料、钉的那一版。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    owner: str = Field(min_length=1, max_length=255)
+    material_id: str = Field(min_length=1, max_length=64)
+    version_no: int = Field(ge=1)
+    # 冻结了的带上凭的 `expert:<专家>@<版本>`：再回冻结时的许可
+    basis_ref: str | None = Field(
+        default=None, pattern=r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$"
+    )
+
+
+class BindingChecksIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[BindingCheckItemIn] = Field(min_length=1, max_length=200)
+
+
+class BindingStateRead(BaseModel):
+    owner: str
+    material_id: str
+    version_no: int
+    # live：在、作者还有这一版的使用权；deleted：作者（或卖家）删了；
+    # disabled：平台禁用；gone：没有、不是作者能用的、那一版不在
+    state: Literal["live", "deleted", "disabled", "gone"]
+    # 作者现在对这一份的许可（买来的是成交时定的那一档）；gone 的不说
+    license: LicenseName | None
+    # 冻结时记下的许可（问的时候带了 basis_ref 才有）
+    frozen_license: LicenseName | None = None
+    # 能不能经专家给别人用：在、现在的许可（带了 basis_ref 的还有冻结的那一档）都在
+    # 「可以经专家给别人用」以上（0043 第 4.3 节）
+    shareable: bool
+
+
+class BindingChecksRead(BaseModel):
+    items: list[BindingStateRead]

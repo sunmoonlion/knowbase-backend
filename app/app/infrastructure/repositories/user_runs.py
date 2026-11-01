@@ -843,6 +843,24 @@ class SqlUserRunRepository:
                 or 0
             )
 
+    async def frozen_used_by_others(self, author: str, use: str) -> bool:
+        """有没有作者以外的人凭这份冻结绑定签过授权（请过这一版专家）。"""
+        async with self._sessions()() as session:
+            found = await session.scalar(
+                select(UserDataRunGrantItem.grant_id)
+                .join(
+                    UserDataRunGrant,
+                    UserDataRunGrant.id == UserDataRunGrantItem.grant_id,
+                )
+                .where(
+                    UserDataRunGrantItem.basis == "frozen_binding",
+                    UserDataRunGrantItem.basis_ref == use,
+                    UserDataRunGrant.beneficiary != author,
+                )
+                .limit(1)
+            )
+            return found is not None
+
     async def platform_summary(
         self, subject: str, use: str
     ) -> tuple[datetime | None, int]:
