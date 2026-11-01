@@ -264,3 +264,37 @@ async def test_the_gate_only_lets_readable_public_originals_through(open_world):
     with pytest.raises(UserDataError) as caught:
         gate.check(BOB, await w.lib.repo.get_material(material.id))
     assert (caught.value.status, caught.value.code) == (403, "not_public")
+
+
+async def test_find_public_holdings_for_uncollected_and_collected(open_world):
+    """WP-3: 未收录返回空，收录返回 material_id、版本与摘要。"""
+    w = open_world
+    # 1. 未收录时查询
+    queried_at, chart_ver, matches = await w.lib.find_public_holdings(
+        MAOTAI, "annual_report", "2025"
+    )
+    assert queried_at is not None
+    assert chart_ver >= 1
+    assert matches == []
+
+    # 2. 交付公开原件后查询
+    material, v1, _ = await w.deliver()
+    queried_at, chart_ver, matches = await w.lib.find_public_holdings(
+        MAOTAI, "annual_report", "2025"
+    )
+    assert len(matches) == 1
+    assert matches[0].material_id == material.id
+    assert matches[0].content_version == 1
+    assert len(matches[0].digest) == 64  # sha256 十六进制摘要
+
+    # 3. 周期匹配测试（年份匹配、不匹配年份）
+    _, _, matches_wrong_year = await w.lib.find_public_holdings(
+        MAOTAI, "annual_report", "2024"
+    )
+    assert matches_wrong_year == []
+
+    # 4. 资料类型不匹配测试
+    _, _, matches_wrong_doc = await w.lib.find_public_holdings(
+        MAOTAI, "quarterly_report", "2025"
+    )
+    assert matches_wrong_doc == []

@@ -62,6 +62,7 @@ def api(db):
         user_run_routes,
     ):
         app.include_router(module.router, prefix="/api")
+    app.include_router(user_data_admin_routes.materials_router, prefix="/api")
     state = {"user": "alice", "admin": "ops-1", "service": "knowmart"}
     services = SimpleNamespace(library=service, runs=runs)
     overrides = app.dependency_overrides
@@ -480,6 +481,7 @@ async def test_the_real_app_guards_web_and_admin_routes():
     )
     assert f"{INTERNAL}/service/market-offers/check" in paths
     assert f"{INTERNAL}/service/expert-bindings/check" in paths
+    assert "/api/admin/v1/materials/holdings" in paths
 
 
 async def test_knowlab_delivery_calls_as_knowlab_sends_them(api):
@@ -601,3 +603,25 @@ async def test_knowlab_voids_a_freeze_and_raises_a_frozen_license_over_http(api)
         f"{INTERNAL}/experts/r-2/versions/1/freeze/void", json={"author": "alice"}
     )
     assert voided.json() == {"withdrawn": 1}
+
+
+async def test_admin_holdings_check_endpoint(api):
+    client, _, _ = api
+    # 未收录时查询
+    resp = await client.get(
+        "/api/admin/v1/materials/holdings",
+        params={"subject": "600519.SH", "doc_type": "annual_report", "period": "2024"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert "queried_at" in data
+    assert data["chart_of_accounts_version"] >= 1
+    assert data["matches"] == []
+
+    # 别名路由也一样能通
+    resp_alias = await client.get(
+        "/api/admin/v1/user-data/materials/holdings",
+        params={"subject": "600519.SH", "doc_type": "annual_report"},
+    )
+    assert resp_alias.status_code == 200, resp_alias.text
+    assert resp_alias.json()["matches"] == []

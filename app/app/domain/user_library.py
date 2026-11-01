@@ -244,6 +244,13 @@ def _within(day: date | None, start: date | None, end: date | None) -> bool:
 
 
 @dataclass(frozen=True)
+class HoldingMatch:
+    material_id: str
+    content_version: int
+    digest: str
+
+
+@dataclass(frozen=True)
 class Material:
     """一份资料（逻辑的一份）：挂描述、许可档、所有者、状态。"""
 

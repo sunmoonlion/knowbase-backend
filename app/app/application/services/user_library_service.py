@@ -17,9 +17,11 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from typing import Any
 
 from app.application.ports.user_data import FirstPageReader, UserObjects
 from app.application.ports.user_library import UserLibraryRepository
+from app.domain.chart_of_accounts import CHART_VERSION
 from app.domain.recognition import Recognition, recognize
 from app.domain.user_data import (
     MAX_ITEM_BYTES,
@@ -43,6 +45,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     License,
     LogEntry,
     Material,
@@ -236,7 +239,9 @@ class UserLibraryService:
         )
         saved = await self.repo.add_version(version)
         if display_to is not None:
-            await self._add_use(subject, material.id, f"app:{display_to}", "direct-upload")
+            await self._add_use(
+                subject, material.id, f"app:{display_to}", "direct-upload"
+            )
         if process and saved.content_origin == "upload":
             await self._add_processing(subject, version)
         return saved, version
@@ -414,8 +419,7 @@ class UserLibraryService:
         cleaned: dict[str, list[str]] = {}
         for mid, uses in raw.items():
             valid_uses = [
-                u for u in uses
-                if u.startswith(("app:", "market", "expert:"))
+                u for u in uses if u.startswith(("app:", "market", "expert:"))
             ]
             if valid_uses:
                 cleaned[mid] = valid_uses
@@ -667,7 +671,11 @@ class UserLibraryService:
         use = subscription_use(subscription_id, revision)
         for found in await self.repo.named(subject, use):
             if found.use == use:
-                ends_on = found.scope.get("ends_on") if isinstance(found.scope, dict) else None
+                ends_on = (
+                    found.scope.get("ends_on")
+                    if isinstance(found.scope, dict)
+                    else None
+                )
                 if ends_on:
                     if isinstance(ends_on, str):
                         ends_on_date = date.fromisoformat(ends_on)
@@ -676,7 +684,9 @@ class UserLibraryService:
                     else:
                         ends_on_date = None
                     if ends_on_date and ends_on_date < self.now().date():
-                        raise denied("subscription_expired", "subscription has expired")
+                        raise refused(
+                            "subscription_expired", "subscription has expired"
+                        )
                 return found
         raise not_found("subscription")
 
@@ -849,15 +859,21 @@ class UserLibraryService:
         """knowfeed 为提了需求/订阅的用户交一份采集到的原件（SDD 0045/0043）。"""
         if caller not in ("knowfeed",):
             raise denied_scope()
-        if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(channel_doc_id):
+        if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(
+            channel_doc_id
+        ):
             raise refused("channel_invalid", "channel or document id is invalid")
-        if source_url is not None and not source_url.startswith(("https://", "http://")):
+        if source_url is not None and not source_url.startswith(
+            ("https://", "http://")
+        ):
             raise refused("url_invalid", "source url is invalid")
         filename = clean_name(name)
         media_type = kind_of(filename, content)
         if not 0 < len(content) <= MAX_PUBLIC_BYTES:
-            raise UserDataError(413, "too_large", "collected originals are at most 200 MB")
-        sha = hashlib.sha256(content).hexdigest()
+            raise UserDataError(
+                413, "too_large", "collected originals are at most 200 MB"
+            )
+        _ = hashlib.sha256(content).hexdigest()
         now = self.now()
         target_license: License = check_license(license_)
 
@@ -866,20 +882,26 @@ class UserLibraryService:
             sub = b.get("subject")
             item_ref = b.get("item_ref")
             if not sub or not item_ref:
-                raise refused("beneficiary_invalid", "subject and item_ref are required")
+                raise refused(
+                    "beneficiary_invalid", "subject and item_ref are required"
+                )
 
-            existing = await self.repo.find_collected_by_beneficiary(sub, channel, channel_doc_id, item_ref)
+            existing = await self.repo.find_collected_by_beneficiary(
+                sub, channel, channel_doc_id, item_ref
+            )
             if existing is not None:
                 mat, ver = existing
                 has_rd = len(await self.repo.renditions(ver.id)) > 0
-                results.append({
-                    "subject": sub,
-                    "item_ref": item_ref,
-                    "material_id": mat.id,
-                    "version_no": ver.version_no,
-                    "created": False,
-                    "has_readings": has_rd,
-                })
+                results.append(
+                    {
+                        "subject": sub,
+                        "item_ref": item_ref,
+                        "material_id": mat.id,
+                        "version_no": ver.version_no,
+                        "created": False,
+                        "has_readings": has_rd,
+                    }
+                )
                 continue
 
             prefill = b.get("prefill") or {}
@@ -926,17 +948,17 @@ class UserLibraryService:
                     created_at=now,
                 ),
             )
-            await self.repo.add_processing_use(
-                sub, mat_id, ver.version_no, processing_use(ver.id), now
+            await self._add_processing(sub, ver)
+            results.append(
+                {
+                    "subject": sub,
+                    "item_ref": item_ref,
+                    "material_id": material.id,
+                    "version_no": ver.version_no,
+                    "created": True,
+                    "has_readings": False,
+                }
             )
-            results.append({
-                "subject": sub,
-                "item_ref": item_ref,
-                "material_id": material.id,
-                "version_no": ver.version_no,
-                "created": True,
-                "has_readings": False,
-            })
         return results
 
     async def deliver_public(
@@ -1225,3 +1247,10 @@ class UserLibraryService:
         # 所有者的那条（不限版本）优先；没有就是买来的
         holding = next((h for h in holdings if h.version_no is None), holdings[0])
         return material, holding
+
+    async def find_public_holdings(
+        self, subject: str, doc_type: str, period: str | None = None
+    ) -> tuple[datetime, int, list[HoldingMatch]]:
+        """查公开披露原件的收录情况（WP-3）：只匹配公开官方披露物，杜绝探测私有资产。"""
+        matches = await self.repo.find_public_holdings(subject, doc_type, period)
+        return self.now(), CHART_VERSION, matches

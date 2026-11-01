@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.domain.user_library import (
     Account,
@@ -12,6 +12,7 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     LogEntry,
     Material,
     ShelfEntry,
@@ -126,6 +127,18 @@ class UserLibraryRepository(Protocol):
         disabled: bool = False,
         limit: int = 100,
     ) -> list[Material]: ...
+
+    async def find_collected_by_beneficiary(
+        self, subject: str, channel: str, channel_doc_id: str, item_ref: str
+    ) -> tuple[Material, ContentVersion] | None: ...
+
+    async def renditions(self, version_id: str) -> list[Any]: ...
+    async def find_public_holdings(
+        self,
+        subject: str,
+        doc_type: str,
+        period: str | None = None,
+    ) -> list[HoldingMatch]: ...
 
     async def account(self, subject: str) -> Account: ...
 

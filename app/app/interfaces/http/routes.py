@@ -8,6 +8,9 @@ from app.interfaces.endpoints.knowledge_routes import (
 )
 from app.interfaces.endpoints.library_web_routes import router as library_web_router
 from app.interfaces.endpoints.user_data_admin_routes import (
+    materials_router,
+)
+from app.interfaces.endpoints.user_data_admin_routes import (
     router as user_data_admin_router,
 )
 from app.interfaces.endpoints.user_fact_routes import router as user_fact_router
@@ -48,5 +51,6 @@ router.include_router(user_fact_router)
 router.include_router(library_web_router)
 # 管理端：用户资料的用量、词表、禁用资料的处理（0044 第四节）
 router.include_router(user_data_admin_router)
+router.include_router(materials_router)
 # 数据 MCP 第二版（/api/mcp/data）
 router.include_router(build_data_mcp_router())

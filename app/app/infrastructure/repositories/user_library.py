@@ -6,9 +6,11 @@ media_type）缓存当前版本；内容版本、使用权、改动记录在各�
 
 from __future__ import annotations
 
+import re
 import uuid
 from collections.abc import Callable, Sequence
-from datetime import datetime
+from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -21,11 +23,13 @@ from app.domain.user_library import (
     Description,
     Expert,
     Holding,
+    HoldingMatch,
     LogEntry,
     Material,
     ShelfEntry,
     Use,
 )
+from app.domain.vocabulary import types_of
 from app.infrastructure.models.user_data import (
     UserDataAccount,
     UserDataDeletion,
@@ -34,6 +38,7 @@ from app.infrastructure.models.user_data import (
     UserDataItem,
     UserDataMaterialLog,
     UserDataRead,
+    UserDataRendition,
     UserDataUse,
     UserDataVersion,
 )
@@ -598,7 +603,7 @@ class SqlUserLibraryRepository:
                 .values(withdrawn_at=at)
             )
             await session.commit()
-            return bool(result.rowcount)
+            return bool(getattr(result, "rowcount", 0))
 
     async def raise_frozen_license(
         self,
@@ -653,7 +658,7 @@ class SqlUserLibraryRepository:
                 .values(withdrawn_at=at)
             )
             await session.commit()
-            return int(result.rowcount or 0)
+            return int(getattr(result, "rowcount", 0) or 0)
 
     async def named(self, subject: str, prefix: str) -> list[Use]:
         """用途以 `prefix` 开头的有效依据，按时间。"""
@@ -793,6 +798,56 @@ class SqlUserLibraryRepository:
             )
             return [_material(r) for r in rows.scalars()]
 
+    async def renditions(self, version_id: str) -> list[Any]:
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataRendition).where(
+                    UserDataRendition.version_id == uuid.UUID(version_id)
+                )
+            )
+            return list(rows.scalars().all())
+
+    async def find_public_holdings(
+        self,
+        subject: str,
+        doc_type: str,
+        period: str | None = None,
+    ) -> list[HoldingMatch]:
+        """按主体、文档类型与期间查公开披露原件主档收录情况。"""
+        expanded_types = types_of(doc_type)
+        query = select(UserDataItem).where(
+            UserDataItem.subject_code == subject,
+            UserDataItem.doc_type.in_(expanded_types),
+            UserDataItem.purged_at.is_(None),
+            UserDataItem.deleted_at.is_(None),
+            UserDataItem.disabled_at.is_(None),
+            or_(
+                UserDataItem.owner_subject == PUBLIC_OWNER,
+                UserDataItem.content_origin.in_(("official", "public")),
+                UserDataItem.license == "public",
+            ),
+        )
+        async with self._sessions()() as session:
+            rows = (
+                (await session.execute(query.order_by(UserDataItem.created_at.desc())))
+                .scalars()
+                .all()
+            )
+            matches: list[HoldingMatch] = []
+            for r in rows:
+                if period is not None and not _matches_period(
+                    r.period_end, r.period_start, r.disclosed_on, period
+                ):
+                    continue
+                matches.append(
+                    HoldingMatch(
+                        material_id=str(r.id),
+                        content_version=r.current_version,
+                        digest=r.sha256,
+                    )
+                )
+            return matches
+
     # —— 账号设置、名下专家 ——
 
     async def account(self, subject: str) -> Account:
@@ -911,3 +966,34 @@ def _holding_row(holding: Holding) -> UserDataHolding:
         ref=holding.ref,
         created_at=holding.created_at,
     )
+
+
+def _matches_period(
+    item_end: date | None,
+    item_start: date | None,
+    disclosed: date | None,
+    period_str: str,
+) -> bool:
+    period_str = period_str.strip()
+    if not period_str:
+        return True
+    try:
+        d = date.fromisoformat(period_str)
+        return item_end == d or item_start == d or disclosed == d
+    except ValueError:
+        pass
+    if re.fullmatch(r"\d{4}", period_str):
+        y = int(period_str)
+        return (
+            (item_end is not None and item_end.year == y)
+            or (item_start is not None and item_start.year == y)
+            or (disclosed is not None and disclosed.year == y)
+        )
+    m = re.fullmatch(r"(\d{4})[Qq]([1-4])", period_str)
+    if m:
+        y, q = int(m.group(1)), int(m.group(2))
+        q_ends = {1: (3, 31), 2: (6, 30), 3: (9, 30), 4: (12, 31)}
+        month, day = q_ends[q]
+        target = date(y, month, day)
+        return item_end == target
+    return False

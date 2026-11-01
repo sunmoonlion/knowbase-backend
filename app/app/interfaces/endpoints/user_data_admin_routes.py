@@ -14,7 +14,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
 from app.domain.security import Principal
@@ -190,3 +189,47 @@ async def purge(material_id: str, payload: PurgeIn, user: Disposer, runs: Runs):
         )
     )
     return PurgeRead(purged=purged, result="purged" if purged else "relation_only")
+
+
+class HoldingMatchRead(BaseModel):
+    material_id: str
+    content_version: int
+    digest: str
+
+
+class HoldingsCheckRead(BaseModel):
+    queried_at: datetime
+    chart_of_accounts_version: int
+    matches: list[HoldingMatchRead]
+
+
+materials_router = APIRouter(prefix="/admin/v1/materials", tags=["管理-资料主档"])
+
+
+@materials_router.get("/holdings", response_model=HoldingsCheckRead)
+@router.get("/materials/holdings", response_model=HoldingsCheckRead)
+async def check_holdings(
+    _: Viewer,
+    service: Library,
+    subject: str = Query(..., description="主体标识，如 600519.SH 或 贵州茅台"),
+    doc_type: str = Query(..., description="资料类型，如 财报/公告/研报"),
+    period: str | None = Query(None, description="报告期，如 2024、2024-12-31、2024Q3"),
+) -> HoldingsCheckRead:
+    """查公开披露原件的收录情况（WP-3）：只匹配公开披露，杜绝探测私有资产。"""
+    queried_at, chart_ver, matches = await _call(
+        lambda: service.find_public_holdings(
+            subject=subject, doc_type=doc_type, period=period
+        )
+    )
+    return HoldingsCheckRead(
+        queried_at=queried_at,
+        chart_of_accounts_version=chart_ver,
+        matches=[
+            HoldingMatchRead(
+                material_id=m.material_id,
+                content_version=m.content_version,
+                digest=m.digest,
+            )
+            for m in matches
+        ],
+    )
