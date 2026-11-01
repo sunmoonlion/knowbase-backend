@@ -321,7 +321,7 @@ class UserResolutionService:
         waiting = await self._waiting_keys(subject)
         items: list[ResultItem] = []
         for need in needs:
-            groups: dict[str, list[tuple[Wanted, ResultItem]]] = {}
+            groups: dict[str | None, list[tuple[Wanted, ResultItem]]] = {}
             for wanted in expand(need, params):
                 result = await self._resolve_one(
                     subject,

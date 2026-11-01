@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
+from typing import Any
 
 from app.application.ports.user_data import FirstPageReader, UserObjects
 from app.application.ports.user_library import UserLibraryRepository
@@ -236,7 +237,9 @@ class UserLibraryService:
         )
         saved = await self.repo.add_version(version)
         if display_to is not None:
-            await self._add_use(subject, material.id, f"app:{display_to}", "direct-upload")
+            await self._add_use(
+                subject, material.id, f"app:{display_to}", "direct-upload"
+            )
         if process and saved.content_origin == "upload":
             await self._add_processing(subject, version)
         return saved, version
@@ -414,8 +417,7 @@ class UserLibraryService:
         cleaned: dict[str, list[str]] = {}
         for mid, uses in raw.items():
             valid_uses = [
-                u for u in uses
-                if u.startswith(("app:", "market", "expert:"))
+                u for u in uses if u.startswith(("app:", "market", "expert:"))
             ]
             if valid_uses:
                 cleaned[mid] = valid_uses
@@ -667,7 +669,11 @@ class UserLibraryService:
         use = subscription_use(subscription_id, revision)
         for found in await self.repo.named(subject, use):
             if found.use == use:
-                ends_on = found.scope.get("ends_on") if isinstance(found.scope, dict) else None
+                ends_on = (
+                    found.scope.get("ends_on")
+                    if isinstance(found.scope, dict)
+                    else None
+                )
                 if ends_on:
                     if isinstance(ends_on, str):
                         ends_on_date = date.fromisoformat(ends_on)
@@ -676,7 +682,9 @@ class UserLibraryService:
                     else:
                         ends_on_date = None
                     if ends_on_date and ends_on_date < self.now().date():
-                        raise denied("subscription_expired", "subscription has expired")
+                        raise UserDataError(
+                            403, "subscription_expired", "subscription has expired"
+                        )
                 return found
         raise not_found("subscription")
 
@@ -849,15 +857,20 @@ class UserLibraryService:
         """knowfeed 为提了需求/订阅的用户交一份采集到的原件（SDD 0045/0043）。"""
         if caller not in ("knowfeed",):
             raise denied_scope()
-        if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(channel_doc_id):
+        if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(
+            channel_doc_id
+        ):
             raise refused("channel_invalid", "channel or document id is invalid")
-        if source_url is not None and not source_url.startswith(("https://", "http://")):
+        if source_url is not None and not source_url.startswith(
+            ("https://", "http://")
+        ):
             raise refused("url_invalid", "source url is invalid")
         filename = clean_name(name)
         media_type = kind_of(filename, content)
         if not 0 < len(content) <= MAX_PUBLIC_BYTES:
-            raise UserDataError(413, "too_large", "collected originals are at most 200 MB")
-        sha = hashlib.sha256(content).hexdigest()
+            raise UserDataError(
+                413, "too_large", "collected originals are at most 200 MB"
+            )
         now = self.now()
         target_license: License = check_license(license_)
 
@@ -866,29 +879,52 @@ class UserLibraryService:
             sub = b.get("subject")
             item_ref = b.get("item_ref")
             if not sub or not item_ref:
-                raise refused("beneficiary_invalid", "subject and item_ref are required")
+                raise refused(
+                    "beneficiary_invalid", "subject and item_ref are required"
+                )
 
-            existing = await self.repo.find_collected_by_beneficiary(sub, channel, channel_doc_id, item_ref)
+            existing = await self.repo.find_collected_by_beneficiary(
+                sub, channel, channel_doc_id, item_ref
+            )
             if existing is not None:
                 mat, ver = existing
-                has_rd = len(await self.repo.renditions(ver.id)) > 0
-                results.append({
-                    "subject": sub,
-                    "item_ref": item_ref,
-                    "material_id": mat.id,
-                    "version_no": ver.version_no,
-                    "created": False,
-                    "has_readings": has_rd,
-                })
+                if not mat.live:
+                    raise not_found("material")
+                has_rd = any(
+                    r.status == "ready" for r in await self.repo.renditions(ver.id)
+                )
+                results.append(
+                    {
+                        "subject": sub,
+                        "item_ref": item_ref,
+                        "material_id": mat.id,
+                        "version_no": ver.version_no,
+                        "created": False,
+                        "has_readings": has_rd,
+                    }
+                )
                 continue
 
             prefill = b.get("prefill") or {}
+            dates: dict[str, date | None] = {}
+            for field in ("period_start", "period_end", "disclosed_on"):
+                value = prefill.get(field)
+                try:
+                    dates[field] = (
+                        date.fromisoformat(value) if isinstance(value, str) else value
+                    )
+                    if dates[field] is not None and not isinstance(dates[field], date):
+                        raise ValueError("not a date")
+                except ValueError:
+                    raise refused(
+                        "description_invalid", f"{field} must be an ISO date"
+                    ) from None
             desc = Description(
                 subject=prefill.get("subject"),
                 doc_type=prefill.get("doc_type") or "other_text",
-                period_start=prefill.get("period_start"),
-                period_end=prefill.get("period_end"),
-                disclosed_on=prefill.get("disclosed_on"),
+                period_start=dates["period_start"],
+                period_end=dates["period_end"],
+                disclosed_on=dates["disclosed_on"],
                 edition=prefill.get("edition") or "full",
                 topics=tuple(prefill.get("topics") or ()),
                 data_format=format_of_media(media_type),
@@ -925,18 +961,28 @@ class UserLibraryService:
                     license=target_license,
                     created_at=now,
                 ),
+                uses=(
+                    Use(
+                        id=self.new_id(),
+                        subject=sub,
+                        use=processing_use(ver.id),
+                        created_at=now,
+                        created_via=caller,
+                        material_id=mat_id,
+                        version_no=ver.version_no,
+                    ),
+                ),
             )
-            await self.repo.add_processing_use(
-                sub, mat_id, ver.version_no, processing_use(ver.id), now
+            results.append(
+                {
+                    "subject": sub,
+                    "item_ref": item_ref,
+                    "material_id": material.id,
+                    "version_no": ver.version_no,
+                    "created": True,
+                    "has_readings": False,
+                }
             )
-            results.append({
-                "subject": sub,
-                "item_ref": item_ref,
-                "material_id": material.id,
-                "version_no": ver.version_no,
-                "created": True,
-                "has_readings": False,
-            })
         return results
 
     async def deliver_public(

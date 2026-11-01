@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
@@ -51,8 +51,8 @@ from app.interfaces.schemas.user_runs import (
     GrantedFormatRead,
     GrantItemIn,
     GrantItemRead,
-    OutputWritten,
     OutputLookupRead,
+    OutputWritten,
     PendingProcessingRead,
     PinRead,
     PlatformEndIn,
@@ -609,7 +609,9 @@ async def lookup_output(
 ):
     """查询同一次运行写下的产出：返回真实 material_id, version_no, sha256。"""
     found = await _call(
-        lambda: service.lookup_output(caller.caller, beneficiary, task_ref, run_ref, name)
+        lambda: service.lookup_output(
+            caller.caller, beneficiary, task_ref, run_ref, name
+        )
     )
     return OutputLookupRead(**found)
 

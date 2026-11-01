@@ -771,7 +771,10 @@ class UserDataFact(Base):
 
 
 class UserDataReleasedRef(Base):
-    """已交还的运行标识（SDD 0043）：交还后同（executor_app, ref）拒签新授权（ref_released）。"""
+    """已交还的运行标识（SDD 0043）。
+
+    交还后同（executor_app, ref）拒签新授权（ref_released）。
+    """
 
     __tablename__ = "user_data_released_ref"
 

@@ -87,7 +87,11 @@ class UserRunRepository(Protocol):
 
     async def revoke(self, grant_ids: list[str], at: datetime, reason: str) -> int: ...
     async def record_released_ref(
-        self, executor_app: str, ref: str, beneficiary: str | None, released_at: datetime
+        self,
+        executor_app: str,
+        ref: str,
+        beneficiary: str | None,
+        released_at: datetime,
     ) -> None: ...
 
     async def is_ref_released(self, executor_app: str, ref: str) -> bool: ...
@@ -97,7 +101,6 @@ class UserRunRepository(Protocol):
     async def active_grants_for_others(
         self, material_id: str, owner: str, now: datetime
     ) -> bool: ...
-
 
     async def record_read(
         self,

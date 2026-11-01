@@ -31,6 +31,7 @@ from app.interfaces.schemas.user_facts import (
     FactQueryIn,
     FactRowRead,
     FactsIn,
+    MetricDefinitionRead,
     MetricQueryIn,
     MetricRowRead,
     RunFactsIn,
@@ -84,7 +85,9 @@ async def chart(owner: Owner = Depends(require_user_owner)):
     return ChartRead(
         **data,  # type: ignore[arg-type]
         metrics=[
-            {"key": m.key, "name": m.name, "kind": m.kind, "description": m.description}
+            MetricDefinitionRead(
+                key=m.key, name=m.name, kind=m.kind, description=m.description
+            )
             for m in METRICS.values()
         ],
     )

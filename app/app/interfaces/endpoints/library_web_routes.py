@@ -301,7 +301,10 @@ async def history(material_id: str, user: WebUser, service: Library):
 
 @router.get("/materials/{material_id}/reads", response_model=list[ReadEventRead])
 async def reads(material_id: str, user: WebUser, runs: Runs):
-    """谁读过：只给所有者看；平台运营、系统加工读的带 `reader_role`。脱敏不泄露买家具体编号。"""
+    """谁读过：只给所有者看。
+
+    平台运营、系统加工读的带 reader_role；脱敏不泄露买家具体编号。
+    """
     raw_events = await _call(lambda: runs.reads(user.subject, material_id))
     sanitized = []
     for e in raw_events:
@@ -309,7 +312,9 @@ async def reads(material_id: str, user: WebUser, runs: Runs):
         if item.get("beneficiary") and item.get("beneficiary") != user.subject:
             item["beneficiary"] = None
         if item.get("reader") and item.get("reader") != user.subject:
-            item["reader"] = item.get("reader_role") or item.get("app") or "authorized_reader"
+            item["reader"] = (
+                item.get("reader_role") or item.get("app") or "authorized_reader"
+            )
         sanitized.append(item)
     return [ReadEventRead(**e) for e in sanitized]  # type: ignore[arg-type]
 
