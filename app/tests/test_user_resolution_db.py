@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import date, timedelta
 
 import pytest
@@ -430,6 +432,68 @@ async def test_new_needs_make_a_revision_and_keep_the_rest(world):
         404,
         "resolution_not_found",
     )
+
+
+@pytest.mark.parametrize("operation", ["append", "replace", "refresh"])
+async def test_stale_resolution_cannot_erase_a_concurrent_append(
+    world, monkeypatch, operation
+):
+    first = await world.resolve([annual(count=1)])
+    # Make refresh produce a changed result instead of returning the old snapshot.
+    await world.report(ALICE, 2025)
+    original = world.resolver._resolve_needs
+    ready, release = asyncio.Event(), asyncio.Event()
+
+    async def delayed(*args, **kwargs):
+        result = await original(*args, **kwargs)
+        ready.set()
+        await release.wait()
+        return result
+
+    extra = NeedSpec(
+        key="extra",
+        name="额外资料",
+        doc_type="law",
+        period=PeriodRule("none"),
+        formats=("pdf",),
+        required=False,
+    )
+    monkeypatch.setattr(world.resolver, "_resolve_needs", delayed)
+    if operation == "append":
+        pending = world.resolver.add_needs(ALICE, "knowbench", first.id, [extra])
+    elif operation == "replace":
+        pending = world.resolver.revise_needs(ALICE, "knowbench", first.id, [extra])
+    else:
+        pending = world.resolver.refresh_for_run("knowbench", ALICE, first.id)
+    slow = asyncio.create_task(pending)
+    try:
+        await asyncio.wait_for(ready.wait(), 5)
+        monkeypatch.setattr(world.resolver, "_resolve_needs", original)
+        winner = await world.resolver.add_needs(
+            ALICE, "knowbench", first.id, [replace(extra, key="winner")]
+        )
+        release.set()
+        with pytest.raises(UserDataError) as caught:
+            await asyncio.wait_for(slow, 5)
+        assert (caught.value.status, caught.value.code) == (409, "resolution_changed")
+        current = await world.resolver.get_resolution(
+            ALICE, "knowbench", first.id, None
+        )
+        assert current == winner
+        assert current.revision == first.revision + 1
+        assert {n.key for n in current.needs} == {"annual", "winner"}
+        # An explicit retry recomputes from the winner, retaining both additions.
+        if operation == "append":
+            retry = await world.resolver.add_needs(
+                ALICE, "knowbench", first.id, [extra]
+            )
+            assert {n.key for n in retry.needs} == {"annual", "winner", "extra"}
+            assert retry.revision == winner.revision + 1
+    finally:
+        release.set()
+        if not slow.done():
+            slow.cancel()
+        await asyncio.gather(slow, return_exceptions=True)
 
 
 async def test_lookup_answers_in_or_out_and_is_rate_limited(world):

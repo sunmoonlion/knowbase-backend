@@ -10,6 +10,7 @@ from sqlalchemy import and_, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import array, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.user_data import conflict
 from app.domain.user_library import PUBLIC_OWNER, RESOLVABLE
 from app.domain.user_resolution import (
     Candidate,
@@ -181,8 +182,10 @@ class SqlUserResolutionRepository:
 
     # —— 解析清单 ——
 
-    async def add_resolution(self, resolution: Resolution) -> Resolution:
-        """记一个修订：同一张清单排队取下一个修订号。"""
+    async def add_resolution(
+        self, resolution: Resolution, *, expected_revision: int
+    ) -> Resolution:
+        """在既有修订锁内核对基版，再取新编号；不让旧解析覆盖并发提交的需求。"""
         async with self._sessions()() as session:
             key = uuid.UUID(resolution.id)
             await session.execute(
@@ -194,6 +197,11 @@ class SqlUserResolutionRepository:
                     UserDataResolution.id == key
                 )
             )
+            if (latest or 0) != expected_revision:
+                raise conflict(
+                    "resolution_changed",
+                    "The data list changed while resolving; reload it before retrying.",
+                )
             row = UserDataResolution(
                 id=key,
                 revision=(latest or 0) + 1,

@@ -136,7 +136,8 @@ class UserResolutionService:
                 items=tuple(items),
                 created_at=self.now(),
                 task_ref=task_ref,
-            )
+            ),
+            expected_revision=0,
         )
 
     async def add_needs(
@@ -167,7 +168,8 @@ class UserResolutionService:
                 items=current.items + tuple(items),
                 created_at=self.now(),
                 task_ref=current.task_ref,
-            )
+            ),
+            expected_revision=current.revision,
         )
 
     async def revise_needs(
@@ -194,7 +196,8 @@ class UserResolutionService:
                 items=tuple(items),
                 created_at=self.now(),
                 task_ref=current.task_ref,
-            )
+            ),
+            expected_revision=current.revision,
         )
 
     async def add_needs_for_run(
@@ -240,7 +243,8 @@ class UserResolutionService:
                 items=items,
                 created_at=self.now(),
                 task_ref=current.task_ref,
-            )
+            ),
+            expected_revision=current.revision,
         )
 
     async def confirmed_for_run(

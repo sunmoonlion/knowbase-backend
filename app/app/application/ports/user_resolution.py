@@ -24,7 +24,11 @@ class ResolutionRepository(Protocol):
         public_access: bool = False,
     ) -> list[Candidate]: ...
 
-    async def add_resolution(self, resolution: Resolution) -> Resolution: ...
+    async def add_resolution(
+        self, resolution: Resolution, *, expected_revision: int
+    ) -> Resolution:
+        """Append only if the latest revision matches the snapshot (0 for new)."""
+        ...
 
     async def resolution(
         self, resolution_id: str, revision: int | None = None

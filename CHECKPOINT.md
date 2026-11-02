@@ -32,3 +32,24 @@
 
 ---
 
+## 2026-11-02 清单基版并发保护（未发布）
+
+基线 a69436bc440624e87f81974f1ced05f6302505cd，继续 feat/reading-receipts。
+既有修订 advisory lock 原来只分配序号，不能防止基于过期快照的写入覆盖新需求。
+仓储 add_resolution 现在必须传 expected_revision，在原短事务内比较最新修订：
+初建为 0，追加/整份修改/重新解析传读取的基版。冲突返回 409 resolution_changed，
+不生成新修订、不覆盖赢家。无新增表、迁移或网络字段，不在锁内做外部解析。
+
+三个隔离 PostgreSQL 故障场景（慢追加、慢修改、慢刷新遇到先完成的追加）在原代码
+均失败，修复后保留赢家；显式重读重试追加会保留双方需求。原复现输出
+/tmp/luna-resolution-cas-before.txt，定向 21 passed：/tmp/luna-resolution-cas-focused.txt。
+全量 **733 passed / 5 skipped**，301.67 秒：/tmp/luna-resolution-cas-full.txt；
+全仓 ruff 通过，pyright 0 errors（/tmp/luna-resolution-cas-ruff-final.txt、
+/tmp/luna-resolution-cas-pyright.txt）。初次两处注释超长已修，不隐藏原 lint 输出。
+
+本改动只防解析期间发生的并发覆盖；没有给网页新增用户所见修订令牌，不把旧页面
+事后提交或 HTTP 回包丢失变成幂等操作。同 need key 重放仍拒绝。消费者收到冲突须
+重读并明确重试，不当成功、不自动确认采集。完整自动恢复另待工作单元。
+工作台配套在其 feat/method-execution-view；发布要评审本分支此前 WP-3/逐读法差异，
+不能直接覆盖 qwen 已冻结候选。没有 Jenkins、sources、生产迁移或 Wind 调用。
+
