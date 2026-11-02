@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Protocol
 
 from app.domain.user_resolution import (
@@ -37,10 +36,6 @@ class ResolutionRepository(Protocol):
     async def add_confirmation(self, confirmation: Confirmation) -> Confirmation: ...
 
     async def confirmation(self, confirmation_id: str) -> Confirmation | None: ...
-
-    async def live_confirmations(
-        self, subject: str, now: datetime
-    ) -> list[Confirmation]: ...
 
     async def preferences(self, subject: str, consumer: str) -> list[Preference]: ...
 

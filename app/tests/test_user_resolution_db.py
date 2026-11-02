@@ -307,6 +307,24 @@ async def test_reading_must_be_ready(world):
         "to_confirm",
         "reading_missing",
     )
+    confirmation, _ = await world.resolver.confirm(
+        ALICE,
+        "knowbench",
+        "description",
+        [{"key": result.items[0].key.as_dict(), "need_key": need.key}],
+        {},
+        resolution_id=result.id,
+    )
+    # A valid old confirmation (whether never submitted, failed, or still running)
+    # cannot masquerade as current collection state, even in another task/reading.
+    assert confirmation.valid(world.clock.now)
+    again = await world.resolve([need])
+    assert (again.items[0].status, again.items[0].reason) == (
+        "to_confirm",
+        "reading_missing",
+    )
+    table = await world.resolve([annual(count=1, reading="table")])
+    assert table.items[0].status == "to_confirm"
     await world.lib.consent_processing(ALICE, material.id, 1)
     grant = await world.runs.issue_processing("knowfeed", ALICE, material.id, 1)
     await world.runs.write_rendition("knowfeed", grant.id, "text", "0.1", b"text")
@@ -319,7 +337,7 @@ async def test_reading_must_be_ready(world):
     )
 
 
-async def test_confirm_only_what_waits_then_resolution_waits(world):
+async def test_confirmation_is_authorization_not_proof_of_running_collection(world):
     await world.report(ALICE, 2025)
     result = await world.resolve([annual(count=3)])
     waiting = next(i for i in result.items if i.status == "to_confirm")
@@ -349,7 +367,7 @@ async def test_confirm_only_what_waits_then_resolution_waits(world):
     assert confirmation.expires_at - confirmation.created_at == timedelta(days=7)
     assert confirmation.needs[0]["key"] == "annual"
     again = await world.resolve([annual(count=3)])
-    assert [i.status for i in again.items if i.key == waiting.key] == ["waiting"]
+    assert [i.status for i in again.items if i.key == waiting.key] == ["to_confirm"]
 
     checked = await world.resolver.check_confirmation(
         "knowfeed", confirmation.id, ALICE
@@ -562,11 +580,11 @@ async def test_data_arrives_refresh_then_grant_by_the_confirmation(world):
         resolution_id=first.id,
         revision=first.revision,
     )
-    # 确认了还没到：那一期读作「等数据」；再刷一次没变就不出新修订
+    # 确认不是作业进度：消费方按自己的 demand 等待；未到的数据仍待确认。
     waiting = await world.resolver.refresh_for_run("knowbench", ALICE, first.id)
-    assert [i.status for i in waiting.items] == ["resolved", "waiting"]
+    assert [i.status for i in waiting.items] == ["resolved", "to_confirm"]
     same = await world.resolver.refresh_for_run("knowbench", ALICE, first.id)
-    assert same.revision == waiting.revision == first.revision + 1
+    assert same.revision == waiting.revision == first.revision
     await refused(
         world.resolver.refresh_for_run("knowmart", ALICE, first.id),
         403,
