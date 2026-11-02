@@ -210,6 +210,14 @@ class UserResolutionService:
             raise not_found("resolution")
         return await self.add_needs(subject, caller, resolution_id, needs)
 
+    async def refresh_mine(
+        self, subject: str, app: str, resolution_id: str
+    ) -> Resolution:
+        """本人重新核对自己的清单；只重解析，不确认、不授权、不采集。"""
+        self._resolving_app(app)
+        current = await self._own_resolution(subject, app, resolution_id, None)
+        return await self._refresh(current)
+
     async def refresh_for_run(
         self, caller: str, subject: str, resolution_id: str
     ) -> Resolution:
@@ -220,8 +228,15 @@ class UserResolutionService:
         重找，出清单新修订；什么都没变就回当前修订，不出新的。
         """
         current = await self._run_resolution(caller, subject, resolution_id, None)
+        return await self._refresh(current)
+
+    async def _refresh(self, current: Resolution) -> Resolution:
         fresh = await self._resolve_needs(
-            subject, current.app, current.consumer, list(current.needs), current.params
+            current.subject,
+            current.app,
+            current.consumer,
+            list(current.needs),
+            current.params,
         )
         settled = {
             (i.need_key, i.key): i for i in current.items if i.status == "resolved"
@@ -233,7 +248,7 @@ class UserResolutionService:
             Resolution(
                 id=current.id,
                 revision=0,
-                subject=subject,
+                subject=current.subject,
                 app=current.app,
                 consumer=current.consumer,
                 contract_version=current.contract_version,
