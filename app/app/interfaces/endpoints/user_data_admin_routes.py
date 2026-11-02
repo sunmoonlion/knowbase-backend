@@ -14,7 +14,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
 from app.domain.security import Principal
