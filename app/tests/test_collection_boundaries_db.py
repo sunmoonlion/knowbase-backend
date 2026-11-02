@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date, timedelta
 
 import pytest
@@ -14,6 +15,7 @@ from test_user_library_db import library
 
 from app.domain.user_data import UserDataError
 from app.domain.user_library import SubscriptionScope
+from app.infrastructure.models.user_data import UserDataRendition
 
 
 async def test_expired_subscription_returns_domain_rejection(db):
@@ -81,6 +83,7 @@ async def test_collected_multipart_dates_processing_basis_and_retry(api):
     assert first.status_code == 201, first.text
     row = first.json()[0]
     assert row["created"] and not row["has_readings"]
+    assert row["readings"] == row["renditions"] == []
     material = await services.library.repo.get_material(row["material_id"])
     assert material.description.period_end == date(2024, 12, 31)
     assert material.owner == "alice" and material.content_origin == "collected"
@@ -130,3 +133,62 @@ async def test_collected_file_required(api):
     )
     assert response.status_code == 422
     assert response.json()["code"] == "file_missing"
+
+
+async def test_collected_receipt_lists_only_latest_ready_readings_of_each_copy(api, db):
+    client, state, services = api
+    state["service"] = "knowfeed"
+    bens = beneficiaries()
+    bens.append({**bens[0], "subject": "bob"})
+
+    async def send():
+        return await client.post(
+            f"{INTERNAL}/service/collected-originals",
+            params=params(),
+            files={"file": ("report.csv", CSV)},
+            data={"beneficiaries": json.dumps(bens)},
+        )
+
+    first = await send()
+    assert first.status_code == 201, first.text
+    alice, bob = first.json()
+    version = await services.library.repo.version(alice["material_id"], 1)
+    assert version is not None
+    async with db() as session:
+        for kind, number, status in [
+            ("text", 1, "ready"),
+            ("text", 2, "ready"),
+            ("text", 3, "failed"),
+            ("pages", 1, "pending"),
+            ("table", 1, "failed"),
+        ]:
+            session.add(
+                UserDataRendition(
+                    id=uuid.uuid4(),
+                    version_id=uuid.UUID(version.id),
+                    kind=kind,
+                    rendition_no=number,
+                    processor="synthetic",
+                    processor_version=str(number),
+                    status=status,
+                    sha256="a" * 64 if status == "ready" else None,
+                    created_at=services.library.now(),
+                )
+            )
+        await session.commit()
+    retry = await send()
+    assert retry.status_code == 201, retry.text
+    a, b = retry.json()
+    assert a["material_id"] == alice["material_id"] and not a["created"]
+    assert a["has_readings"] is True and a["readings"] == ["text"]
+    assert a["renditions"] == [
+        {
+            "kind": "text",
+            "rendition_no": 2,
+            "sha256": "a" * 64,
+            "processor": "synthetic",
+            "processor_version": "2",
+        }
+    ]
+    assert b["material_id"] == bob["material_id"]
+    assert b["readings"] == b["renditions"] == [] and not b["has_readings"]

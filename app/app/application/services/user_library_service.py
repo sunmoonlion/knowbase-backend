@@ -900,9 +900,13 @@ class UserLibraryService:
                 mat, ver = existing
                 if not mat.live:
                     raise not_found("material")
-                has_rd = any(
-                    r.status == "ready" for r in await self.repo.renditions(ver.id)
-                )
+                ready = {}
+                for reading in await self.repo.renditions(ver.id):
+                    if reading.status == "ready" and (
+                        reading.kind not in ready
+                        or reading.rendition_no > ready[reading.kind].rendition_no
+                    ):
+                        ready[reading.kind] = reading
                 results.append(
                     {
                         "subject": sub,
@@ -910,7 +914,18 @@ class UserLibraryService:
                         "material_id": mat.id,
                         "version_no": ver.version_no,
                         "created": False,
-                        "has_readings": has_rd,
+                        "has_readings": bool(ready),
+                        "readings": sorted(ready),
+                        "renditions": [
+                            {
+                                "kind": r.kind,
+                                "rendition_no": r.rendition_no,
+                                "sha256": r.sha256,
+                                "processor": r.processor,
+                                "processor_version": r.processor_version,
+                            }
+                            for _, r in sorted(ready.items())
+                        ],
                     }
                 )
                 continue
@@ -991,6 +1006,8 @@ class UserLibraryService:
                     "version_no": ver.version_no,
                     "created": True,
                     "has_readings": False,
+                    "readings": [],
+                    "renditions": [],
                 }
             )
         return results

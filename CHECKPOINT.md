@@ -10,6 +10,16 @@
 
 ---
 
+## 2026-11-02 逐读法回执（feat/reading-receipts，未发布）
+
+在 5bfb60f 上为 collected-originals 增加兼容字段 readings/renditions：按每个受益人的内容版本返回各类型最新 ready 读法及编号、摘要、处理器版本。pending/failed 不作为就绪；旧 has_readings 仍只表达任一种已就绪。旧契约所有已有定义保持一致，新增两个响应模型并补入 provider schema，knowfeed consumer lock 同步。
+
+完整回归 730 passed / 5 skipped（/tmp/luna-readings-base-full.txt），ruff/pyright 通过。HTTP + 真实库测试证明：两个受益人分别存储，一人的读法不会出现在另一人的回执；重复交付不改变资料 ID；多版本取最新 ready，较新的 failed 不覆盖仍可用的 ready，遵循现有解析器语义。
+
+这不是完整非公开链或 Wind 验收。跨进程并发首次建副本、真实升级恢复仍需下一工作单元验证。qwen 当前 fix/supply-delivery 候选不动；这里只提交独立开发分支，不改部署源。
+
+---
+
 # 2026-11-02 luna：WP-3 公共原件收录核验（未发布）
 
 对照《财务智能体双轨交付计划》WP-3，复核旧 qwen 5a22a91 后没有整段合并：其 period 会把披露年算报告年，公开条件混用许可字段，且带入无关端口改动。现复用旧意图，在当前发布基线上实现管理端只读 GET /api/admin/v1/materials/holdings。

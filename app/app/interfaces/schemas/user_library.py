@@ -289,6 +289,16 @@ class BeneficiaryIn(BaseModel):
     basis: dict[str, Any] | None = None
 
 
+class CollectedRenditionRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["text", "pages", "table", "index", "parse"]
+    rendition_no: int = Field(ge=1)
+    sha256: str | None
+    processor: str
+    processor_version: str
+
+
 class CollectedOriginalRead(BaseModel):
     subject: str
     item_ref: str
@@ -296,6 +306,11 @@ class CollectedOriginalRead(BaseModel):
     version_no: int
     created: bool
     has_readings: bool = False
+    # 向后兼容的显式回执；布尔值只表示至少一种读法，不能证明需求全部完成。
+    readings: list[Literal["text", "pages", "table", "index", "parse"]] = Field(
+        default_factory=list
+    )
+    renditions: list[CollectedRenditionRead] = Field(default_factory=list)
 
 
 class PublicOriginalRead(BaseModel):

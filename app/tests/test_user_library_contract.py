@@ -50,6 +50,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.SubscriptionRead,
     models.FreezeIn,
     models.PublicOriginalRead,
+    models.CollectedOriginalRead,
     models.ReferenceIn,
     models.ReferencesIn,
     models.ReferencesRead,
@@ -133,7 +134,12 @@ def manifest_for(schema_text: str) -> str:
         "contract": "sunmoonai.knowbase.user-data",
         "major": 2,
         "provider": "knowbase-app",
-        "service_consumers": ["knowbench-app", "knowlab-app", "knowmart-app"],
+        "service_consumers": [
+            "knowbench-app",
+            "knowlab-app",
+            "knowmart-app",
+            "knowfeed-app",
+        ],
         "files": {
             "user-data.schema.json": hashlib.sha256(schema_text.encode()).hexdigest()
         },
