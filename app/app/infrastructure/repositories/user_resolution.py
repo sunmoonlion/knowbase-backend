@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime
 
 from sqlalchemy import and_, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import array, insert
@@ -271,20 +270,6 @@ class SqlUserResolutionRepository:
         async with self._sessions()() as session:
             row = await session.get(UserDataConfirmation, key)
             return _confirmation(row) if row is not None else None
-
-    async def live_confirmations(
-        self, subject: str, now: datetime
-    ) -> list[Confirmation]:
-        async with self._sessions()() as session:
-            rows = await session.execute(
-                select(UserDataConfirmation)
-                .where(
-                    UserDataConfirmation.subject == subject,
-                    UserDataConfirmation.expires_at > now,
-                )
-                .order_by(UserDataConfirmation.created_at)
-            )
-            return [_confirmation(r) for r in rows.scalars()]
 
     # —— 偏好 ——
 

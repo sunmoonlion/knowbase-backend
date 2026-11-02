@@ -81,3 +81,12 @@ CSV 与 XLSX 提取第一行列标签、第一列非数值行标签；xlsx 按�
 24 passed。真实 HTTP 用隔离数据库与对象存储替身，非生产资料；ruff、pyright 通过。
 提供方 schema 由模型生成，父仓与 knowlab 消费锁同批；发布顺序 knowbase → knowlab。
 日志 /tmp/luna-base-format-{tests,final}.log。未部署、未调用 Wind。
+
+## 2026-11-03 确认记录不再冒充采集进度
+
+线上任务 0d35c11b 的 16 项 waiting 来自同主体旧确认单，未关联新 demand。
+移除 live_confirmations→waiting 推断及无其它消费者的仓储端口；确认保留 7 天供
+knowfeed 受理/执行方续签，不删除历史授权。资料或所需读法缺失仍返回 to_confirm。
+采集是否在跑由持有 demand_id 的消费方核 knowfeed；新确认按现有作业唯一键合流。
+真实隔离 DB 21 passed（含不同任务/读法的旧确认不能锁住新需求、到货后续签）；
+ruff/pyright 通过。没有生产 DB 写入，无迁移或字段变化。

@@ -323,7 +323,6 @@ class UserResolutionService:
             for p in await self.repo.preferences(subject, consumer)
             if p.vocab_version == VOCAB_VERSION
         }
-        waiting = await self._waiting_keys(subject)
         items: list[ResultItem] = []
         for need in needs:
             groups: dict[str | None, list[tuple[Wanted, ResultItem]]] = {}
@@ -334,7 +333,6 @@ class UserResolutionService:
                     need,
                     wanted,
                     preferences.get(key_id(wanted.key)),
-                    waiting,
                     params,
                 )
                 groups.setdefault(wanted.key.subject, []).append((wanted, result))
@@ -351,7 +349,6 @@ class UserResolutionService:
         need: NeedSpec,
         wanted: Wanted,
         preference: Preference | None,
-        waiting: set[str],
         params: TaskParams,
     ) -> ResultItem:
         key = wanted.key
@@ -393,8 +390,6 @@ class UserResolutionService:
             return ResultItem(need.key, key, "not_shown", candidates=tuple(hidden))
         if found and not usable:
             return ResultItem(need.key, key, "unusable", reason="disabled")
-        if _key_id(need.key, key) in waiting or _key_id(None, key) in waiting:
-            return ResultItem(need.key, key, "waiting")
         if reading_missing:
             # 原件在、读法没齐：交 knowfeed 补读法
             return ResultItem(need.key, key, "to_confirm", reason="reading_missing")
@@ -430,17 +425,9 @@ class UserResolutionService:
             }
         )
 
-    async def _waiting_keys(self, subject: str) -> set[str]:
-        """确认过、还在 7 天里的描述条目：在取，解析成「等数据」。"""
-        keys: set[str] = set()
-        for confirmation in await self.repo.live_confirmations(subject, self.now()):
-            if confirmation.kind != "description":
-                continue
-            for item in confirmation.items:
-                key = DescriptionKey.from_dict(item["key"])  # type: ignore[arg-type]
-                keys.add(_key_id(item.get("need_key"), key))  # type: ignore[arg-type]
-                keys.add(_key_id(None, key))
-        return keys
+    # 确认是 7 天内可用于受理/续签的授权依据，不是采集执行状态。
+    # 是否正在取由消费方持有的 demand_id 与 knowfeed 回执证明；没有读法就仍待确认。
+    # 不扫描别的任务确认单，否则失败旧单、甚至不同 reading 会锁住新任务。
 
     # —— 确认 ——
 
@@ -668,10 +655,6 @@ def _settle_tentative(
     if used and firm:
         firm = firm[: len(firm) - len(used)]
     return used + firm
-
-
-def _key_id(need_key: str | None, key: DescriptionKey) -> str:
-    return json.dumps([need_key, key.as_dict()], sort_keys=True)
 
 
 def _confirm_item(
