@@ -62,3 +62,7 @@
 工作台配套在其 feat/method-execution-view；发布要评审本分支此前 WP-3/逐读法差异，
 不能直接覆盖 qwen 已冻结候选。没有 Jenkins、sources、生产迁移或 Wind 调用。
 
+
+# #52 已发布修复祖先核对
+
+合入 fix/recheck-contract 已发布提交的历史；源修复已在本分支，冲突逐项保留更完整的逐读法、公有查询及 resolution_changed 处理。合并前后应用源码无差异，发布基线成为可机械验证祖先。原回执见 qwen 的 release-52 文档，发布不等于业务通过。
