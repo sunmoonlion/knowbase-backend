@@ -23,6 +23,7 @@ from typing import Any
 from app.application.ports.user_data import FirstPageReader, UserObjects
 from app.application.ports.user_library import UserLibraryRepository
 from app.domain.recognition import Recognition, recognize
+from app.domain.table_format import TableFormat, table_formats
 from app.domain.user_data import (
     MAX_ITEM_BYTES,
     QUOTA_BYTES,
@@ -364,6 +365,38 @@ class UserLibraryService:
         """所有者在栏里删：逻辑删，内容不删；买家的使用权、钉住的测试与专家版本照旧可读。"""
         material = await self._owned(subject, material_id)
         await self.repo.remove(material.id, subject, self.now())
+
+    async def read_format(
+        self, subject: str, actor: str, material_id: str, version_no: int
+    ) -> tuple[ContentVersion, tuple[TableFormat, ...]]:
+        """本人挑给应用的资料格式；精确到版本，展示与使用权每次重查。"""
+        use = COLUMN_USES.get(actor)
+        if use is None or material_id not in await self.repo.material_ids_with_use(
+            subject, use
+        ):
+            raise not_found()
+        material, _ = await self._held_version(subject, material_id, version_no)
+        if not material.readable:
+            raise not_found()
+        version = await self.repo.version(material_id, version_no)
+        if version is None:
+            raise not_found("version")
+        content = await self.objects.get(version.object_key)
+        if hashlib.sha256(content).hexdigest() != version.sha256:
+            raise UserDataError(
+                503, "storage_mismatch", "stored content does not match"
+            )
+        tables = await asyncio.to_thread(table_formats, version.media_type, content)
+        await self.repo.record_read(
+            owner=material.owner,
+            material_id=material.id,
+            sha256=version.sha256,
+            reader=subject,
+            operation="format",
+            acting_app=actor,
+            at=self.now(),
+        )
+        return version, tables
 
     # —— 展示与绑定（同意依据，块 1b） ——
 

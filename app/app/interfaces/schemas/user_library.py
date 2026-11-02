@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -56,6 +56,20 @@ class VersionRead(BaseModel):
     size_bytes: int
     media_type: str
     created_at: datetime
+
+
+class TableFormatRead(BaseModel):
+    name: str = Field(max_length=255)
+    columns: list[Annotated[str, Field(max_length=200)]] = Field(max_length=200)
+    rows: list[Annotated[str, Field(max_length=200)]] = Field(max_length=500)
+
+
+class MaterialFormatRead(BaseModel):
+    material_id: str
+    version_no: int = Field(ge=1)
+    sha256: str
+    media_type: str
+    tables: list[TableFormatRead] = Field(max_length=50)
 
 
 class MaterialRead(BaseModel):

@@ -68,6 +68,7 @@ from app.interfaces.schemas.user_library import (
     MarketOffersIn,
     MarketOffersRead,
     MarketOfferStateRead,
+    MaterialFormatRead,
     MaterialRead,
     PlatformConsentIn,
     PublicOriginalRead,
@@ -78,6 +79,7 @@ from app.interfaces.schemas.user_library import (
     ShelfEntryRead,
     SubscriptionRead,
     SubscriptionScopeIn,
+    TableFormatRead,
     UseIn,
     UseRead,
     VersionRead,
@@ -180,6 +182,33 @@ def _entry(entry: ShelfEntry, subject: str) -> ShelfEntryRead:
 @router.get("/vocabulary", response_model=VocabularyRead)
 async def vocabulary(owner: Owner = Depends(require_user_owner)):
     return VocabularyRead(**snapshot())  # type: ignore[arg-type]
+
+
+@router.get(
+    "/materials/{material_id}/versions/{version_no}/format",
+    response_model=MaterialFormatRead,
+)
+async def material_format(
+    material_id: str,
+    version_no: int,
+    response: Response,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    version, tables = await _call(
+        lambda: service.read_format(owner.subject, owner.app, material_id, version_no)
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return MaterialFormatRead(
+        material_id=material_id,
+        version_no=version.version_no,
+        sha256=version.sha256,
+        media_type=version.media_type,
+        tables=[
+            TableFormatRead(name=t.name, columns=list(t.columns), rows=list(t.rows))
+            for t in tables
+        ],
+    )
 
 
 @router.post(

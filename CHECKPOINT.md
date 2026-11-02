@@ -66,3 +66,18 @@
 # #52 已发布修复祖先核对
 
 合入 fix/recheck-contract 已发布提交的历史；源修复已在本分支，冲突逐项保留更完整的逐读法、公有查询及 resolution_changed 处理。合并前后应用源码无差异，发布基线成为可机械验证祖先。原回执见 qwen 的 release-52 文档，发布不等于业务通过。
+
+
+## 2026-11-02 L4：本人读取选定版本的表格格式
+
+新增 user-data/v2 的 GET materials/{material_id}/versions/{version_no}/format，
+凭本人令牌核代办应用展示、使用权、确切版本和内容摘要；留 format 读数记录。
+CSV 与 XLSX 提取第一行列标签、第一列非数值行标签；xlsx 按工作簿关系寻表，
+共享字符串/稀疏列可读，公式及缓存值不交出。上限 50 表、200 列、500 行、标签
+200 字；XML 单项 8 MiB、累计 32 MiB，坏文件明确拒绝。PDF/旧 xls/正文无表轴，
+不会将正文当表头。现有授权下 format 接口不变，无迁移、依赖或环境变量变更。
+
+首轮格式/HTTP/契约/公共件 44 passed；补买家版本隔离及严格 CSV 后最终相关
+24 passed。真实 HTTP 用隔离数据库与对象存储替身，非生产资料；ruff、pyright 通过。
+提供方 schema 由模型生成，父仓与 knowlab 消费锁同批；发布顺序 knowbase → knowlab。
+日志 /tmp/luna-base-format-{tests,final}.log。未部署、未调用 Wind。

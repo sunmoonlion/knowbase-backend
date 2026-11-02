@@ -33,6 +33,41 @@ from app.interfaces.errors.exception_handlers import register_exception_handlers
 BASE = "/api/internal/v2/user-data"
 
 
+async def test_format_requires_display_holding_and_exact_version_and_logs(api):
+    client, state = api
+    state["owner"] = Owner("alice", "knowlab")
+    first = await client.post(
+        f"{BASE}/materials",
+        params={"name": "metrics.csv"},
+        content=b"metric,2024\nrevenue,999\n",
+    )
+    mid = first.json()["material"]["material_id"]
+    path = f"{BASE}/materials/{mid}/versions/1/format"
+    assert (await client.get(path)).status_code == 404  # 本人也要展示给代办应用
+    await client.post(f"{BASE}/materials/{mid}/uses", json={"use": "app:knowlab"})
+    got = await client.get(path)
+    assert got.status_code == 200, got.text
+    assert got.headers["cache-control"] == "no-store"
+    assert got.json()["tables"] == [
+        {"name": "", "columns": ["metric", "2024"], "rows": ["revenue"]}
+    ]
+    assert "999" not in got.text
+    await client.post(
+        f"{BASE}/materials/{mid}/versions", content=b"different,2025\nprofit,333\n"
+    )
+    assert (await client.get(path)).json() == got.json()  # 不静默改读最新版本
+    assert (await client.get(path.replace("/1/", "/9/"))).status_code == 404
+    state["owner"] = Owner("bob", "knowlab")
+    assert (await client.get(path)).status_code == 404
+    state["owner"] = Owner("alice", "knowbench")
+    assert (await client.get(path)).status_code == 404
+    state["owner"] = Owner("alice", "knowlab")
+    reads = (await client.get(f"{BASE}/materials/{mid}/reads")).json()
+    assert any(r["operation"] == "format" and r["app"] == "knowlab" for r in reads)
+    await client.delete(f"{BASE}/materials/{mid}/uses", params={"use": "app:knowlab"})
+    assert (await client.get(path)).status_code == 404
+
+
 @pytest.fixture
 def api(db):
     objects, clock = MemoryObjects(), Clock()
@@ -318,6 +353,20 @@ async def test_purchase_and_expert_directory(api):
         await client.get(f"{BASE}/materials", params={"category": "purchased"})
     ).json()
     assert [e["material"]["material_id"] for e in shelf] == [material_id]
+
+    # 买家的格式权限也只能到成交那一版；卖家后来上传不能扩权。
+    await client.post(
+        f"{BASE}/materials/{material_id}/uses", json={"use": "app:knowbench"}
+    )
+    first_format = f"{BASE}/materials/{material_id}/versions/1/format"
+    assert (await client.get(first_format)).status_code == 200
+    state["owner"] = Owner("alice", "knowbench")
+    await client.post(
+        f"{BASE}/materials/{material_id}/versions", content=CSV + b"2024,20\n"
+    )
+    state["owner"] = Owner("bob", "knowbench")
+    assert (await client.get(first_format)).status_code == 200
+    assert (await client.get(first_format.replace("/1/", "/2/"))).status_code == 404
 
     state["service"] = "knowmart"
     wrong = await client.put(

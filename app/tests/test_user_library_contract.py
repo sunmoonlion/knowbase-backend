@@ -28,6 +28,7 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.DescriptionIn,
     models.DescriptionRead,
     models.VersionRead,
+    models.MaterialFormatRead,
     models.MaterialRead,
     models.HoldingRead,
     models.ShelfEntryRead,
