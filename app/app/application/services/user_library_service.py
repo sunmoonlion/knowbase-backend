@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import uuid
 from collections.abc import Callable
@@ -964,6 +965,18 @@ class UserLibraryService:
                 "source_url": source_url,
                 "item_ref": item_ref,
                 "basis": b.get("basis"),
+                **(
+                    {
+                        "source_query": json.dumps(
+                            prefill["source_query"],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    }
+                    if prefill.get("source_query")
+                    else {}
+                ),
             }
             material = await self.repo.add_material(
                 Material(

@@ -15,6 +15,7 @@ from app.interfaces.schemas.data_request import (
     Edition,
     Industry,
     PeriodRule,
+    SourceQuery,
     Topic,
 )
 
@@ -80,6 +81,7 @@ class DescriptionKeyModel(BaseModel):
     edition: Edition = "full"
     topics: list[Topic] = Field(default_factory=list, max_length=12)
     industry: Industry | None = None
+    source_query: SourceQuery | None = None
 
 
 class CandidateRead(BaseModel):
@@ -187,13 +189,13 @@ class ConfirmationCheckRead(BaseModel):
     expires_at: datetime
 
 
-
 class PreferenceIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     consumer: str = Field(min_length=1, max_length=160)
     key: DescriptionKeyModel
     material_ids: list[str] = Field(min_length=1, max_length=20)
+
 
 class PreferenceRead(BaseModel):
     key_id: str

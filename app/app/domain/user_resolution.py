@@ -110,6 +110,49 @@ class PeriodRule:
         return self
 
 
+def query_json(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        value = {k: v for k, v in value.items() if k != "request_id" or v is not None}
+    if not isinstance(value, dict) or set(value) - {"request_id"} != {
+        "channel",
+        "service",
+        "tool",
+        "arguments",
+    }:
+        raise refused(
+            "query_invalid", "query needs channel, service, tool and arguments"
+        )
+    if "request_id" in value and (
+        not isinstance(value["request_id"], str)
+        or not re.fullmatch(r"[a-f0-9]{32}", value["request_id"])
+    ):
+        raise refused("query_invalid", "invalid query request identity")
+    for name, pattern in (
+        ("channel", r"[a-z][a-z0-9-]{1,39}"),
+        ("service", r"[a-z][a-z0-9_]{0,63}"),
+        ("tool", r"[a-z][a-z0-9_]{0,99}"),
+    ):
+        if not isinstance(value[name], str) or not re.fullmatch(pattern, value[name]):
+            raise refused("query_invalid", "invalid query route")
+    if not isinstance(value["arguments"], dict) or len(value["arguments"]) > 50:
+        raise refused("query_invalid", "query arguments must be an object")
+    try:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        raise refused("query_invalid", "query must be JSON") from None
+    if len(canonical.encode()) > 20000:
+        raise refused("query_invalid", "query is too large")
+    return canonical
+
+
 @dataclass(frozen=True)
 class NeedSpec:
     """一样数据的描述（第 0 步提出、用户改过的）。主体为空就是不限主体。"""
@@ -134,6 +177,7 @@ class NeedSpec:
     topics: tuple[str, ...] = ()
     industry: str | None = None
     subject: str | None = None
+    source_query: str | None = None
 
     def checked(self) -> NeedSpec:
         if not NEED_KEY.fullmatch(self.key):
@@ -152,6 +196,24 @@ class NeedSpec:
         for f in self.formats:
             _vocab(lambda f=f: check_format(f))
         self.period.checked(self.doc_type)
+        if self.source_query is not None:
+            query_json(json.loads(self.source_query))
+            if (
+                self.doc_type != "other_text"
+                or self.period.kind != "none"
+                or set(self.formats) != {"text"}
+                or self.reading not in ("original", "text")
+                or self.edition != "full"
+            ):
+                raise refused(
+                    "query_invalid",
+                    "supplier responses are text evidence, not report originals; "
+                    "dates belong in query arguments",
+                )
+            if self.sources and set(self.sources) != {"collected"}:
+                raise refused(
+                    "query_invalid", "supplier responses use collected sources"
+                )
         if not 1 <= self.min_count <= self.max_count <= MAX_ITEMS:
             raise refused("count_invalid", "counts are 1 <= min <= max")
         if self.reading not in READINGS:
@@ -200,6 +262,11 @@ class NeedSpec:
             "topics": list(self.topics),
             "industry": self.industry,
             "subject": self.subject,
+            **(
+                {"source_query": json.loads(self.source_query)}
+                if self.source_query
+                else {}
+            ),
         }
 
 
@@ -234,6 +301,7 @@ class DescriptionKey:
     edition: str = "full"
     topics: tuple[str, ...] = ()
     industry: str | None = None
+    source_query: str | None = None
 
     def checked(self) -> DescriptionKey:
         if self.subject is not None:
@@ -244,6 +312,17 @@ class DescriptionKey:
         _vocab(lambda: check_topics(self.topics))
         if self.industry is not None:
             _vocab(lambda: check_industry(self.industry))  # type: ignore[arg-type]
+        if self.source_query is not None:
+            query_json(json.loads(self.source_query))
+            if (
+                self.doc_type != "other_text"
+                or self.period_start
+                or self.period_end
+                or self.edition != "full"
+            ):
+                raise refused(
+                    "query_invalid", "query responses have their own exact identity"
+                )
         return self
 
     def as_dict(self) -> dict[str, object]:
@@ -261,6 +340,8 @@ class DescriptionKey:
             out["topics"] = list(self.topics)
         if self.industry is not None:
             out["industry"] = self.industry
+        if self.source_query is not None:
+            out["source_query"] = json.loads(self.source_query)
         return out
 
     @staticmethod
@@ -269,6 +350,7 @@ class DescriptionKey:
         topics = data.get("topics") or ()
         return DescriptionKey(
             subject=str(data["subject"]) if data.get("subject") else None,
+            source_query=query_json(data.get("source_query")),
             doc_type=str(data["doc_type"]),
             period_start=date.fromisoformat(str(start)) if start else None,
             period_end=date.fromisoformat(str(end)) if end else None,
@@ -305,6 +387,7 @@ def expand(need: NeedSpec, params: TaskParams) -> list[Wanted]:
             edition=need.edition,
             topics=need.topics,
             industry=need.industry,
+            source_query=need.source_query,
         )
 
     out: list[Wanted] = []
@@ -551,6 +634,7 @@ def need_from(data: dict[str, object]) -> NeedSpec:
     period = data["period"]
     assert isinstance(period, dict)
     return NeedSpec(
+        source_query=query_json(data.get("source_query")),
         key=str(data["key"]),
         name=str(data["name"]),
         doc_type=str(data["doc_type"]),

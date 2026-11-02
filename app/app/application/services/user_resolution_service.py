@@ -16,6 +16,7 @@ import json
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from app.application.ports.user_library import UserLibraryRepository
@@ -397,6 +398,8 @@ class UserResolutionService:
         if reading_missing:
             # 原件在、读法没齐：交 knowfeed 补读法
             return ResultItem(need.key, key, "to_confirm", reason="reading_missing")
+        if key.source_query is not None:
+            return ResultItem(need.key, key, "to_confirm")
         if key.subject is None:
             # 不限主体的：渠道按主体采，交不了 knowfeed
             return ResultItem(need.key, key, "not_collectable", reason="no_subject")
@@ -616,6 +619,20 @@ def _checked_needs(
     if not (0 if allow_empty else 1) <= len(needs) <= MAX_NEEDS:
         raise refused("needs_invalid", f"give 1 to {MAX_NEEDS} needs")
     checked = [n.checked() for n in needs]
+    # A query is an acquisition, not a timeless document descriptor. Keep this
+    # identity through revision/refresh, but never silently reuse a prior task's
+    # "latest" response for a newly proposed query.
+    for index, need in enumerate(checked):
+        if need.source_query:
+            query = json.loads(need.source_query)
+            if not query.get("request_id"):
+                query["request_id"] = uuid.uuid4().hex
+                checked[index] = replace(
+                    need,
+                    source_query=json.dumps(
+                        query, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                    ),
+                )
     if len({n.key for n in checked}) != len(checked):
         raise refused("need_key_taken", "each need needs its own key")
     return checked

@@ -77,7 +77,12 @@ def get_user_resolution_service() -> UserResolutionService:
 
 def _need(n: NeedSpecIn) -> NeedSpec:
     p = n.period
+    from app.domain.user_resolution import query_json
+
     return NeedSpec(
+        source_query=query_json(
+            n.source_query.model_dump() if n.source_query else None
+        ),
         key=n.key,
         name=n.name,
         doc_type=n.doc_type,

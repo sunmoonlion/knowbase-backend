@@ -354,6 +354,10 @@ def _key_conditions(key: DescriptionKey) -> list:
         UserDataItem.doc_type.in_(types_of(key.doc_type)),
         UserDataItem.doc_edition == key.edition,
     ]
+    if key.source_query is not None:
+        conditions.append(
+            UserDataItem.provenance["source_query"].astext == key.source_query
+        )
     if key.subject is not None:
         conditions.append(UserDataItem.subject_code == key.subject)
     if key.period_end is not None:

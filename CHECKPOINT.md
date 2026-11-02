@@ -1,3 +1,12 @@
+# 2026-11-02 Wind 通用查询与年报证据（开发候选，未发布）
+
+基线 `020a42032de55f6b693de944a13a04dd57489425`。本轮本人要求第二轨作为主演示、巨潮保底，财务与年报都纳入、不限制为财务专线。
+
+新增可选 source_query，精确查询身份进入确认和资料匹配；新提案自动生成请求标识，修订/刷新沿用，防旧“最新”数据误命中。响应只作 collected/text，不冒充 PDF/pages。本人查询 provenance 匹配、错查询与错账号拒绝已走真实 PostgreSQL。数据请求及 user-data 提供方 schema 已重生成，父仓消费锁同步。
+验证：全量 739 passed / 5 skipped（/tmp/luna-wind-base-full.log）；source_query 专项 2 passed。pyright 0 errors；最初 ruff 一条长字符串超限已修，最终 /tmp/luna-wind-base-ruff-corrected.log 全过。旧固定路径原键序列化保持；没有迁移和生产操作。
+
+发布由 qwen/Jenkins；不代点用户采单、不修改线上任务。以下为此前历史：
+
 # 2026-11-02 luna：knowbase 既有类型与交付边界修复（未发布）
 
 基线为 WP-3 提交 fe184e4。修复此前 27 个 pyright 错误及既有 lint 错误，没有关闭检查或增加忽略：补齐端口与导入、复用读法查询/映射、按 SQLAlchemy DML 结果类型读取行数、明确可空值；删除误缩进在函数内部且从未被调用的重复 record_preference，沿用已有 save_preference。
