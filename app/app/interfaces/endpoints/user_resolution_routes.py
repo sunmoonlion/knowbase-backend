@@ -222,6 +222,19 @@ async def get_resolution(
     return _resolution(resolution)
 
 
+@router.post("/resolutions/{resolution_id}/refresh", response_model=ResolutionRead)
+async def refresh_mine(
+    resolution_id: str,
+    owner: Owner = Depends(require_user_owner),
+    service: UserResolutionService = Depends(get_user_resolution_service),
+):
+    """本人重新核对清单；身份和应用只取自令牌，不代本人确认。"""
+    resolution = await _call(
+        lambda: service.refresh_mine(owner.subject, owner.app, resolution_id)
+    )
+    return _resolution(resolution)
+
+
 @router.post(
     "/resolutions/{resolution_id}/revisions",
     response_model=ResolutionRead,
@@ -360,7 +373,9 @@ async def record_preference(
     service: UserResolutionService = Depends(get_user_resolution_service),
 ):
     """记录用户偏好：使用者 × 描述 → 挑选的资料。"""
-    key = DescriptionKey.from_dict(payload.key.model_dump(mode="json", exclude_none=True))
+    key = DescriptionKey.from_dict(
+        payload.key.model_dump(mode="json", exclude_none=True)
+    )
     p = await _call(
         lambda: service.record_preference(
             owner.subject, payload.consumer, key, payload.material_ids

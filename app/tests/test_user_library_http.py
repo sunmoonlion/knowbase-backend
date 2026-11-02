@@ -59,7 +59,7 @@ def api(db):
     app.include_router(user_run_routes.router, prefix="/api")
     app.include_router(user_resolution_routes.router, prefix="/api")
     app.include_router(user_fact_routes.router, prefix="/api")
-    state = {"owner": Owner("alice", "knowbench")}
+    state = {"owner": Owner("alice", "knowbench"), "app": app}
     overrides = app.dependency_overrides
     overrides[user_library_routes.internal_host_only] = lambda: None
     overrides[user_library_routes.require_user_owner] = lambda: state["owner"]
