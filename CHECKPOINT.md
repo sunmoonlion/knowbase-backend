@@ -86,3 +86,5 @@ ruff/pyright 通过。没有生产 DB 写入，无迁移或字段变化。
 按供给适配器对定期报告的既有语义，报告类型本身满足“业绩”；仅定期报告的results事项允许由类型满足，其他事项/主体/期间/版本形态/使用权仍严格筛选。未改数据、权限或报告内容；普通临时公告仍必须有对应事项标签。
 
 验证：真实隔离PostgreSQL解析与刷新回归29 passed（/tmp/luna-results-reuse-tests.log）；四类报告正例及主体/期间/摘要/权限/其他事项/非定期公告负例。Ruff通过，Pyright 0 errors。待父仓钉版、既有Jenkins发布及真实23项授权续跑核验；原件就绪不等于财务语义验收。
+
+发布前进一步核对发现：grant_by_confirmation按内容版本建立单值候选字典，同一报告两种读法覆盖，可能错误报outside_resolution。已改为保留全部已确认候选，并逐一严格匹配内容/版本/依据/读法版本及摘要。新增真实DB加工pages/text、两种清单顺序、实际签发与读取，以及未确认读法/篡改摘要拒签；合并解析、刷新与运行授权回归48 passed（/tmp/luna-results-and-grants-tests.log），Ruff/Pyright通过。#78主动在部署前停止，完整候选待重新走Jenkins；该停止不涉及业务任务。

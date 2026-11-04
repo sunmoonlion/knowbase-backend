@@ -876,7 +876,9 @@ async def test_nonperiodic_results_still_requires_topic_match(db, world):
         "announcement.csv",
         CSV,
         description=Description(
-            subject=MAOTAI, doc_type="interim_announcement", disclosed_on=date(2025, 6, 1)
+            subject=MAOTAI,
+            doc_type="interim_announcement",
+            disclosed_on=date(2025, 6, 1),
         ),
         confirm=True,
     )
@@ -894,4 +896,81 @@ async def test_nonperiodic_results_still_requires_topic_match(db, world):
     assert (
         await repo.candidates(ALICE, "knowbench", replace(key, topics=("results",)))
         == []
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_confirmed_reading_is_not_overwritten_by_same_material_other_reading(
+    world, reverse
+):
+    from app.domain.user_runs import GrantRequestItem, InputPin
+
+    material, version = await world.lib.upload(
+        ALICE,
+        "report.csv",
+        CSV,
+        process=True,
+        description=Description(
+            subject=MAOTAI,
+            doc_type="annual_report",
+            period_start=date(2025, 1, 1),
+            period_end=date(2025, 12, 31),
+            disclosed_on=date(2026, 4, 1),
+        ),
+        confirm=True,
+    )
+    await world.lib.show(ALICE, material.id, "app:knowbench")
+    processing = await world.runs.issue_processing("knowfeed", ALICE, material.id, 1)
+    pages = await world.runs.write_rendition(
+        "knowfeed", processing.id, "pages", "p1", b'[{"page":1,"text":"report"}]'
+    )
+    await world.runs.write_rendition("knowfeed", processing.id, "text", "t1", b"report")
+    needs = [
+        replace(
+            annual(count=1),
+            key=k,
+            reading=k,
+            period=PeriodRule("fixed", date(2025, 1, 1), date(2025, 12, 31)),
+        )
+        for k in ("pages", "text")
+    ]
+    if reverse:
+        needs.reverse()
+    resolution = await world.resolve(needs)
+    assert len(resolution.items) == 2
+    assert all(i.status == "resolved" for i in resolution.items)
+    request = GrantRequestItem(
+        InputPin(
+            material.id,
+            version.version_no,
+            version.sha256,
+            rendition_kind="pages",
+            rendition_no=pages.rendition_no,
+            rendition_sha256=pages.sha256,
+        ),
+        "display",
+        "app:knowbench",
+    )
+
+    async def issue(request=request, confirmed=frozenset({"pages", "text"})):
+        return await world.runs.grant_by_confirmation(
+            "knowbench",
+            ALICE,
+            "confirmed",
+            "knowbench:multi-reading",
+            resolution,
+            [request],
+            confirmed_needs=confirmed,
+        )
+
+    grant = await issue()
+    got = await world.runs.read_reading(
+        "knowbench", "runner", grant.id, material.id, 1, "pages"
+    )
+    assert got.pages[0].text == "report"
+    await refused(issue(confirmed=frozenset({"text"})), 403, "outside_resolution")
+    await refused(
+        issue(replace(request, pin=replace(request.pin, rendition_sha256="0" * 64))),
+        403,
+        "outside_resolution",
     )
