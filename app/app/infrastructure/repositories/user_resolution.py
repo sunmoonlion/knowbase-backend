@@ -356,7 +356,9 @@ def _key_conditions(key: DescriptionKey) -> list:
                 UserDataItem.disclosed_on >= key.period_start,
                 UserDataItem.disclosed_on <= key.period_end,
             ]
-    if key.topics:
+    # 定期报告本身披露业绩；采集器按报告期取同一原件，不要求它另挂 results 标签。
+    # 仅这一隐含事项可由报告类型满足，其余事项仍按原来的任一命中语义筛选。
+    if key.topics and not (is_periodic(key.doc_type) and "results" in key.topics):
         conditions.append(UserDataItem.topics.has_any(array(list(key.topics))))
     if key.industry is not None:
         conditions.append(UserDataItem.industry == key.industry)

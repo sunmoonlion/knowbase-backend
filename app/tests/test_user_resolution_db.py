@@ -823,3 +823,75 @@ async def test_edition_is_part_of_the_key(world):
         [NeedSpec(**{**annual(count=1).__dict__, "edition": "summary"})]
     )
     assert summary.items[0].status == "not_shown"  # 摘要在、没放开给 knowbench
+
+
+@pytest.mark.parametrize(
+    "doc_type,end",
+    [
+        ("annual_report", date(2025, 12, 31)),
+        ("q1_report", date(2025, 3, 31)),
+        ("semiannual_report", date(2025, 6, 30)),
+        ("q3_report", date(2025, 9, 30)),
+    ],
+)
+async def test_periodic_results_topic_reuses_untagged_report(db, world, doc_type, end):
+    material, _ = await world.lib.upload(
+        ALICE,
+        "report.csv",
+        CSV,
+        description=Description(
+            subject=MAOTAI,
+            doc_type=doc_type,
+            period_start=date(2025, 1, 1),
+            period_end=end,
+            disclosed_on=date(2026, 4, 1),
+        ),
+        confirm=True,
+    )
+    await world.lib.show(ALICE, material.id, "app:knowbench")
+    repo = SqlUserResolutionRepository(lambda: db)
+    key = DescriptionKey(
+        subject=MAOTAI,
+        doc_type=doc_type,
+        period_start=date(2025, 1, 1),
+        period_end=end,
+        topics=("results",),
+    )
+    found = await repo.candidates(ALICE, "knowbench", key)
+    assert [c.material_id for c in found] == [material.id]
+    # 别的事项、主体、报告期与摘要版本均不能借业绩标签放宽。
+    for changed in (
+        replace(key, topics=("dividend",)),
+        replace(key, subject="000858.SZ"),
+        replace(key, period_start=date(2024, 1, 1)),
+        replace(key, edition="summary"),
+    ):
+        assert await repo.candidates(ALICE, "knowbench", changed) == []
+    assert await repo.candidates(BOB, "knowbench", key) == []
+
+
+async def test_nonperiodic_results_still_requires_topic_match(db, world):
+    material, _ = await world.lib.upload(
+        ALICE,
+        "announcement.csv",
+        CSV,
+        description=Description(
+            subject=MAOTAI, doc_type="interim_announcement", disclosed_on=date(2025, 6, 1)
+        ),
+        confirm=True,
+    )
+    await world.lib.show(ALICE, material.id, "app:knowbench")
+    repo = SqlUserResolutionRepository(lambda: db)
+    key = DescriptionKey(
+        subject=MAOTAI,
+        doc_type="interim_announcement",
+        period_start=date(2025, 1, 1),
+        period_end=date(2025, 12, 31),
+    )
+    assert [c.material_id for c in await repo.candidates(ALICE, "knowbench", key)] == [
+        material.id
+    ]
+    assert (
+        await repo.candidates(ALICE, "knowbench", replace(key, topics=("results",)))
+        == []
+    )

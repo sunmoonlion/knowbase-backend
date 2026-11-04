@@ -78,3 +78,11 @@ knowfeed 受理/执行方续签，不删除历史授权。资料或所需读法�
 ruff/pyright 通过。没有生产 DB 写入，无迁移或字段变化。
 
 独立热修复以 #58 为基线，仅移植上述修复；原开发提交 b041a2a。
+
+## 2026-11-04 定期报告业绩标签复用修复
+
+基线45f703a7，独立工位model-stream-fix/knowbase-backend，分支fix/periodic-results-reuse。真实委托b435c1e9的23项均带topics=[results]，而已有定期报告topics=[]，导致严格事项匹配排除已有原件。生产只读核验所需pages/table均ready。
+
+按供给适配器对定期报告的既有语义，报告类型本身满足“业绩”；仅定期报告的results事项允许由类型满足，其他事项/主体/期间/版本形态/使用权仍严格筛选。未改数据、权限或报告内容；普通临时公告仍必须有对应事项标签。
+
+验证：真实隔离PostgreSQL解析与刷新回归29 passed（/tmp/luna-results-reuse-tests.log）；四类报告正例及主体/期间/摘要/权限/其他事项/非定期公告负例。Ruff通过，Pyright 0 errors。待父仓钉版、既有Jenkins发布及真实23项授权续跑核验；原件就绪不等于财务语义验收。
