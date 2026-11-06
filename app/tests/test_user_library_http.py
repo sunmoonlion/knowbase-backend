@@ -747,7 +747,11 @@ async def test_resolve_confirm_and_knowfeed_checks(api):
         f"{BASE}/service/resolutions/{rid}/refresh", params={"subject": "alice"}
     )
     assert refreshed.status_code == 200, refreshed.text
-    assert [i["status"] for i in refreshed.json()["items"]] == ["resolved", "waiting"]
+    # 确认是受理与续签的依据，不是「正在取」（b041a2a，11-03）：没拿到的那一项仍待确认
+    assert [i["status"] for i in refreshed.json()["items"]] == [
+        "resolved",
+        "to_confirm",
+    ]
     chosen = refreshed.json()["items"][0]["chosen"][0]
     pin = {
         "material_id": chosen["material_id"],
