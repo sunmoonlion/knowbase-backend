@@ -1,7 +1,9 @@
 """孵化只读表轴：第一行、第一列的标签，不含表格数据区，也不求值公式。
 
 沿用孵化契约的有界投影：50 张表、200 列、500 行、每个标签 200 字。
-CSV 第一行视为表头；xlsx 按工作簿关系定位工作表，不猜 sheet1.xml。
+CSV 第一行视为表头，先按 UTF-8、读不通再按 GB18030（国内常见导出，账 186）；
+xlsx 按工作簿关系定位工作表，不猜 sheet1.xml，单元格省略 `r` 时按出现顺序
+记为下一列（OOXML 允许）。
 旧 xls、PDF、正文文件没有可可靠提取的表轴，回空；坏表格拒绝而非伪装为空。
 """
 
@@ -46,10 +48,18 @@ def _row_label(value: str) -> str:
     return ""
 
 
+def _csv_text(content: bytes) -> str:
+    try:
+        return content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        # GB18030 覆盖 GBK、GB2312；再不通就照旧当坏表拒绝
+        return content.decode("gb18030")
+
+
 def table_formats(media_type: str, content: bytes) -> tuple[TableFormat, ...]:
     try:
         if media_type.split(";", 1)[0] == "text/csv":
-            records = csv.reader(io.StringIO(content.decode("utf-8-sig")), strict=True)
+            records = csv.reader(io.StringIO(_csv_text(content)), strict=True)
             header = next(records, [])
             rows: list[str] = []
             for number, row in enumerate(records):
@@ -140,14 +150,18 @@ def _xlsx(content: bytes) -> tuple[TableFormat, ...]:
             for index, row in enumerate(document.iter(f"{MAIN}row")):
                 if index > 500:
                     break
+                column = 0
                 for cell in row.findall(f"{MAIN}c"):
-                    ref = cell.get("r", "")
-                    letters = ref.rstrip("0123456789")
-                    if not letters or not all("A" <= c <= "Z" for c in letters):
-                        raise ValueError("invalid cell reference")
-                    column = 0
-                    for letter in letters:
-                        column = column * 26 + ord(letter) - ord("A") + 1
+                    ref = cell.get("r")
+                    if ref is None:
+                        column += 1  # 省略 r：紧接上一格的下一列
+                    else:
+                        letters = ref.rstrip("0123456789")
+                        if not letters or not all("A" <= c <= "Z" for c in letters):
+                            raise ValueError("invalid cell reference")
+                        column = 0
+                        for letter in letters:
+                            column = column * 26 + ord(letter) - ord("A") + 1
                     if index == 0 and column <= 200:
                         columns.extend([""] * max(0, column - len(columns)))
                         columns[column - 1] = _label(cell_value(cell))

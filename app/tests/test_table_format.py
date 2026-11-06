@@ -94,3 +94,37 @@ def test_projection_is_bounded_by_incubation_contract():
     (shape,) = table_formats("text/csv", content)
     assert len(shape.columns) == 200 and len(shape.rows) == 500
     assert len(shape.columns[0]) == 200
+
+
+def test_csv_in_gb18030_is_read_like_utf8():
+    # 账 186：国内常见导出是 GBK/GB18030，读不出就整次挑数据失败
+    (shape,) = table_formats(
+        "text/csv", "项目,2023年,2024年\n营业收入,1,2\n".encode("gb18030")
+    )
+    assert shape.columns == ("项目", "2023年", "2024年")
+    assert shape.rows == ("营业收入",)
+
+
+def test_xlsx_cells_without_a_reference_take_the_next_column():
+    # OOXML 允许省略 r：按出现顺序是下一列
+    sheet = (
+        '<worksheet xmlns="' + MAIN[1:-1] + '"><sheetData>'
+        '<row><c t="inlineStr"><is><t>科目</t></is></c>'
+        '<c t="inlineStr"><is><t>2023</t></is></c>'
+        '<c r="D1" t="inlineStr"><is><t>2025</t></is></c>'
+        '<c t="inlineStr"><is><t>2026</t></is></c></row>'
+        '<row><c t="inlineStr"><is><t>收入</t></is></c><c><v>5</v></c></row>'
+        "</sheetData></worksheet>"
+    )
+    (shape,) = table_formats(XLSX, workbook(sheet=sheet))
+    assert shape.columns == ("科目", "2023", "", "2025", "2026")
+    assert shape.rows == ("收入",)
+
+
+def test_xlsx_with_an_invalid_reference_is_still_refused():
+    sheet = (
+        '<worksheet xmlns="' + MAIN[1:-1] + '"><sheetData>'
+        '<row><c r="1A"><v>1</v></c></row></sheetData></worksheet>'
+    )
+    with pytest.raises(UserDataError, match="format"):
+        table_formats(XLSX, workbook(sheet=sheet))
