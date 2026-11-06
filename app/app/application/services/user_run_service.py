@@ -240,12 +240,13 @@ class UserRunService:
             raise refused("app_invalid", "a delegation runs in knowbench")
         if await self.runs.is_ref_released(caller, ref):
             raise conflict("ref_released", "the run ref has already been released")
-        offered = {
-            (c.material_id, c.version_no, c.sha256): c
+        # 同一内容版本可以同时满足报表、分页等多项需求。不能以内容ID覆盖候选读法。
+        offered = [
+            c
             for item in resolution.items
             if item.need_key in confirmed_needs
             for c in item.chosen + item.candidates
-        }
+        ]
         for request in items:
             pin = request.pin
             if request.basis == "frozen_binding":
@@ -254,14 +255,19 @@ class UserRunService:
                         "binding_mismatch", "a binding is for another expert version"
                     )
                 continue
-            offer = offered.get((pin.material_id, pin.version_no, pin.sha256))
-            if offer is None or offer.basis != request.basis:
+            matching = [
+                c
+                for c in offered
+                if (c.material_id, c.version_no, c.sha256, c.basis)
+                == (pin.material_id, pin.version_no, pin.sha256, request.basis)
+            ]
+            if not matching:
                 raise denied("outside_resolution", "an item is not on the list")
-            if pin.rendition_kind is not None and (
-                offer.rendition_kind,
-                offer.rendition_no,
-                offer.rendition_sha256,
-            ) != (pin.rendition_kind, pin.rendition_no, pin.rendition_sha256):
+            if pin.rendition_kind is not None and not any(
+                (c.rendition_kind, c.rendition_no, c.rendition_sha256)
+                == (pin.rendition_kind, pin.rendition_no, pin.rendition_sha256)
+                for c in matching
+            ):
                 raise denied("outside_resolution", "a reading is not on the list")
         return await self._issue(
             "delegation",
