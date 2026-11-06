@@ -140,3 +140,26 @@ def test_first_page_of_a_pdf_and_of_text():
     # 读不出不报错：识别只是建议
     assert read_first_page("application/pdf", b"%PDF-broken") == ""
     assert read_first_page("application/vnd.ms-excel", b"\xd0\xcf") == ""
+
+
+def test_a_stuck_pdf_does_not_hold_the_upload_past_the_timeout(monkeypatch):
+    # 账 188：识别只是建议，坏 PDF 卡住解析也要在时限内放行
+    import threading
+    import time
+
+    from app.infrastructure.external import first_page
+
+    release = threading.Event()
+
+    def stuck(content):
+        release.wait(30)
+        return "late"
+
+    monkeypatch.setattr(first_page, "_pdf_first_page", stuck)
+    monkeypatch.setattr(first_page, "PDF_TIMEOUT_SECONDS", 0.2)
+    started = time.monotonic()
+    try:
+        assert first_page.read_first_page("application/pdf", b"%PDF-1.7") == ""
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()

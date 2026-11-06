@@ -1034,11 +1034,24 @@ class SqlUserRunRepository:
             return row is not None
 
     async def has_frozen_bindings(self, material_id: str) -> bool:
+        """这份资料冻结给过专家吗：交付时冻结的用途（`expert:<专家>@<版本>`）还有效，或者
+        有人凭冻结绑定签过授权。只「绑给专家」、还没交付冻结的（`expert:<专家>`）不算
+        （账 185：已上架专家的绑定没人请过时，清除不能真删）。"""
         async with self._sessions()() as session:
             mid = uuid.UUID(material_id)
-            # 检查在跑或历史授权中的 frozen_binding 项，
-            # 或者 user_data_holding/expert 绑定
-            row = await session.execute(
+            frozen = await session.scalar(
+                select(UserDataUse.id)
+                .where(
+                    UserDataUse.item_id == mid,
+                    UserDataUse.use.startswith("expert:", autoescape=True),
+                    UserDataUse.use.contains("@", autoescape=True),
+                    UserDataUse.withdrawn_at.is_(None),
+                )
+                .limit(1)
+            )
+            if frozen is not None:
+                return True
+            granted = await session.scalar(
                 select(UserDataRunGrantItem.item_id)
                 .where(
                     UserDataRunGrantItem.item_id == mid,
@@ -1046,7 +1059,7 @@ class SqlUserRunRepository:
                 )
                 .limit(1)
             )
-            return row.scalar() is not None
+            return granted is not None
 
     async def active_grants_for_others(
         self, material_id: str, owner: str, now: datetime

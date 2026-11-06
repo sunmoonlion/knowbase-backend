@@ -997,3 +997,34 @@ async def test_an_undelivered_freeze_is_voided_but_not_one_others_used(world):
     await world.lib.add_version(ALICE, material.id, None, CSV + b"7,7\n")
     [(again, _)] = await world.lib.freeze_binding(ALICE, "fa-1", "1")
     assert again.version_no == 2
+
+
+async def test_purge_keeps_content_frozen_to_an_expert_nobody_has_asked_yet(world):
+    # 账 185：冻结给专家的这一份，就算还没人请过（没签过授权），非个人信息的清除也只
+    # 删掉、不真删内容；依法清除个人信息照旧真删
+    material, v1 = await world.upload(
+        ALICE, "binding.csv", license_="via_expert", attest=True
+    )
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    await world.lib.freeze_binding(ALICE, "fa-1", "1")
+
+    assert not await world.runs.purge_material(
+        "admin-1", material.id, "清理", personal_info=False
+    )
+    assert v1.object_key in world.objects.data
+    assert await world.runs.purge_material(
+        "admin-1", material.id, "personal-info", personal_info=True
+    )
+    assert v1.object_key not in world.objects.data
+
+
+async def test_purge_ignores_an_unfrozen_binding(world):
+    # 只「绑给专家」、还没交付冻结的，下一版才会冻结：照常清除
+    material, v1 = await world.upload(ALICE, "draft.csv")
+    await world.lib.upsert_expert("fa-1", ALICE, "财务分析与预测", None)
+    await world.lib.show(ALICE, material.id, "expert:fa-1")
+    assert await world.runs.purge_material(
+        "admin-1", material.id, "清理", personal_info=False
+    )
+    assert v1.object_key not in world.objects.data

@@ -16,13 +16,24 @@ from app.domain.user_data import format_view
 
 logger = logging.getLogger(__name__)
 
+# PDF 首页识别的时限（秒）。解析放进一个常驻的小线程池，超时就不等它：线程照样跑完、
+# 结果丢掉，上传不被坏 PDF 卡住；池子只有两个线程，卡住的再多也不会无限开线程
+# （以前 `with ThreadPoolExecutor` 退出时 shutdown(wait=True)，时限不起作用，账 188）。
+PDF_TIMEOUT_SECONDS = 3.0
+_PDF_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="first-page-pdf"
+)
+
 
 def read_first_page(media_type: str, content: bytes) -> str:
     try:
         if media_type == "application/pdf":
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(_pdf_first_page, content)
-                return future.result(timeout=3.0)[:MAX_TEXT_CHARS]
+            future = _PDF_POOL.submit(_pdf_first_page, content)
+            try:
+                return future.result(timeout=PDF_TIMEOUT_SECONDS)[:MAX_TEXT_CHARS]
+            except concurrent.futures.TimeoutError:
+                future.cancel()  # 还在排队的就不跑了；已经在跑的跑完丢掉
+                raise
         if media_type.startswith("text/"):
             return content[: MAX_TEXT_CHARS * 4].decode("utf-8", "replace")[
                 :MAX_TEXT_CHARS
