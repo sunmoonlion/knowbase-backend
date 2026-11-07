@@ -11,6 +11,7 @@ from datetime import date
 from fastapi import APIRouter, Depends, Query, status
 
 from app.application.services.user_resolution_service import UserResolutionService
+from app.domain.fact_needs import FactKey, FactNeed
 from app.domain.user_data import Owner
 from app.domain.user_resolution import (
     Candidate,
@@ -36,6 +37,7 @@ from app.infrastructure.storage.postgres import get_postgres
 from app.interfaces.endpoints.public_access import public_gate
 from app.interfaces.endpoints.user_data_errors import call as _call
 from app.interfaces.http.internal.host_guard import internal_host_only
+from app.interfaces.schemas.data_request import FactRequest
 from app.interfaces.schemas.user_resolution import (
     AddNeedsIn,
     BranchRead,
@@ -44,6 +46,7 @@ from app.interfaces.schemas.user_resolution import (
     ConfirmationRead,
     ConfirmIn,
     DescriptionKeyModel,
+    FactKeyModel,
     LookupRead,
     NeedSpecIn,
     PreferenceIn,
@@ -75,7 +78,21 @@ def get_user_resolution_service() -> UserResolutionService:
     )
 
 
-def _need(n: NeedSpecIn) -> NeedSpec:
+def _need(n: NeedSpecIn) -> NeedSpec | FactNeed:
+    if isinstance(n, FactRequest):
+        return FactNeed(
+            key=n.key,
+            name=n.name,
+            subject=n.subject,
+            start=n.start,
+            end=n.end,
+            codes=tuple(n.codes),
+            consolidation=n.consolidation,
+            duration=n.duration,
+            disclosure=n.disclosure,
+            required=n.required,
+            description=n.description,
+        )
     p = n.period
     from app.domain.user_resolution import query_json
 
@@ -144,7 +161,9 @@ def _resolution(r: Resolution) -> ResolutionRead:
         items=[
             ResultItemRead(
                 need_key=i.need_key,
-                key=DescriptionKeyModel(
+                key=FactKeyModel.model_validate(i.key.as_dict())
+                if isinstance(i.key, FactKey)
+                else DescriptionKeyModel(
                     **{**i.key.__dict__, "topics": list(i.key.topics)}
                 ),
                 status=i.status,

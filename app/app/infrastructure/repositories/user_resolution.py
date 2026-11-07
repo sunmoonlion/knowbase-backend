@@ -9,7 +9,10 @@ from sqlalchemy import and_, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import array, insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.domain.chart_of_accounts import CHART
+from app.domain.fact_needs import DatedFact, FactKey
 from app.domain.user_data import conflict
+from app.domain.user_facts import FactRow
 from app.domain.user_library import PUBLIC_OWNER, RESOLVABLE
 from app.domain.user_resolution import (
     Candidate,
@@ -25,9 +28,11 @@ from app.domain.user_resolution import (
 from app.domain.vocabulary import VOCAB_VERSION, is_periodic, types_of
 from app.infrastructure.models.user_data import (
     UserDataConfirmation,
+    UserDataFact,
     UserDataHolding,
     UserDataItem,
     UserDataPreference,
+    UserDataRendition,
     UserDataResolution,
     UserDataUse,
     UserDataVersion,
@@ -178,6 +183,185 @@ class SqlUserResolutionRepository:
                         size_bytes=version.size_bytes,
                     )
             return list(seen.values())
+
+    async def fact_candidates(
+        self,
+        subject: str,
+        app: str,
+        key: FactKey,
+        *,
+        public_access: bool = False,
+    ) -> list[tuple[Candidate, list[DatedFact]]]:
+        """请的人能用的、这家公司的资料里，表格读法有这一期这几个数的
+        （SDD 0051 第 2.2 节）。
+
+        看得见哪些资料和 `candidates` 一样（他名下的、公开原件层）；每份取他能用的
+        那一版、那一版最新的就绪表格读法；只返回口径对得上的标准化层的行，带资料的
+        披露日。
+        """
+        shown = exists().where(
+            UserDataUse.subject == subject,
+            UserDataUse.item_id == UserDataItem.id,
+            UserDataUse.use == f"app:{app}",
+            UserDataUse.withdrawn_at.is_(None),
+        )
+        number = func.coalesce(UserDataHolding.version_no, UserDataItem.current_version)
+        visible = [
+            UserDataItem.subject_code == key.subject,
+            UserDataItem.description_status.in_(RESOLVABLE),
+            UserDataItem.vocab_version == VOCAB_VERSION,
+            UserDataItem.purged_at.is_(None),
+        ]
+        held = (
+            select(UserDataHolding, UserDataItem, UserDataVersion, shown.label("shown"))
+            .join(UserDataItem, UserDataItem.id == UserDataHolding.item_id)
+            .join(
+                UserDataVersion,
+                and_(
+                    UserDataVersion.item_id == UserDataItem.id,
+                    UserDataVersion.version_no == number,
+                ),
+            )
+            .where(
+                UserDataHolding.subject == subject,
+                UserDataHolding.ended_at.is_(None),
+                or_(
+                    UserDataItem.content_origin != "output",
+                    UserDataItem.provenance.has_key("converted_from"),
+                ),
+                *visible,
+            )
+            .order_by(UserDataItem.created_at, UserDataItem.id)
+        )
+        async with self._sessions()() as session:
+            seen: dict[str, tuple[Candidate, UserDataItem, UserDataVersion]] = {}
+            for holding, item, version, is_shown in (await session.execute(held)).all():
+                reference = holding.basis == "reference"
+                found = Candidate(
+                    material_id=str(item.id),
+                    version_no=version.version_no,
+                    sha256=version.sha256,
+                    content_origin=item.content_origin,
+                    disclosed_on=item.disclosed_on,
+                    created_at=item.created_at,
+                    shown=bool(is_shown) or reference,
+                    data_format=item.data_format,
+                    usable=item.disabled_at is None,
+                    basis="reference" if reference else "display",
+                    name=item.name,
+                    media_type=version.media_type,
+                    size_bytes=version.size_bytes,
+                )
+                if found.material_id not in seen or holding.version_no is None:
+                    seen[found.material_id] = (found, item, version)
+            if public_access:
+                public = select(UserDataItem, UserDataVersion).join(
+                    UserDataVersion,
+                    and_(
+                        UserDataVersion.item_id == UserDataItem.id,
+                        UserDataVersion.version_no == UserDataItem.current_version,
+                    ),
+                )
+                public = public.where(
+                    UserDataItem.owner_subject == PUBLIC_OWNER, *visible
+                )
+                for item, version in (await session.execute(public)).all():
+                    if str(item.id) in seen:
+                        continue
+                    seen[str(item.id)] = (
+                        Candidate(
+                            material_id=str(item.id),
+                            version_no=version.version_no,
+                            sha256=version.sha256,
+                            content_origin=item.content_origin,
+                            disclosed_on=item.disclosed_on,
+                            created_at=item.created_at,
+                            shown=True,
+                            data_format=item.data_format,
+                            usable=item.disabled_at is None,
+                            basis="public",
+                            name=item.name,
+                            media_type=version.media_type,
+                            size_bytes=version.size_bytes,
+                        ),
+                        item,
+                        version,
+                    )
+            if not seen:
+                return []
+            versions = [v.id for _, _, v in seen.values()]
+            renditions = (
+                await session.execute(
+                    select(UserDataRendition)
+                    .where(
+                        UserDataRendition.version_id.in_(versions),
+                        UserDataRendition.kind == "table",
+                        UserDataRendition.status == "ready",
+                    )
+                    .order_by(UserDataRendition.rendition_no)
+                )
+            ).scalars()
+            latest = {r.version_id: r for r in renditions}  # 编号大的在后，覆盖前面的
+            if not latest:
+                return []
+            facts = (
+                await session.execute(
+                    select(UserDataFact).where(
+                        UserDataFact.rendition_id.in_([r.id for r in latest.values()]),
+                        UserDataFact.code.in_(key.codes),
+                        UserDataFact.period_end == key.period_end,
+                        UserDataFact.duration == key.duration,
+                        UserDataFact.consolidation == key.consolidation,
+                    )
+                )
+            ).scalars()
+            by_rendition: dict[uuid.UUID, list[UserDataFact]] = {}
+            for fact in facts:
+                by_rendition.setdefault(fact.rendition_id, []).append(fact)
+            out: list[tuple[Candidate, list[DatedFact]]] = []
+            for candidate, item, version in seen.values():
+                rendition = latest.get(version.id)
+                rows = by_rendition.get(rendition.id, []) if rendition else []
+                if rendition is None or not rows:
+                    continue
+                dated = [
+                    DatedFact(
+                        FactRow(
+                            subject=item.subject_code,
+                            code=fact.code,
+                            label=CHART[fact.code].name,
+                            value=fact.value,
+                            unit="元",
+                            currency=fact.currency,
+                            period_end=fact.period_end,
+                            duration=fact.duration,
+                            consolidation=fact.consolidation,
+                            material_id=str(item.id),
+                            material_name=item.name,
+                            version_no=fact.version_no,
+                            rendition_no=rendition.rendition_no,
+                            page=fact.page,
+                            layer="standard",
+                            ref=f"fact:{fact.id}",
+                        ),
+                        item.disclosed_on,
+                    )
+                    for fact in rows
+                ]
+                out.append(
+                    (
+                        Candidate(
+                            **{
+                                **candidate.__dict__,
+                                "rendition_kind": "table",
+                                "rendition_no": rendition.rendition_no,
+                                "rendition_sha256": rendition.sha256,
+                            }
+                        ),
+                        dated,
+                    )
+                )
+            return out
 
     # —— 解析清单 ——
 

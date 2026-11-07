@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.domain.fact_needs import DatedFact, FactKey
 from app.domain.user_resolution import (
     Candidate,
     Confirmation,
@@ -22,6 +23,15 @@ class ResolutionRepository(Protocol):
         *,
         public_access: bool = False,
     ) -> list[Candidate]: ...
+
+    async def fact_candidates(
+        self,
+        subject: str,
+        app: str,
+        key: FactKey,
+        *,
+        public_access: bool = False,
+    ) -> list[tuple[Candidate, list[DatedFact]]]: ...
 
     async def add_resolution(
         self, resolution: Resolution, *, expected_revision: int

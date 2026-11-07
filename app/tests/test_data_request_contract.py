@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 from typing import get_args
 
+import pytest
+
 from app.domain import chart_of_accounts, vocabulary
 from app.interfaces.schemas import data_request
 
@@ -25,14 +27,22 @@ MANIFEST = CONTRACT_DIR / "contract-manifest.json"
 
 
 def generated_schema() -> str:
-    schema = data_request.DataRequest.model_json_schema(ref_template="#/$defs/{model}")
-    defs = schema.pop("$defs", {})
-    defs["DataRequest"] = schema
+    """一样数据：要哪份资料（`DataRequest`）或要哪些数（`FactRequest`，
+    SDD 0051 的加法，带 `kind: facts`）。只能对上其中一个：`FactRequest` 要
+    `kind`，两边都不收多余的键。"""
+    defs: dict[str, object] = {}
+    for model in (data_request.DataRequest, data_request.FactRequest):
+        schema = model.model_json_schema(ref_template="#/$defs/{model}")
+        defs.update(schema.pop("$defs", {}))
+        defs[model.__name__] = schema
     document = {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://contracts.sunmoonai.com/knowbase/data-request/v1/data-request.schema.json",
         "title": "data request v1",
-        "$ref": "#/$defs/DataRequest",
+        "oneOf": [
+            {"$ref": "#/$defs/DataRequest"},
+            {"$ref": "#/$defs/FactRequest"},
+        ],
         "$defs": dict(sorted(defs.items())),
     }
     return json.dumps(document, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
@@ -102,3 +112,35 @@ def test_contract_files_are_generated_from_the_models():
     assert VOCABULARY.read_text() == vocabulary_text
     assert CHART.read_text() == chart_text
     assert MANIFEST.read_text() == manifest
+
+
+def test_a_request_is_either_a_document_or_facts_never_both():
+    """SDD 0051：要哪些数是加法；旧的要哪份资料照样过，混写的不过。"""
+    import jsonschema
+
+    schema = json.loads(SCHEMA.read_text())
+    document = {
+        "key": "annual",
+        "name": "年报",
+        "subject": "300750.SZ",
+        "doc_type": "annual_report",
+        "period": {"kind": "latest", "count": 3},
+        "formats": ["pdf"],
+    }
+    facts = {
+        "kind": "facts",
+        "key": "revenue",
+        "name": "营业收入",
+        "subject": "300750.SZ",
+        "start": "2023-01-01",
+        "end": "2025-12-31",
+        "codes": ["IS.REVENUE"],
+    }
+    jsonschema.validate(document, schema)
+    jsonschema.validate(facts, schema)
+    data_request.DataRequest.model_validate(document)
+    assert data_request.FactRequest.model_validate(facts).disclosure == "first"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**facts, "doc_type": "annual_report"}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**document, "kind": "facts"}, schema)

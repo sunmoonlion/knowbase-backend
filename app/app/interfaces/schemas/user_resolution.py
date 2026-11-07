@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.interfaces.schemas.data_request import (
     DataRequest,
     Edition,
+    FactRequest,
     Industry,
     PeriodRule,
     SourceQuery,
@@ -32,7 +33,7 @@ Status = Literal[
 
 # 一样数据的描述只有一份模型：契约 `data-request/v1`
 PeriodRuleIn = PeriodRule
-NeedSpecIn = DataRequest
+NeedSpecIn = DataRequest | FactRequest  # 要哪份资料 / 要哪些数（SDD 0051）
 
 
 class TaskParamsIn(BaseModel):
@@ -84,6 +85,23 @@ class DescriptionKeyModel(BaseModel):
     source_query: SourceQuery | None = None
 
 
+class FactKeyModel(BaseModel):
+    """「要哪些数」展开出的一条：这家公司这一期这几个科目、这个口径（SDD 0051）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["facts"]
+    subject: str = Field(min_length=1, max_length=64)
+    period_end: date
+    codes: list[str] = Field(min_length=1, max_length=30)
+    consolidation: Literal["consolidated", "parent"] = "consolidated"
+    duration: Literal["year", "half", "quarter", "ytd", "instant"] = "year"
+    disclosure: Literal["first", "latest"] = "first"
+
+
+AnyKeyModel = DescriptionKeyModel | FactKeyModel
+
+
 class CandidateRead(BaseModel):
     material_id: str
     # 开跑时凭什么签：display、reference、public
@@ -103,7 +121,7 @@ class CandidateRead(BaseModel):
 
 class ResultItemRead(BaseModel):
     need_key: str
-    key: DescriptionKeyModel
+    key: AnyKeyModel
     status: Status
     chosen: list[CandidateRead]
     candidates: list[CandidateRead]
@@ -135,7 +153,7 @@ class ConfirmItemIn(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    key: DescriptionKeyModel | None = None
+    key: AnyKeyModel | None = None
     need_key: str | None = Field(default=None, max_length=40)
     reading: Literal["original", "text", "pages", "table"] | None = None
     required: bool | None = None

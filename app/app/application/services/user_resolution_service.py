@@ -23,6 +23,7 @@ from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_resolution import ResolutionRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.application.services.call_rate import RateLimiter
+from app.domain.fact_needs import FactKey, FactNeed, pick
 from app.domain.public_access import PublicGate
 from app.domain.user_data import UserDataError, not_found, refused
 from app.domain.user_library import Holding
@@ -31,6 +32,7 @@ from app.domain.user_resolution import (
     CONTRACT_VERSION,
     MAX_ITEMS,
     MAX_NEEDS,
+    AnyNeed,
     Candidate,
     Confirmation,
     DescriptionKey,
@@ -41,6 +43,7 @@ from app.domain.user_resolution import (
     TaskParams,
     Wanted,
     expand,
+    key_from_dict,
     key_id,
     rank,
 )
@@ -346,11 +349,15 @@ class UserResolutionService:
         self,
         subject: str,
         app: str,
-        need: NeedSpec,
+        need: AnyNeed,
         wanted: Wanted,
         preference: Preference | None,
         params: TaskParams,
     ) -> ResultItem:
+        if isinstance(wanted.key, FactKey):
+            assert isinstance(need, FactNeed)
+            return await self._resolve_facts(subject, app, need, wanted.key)
+        assert isinstance(need, NeedSpec)
         key = wanted.key
         found = [
             c
@@ -402,6 +409,47 @@ class UserResolutionService:
             return ResultItem(need.key, key, "to_confirm")
         reason = "needs_url" if key.doc_type == "webpage" else "private"
         return ResultItem(need.key, key, "not_collectable", reason=reason)
+
+    async def _resolve_facts(
+        self, subject: str, app: str, need: FactNeed, key: FactKey
+    ) -> ResultItem:
+        """要哪些数（SDD 0051 第 2.2 节）：在他能用的资料的表格读法里找这一期这几个数，
+        按披露版本挑；齐了就定，缺的交 knowfeed（取法由 knowfeed 定）。"""
+        found = await self.repo.fact_candidates(
+            subject, app, key, public_access=self.gate.allows(subject)
+        )
+        usable = [(c, facts) for c, facts in found if c.usable]
+        if found and not usable:
+            return ResultItem(need.key, key, "unusable", reason="disabled")
+        shown = [(c, facts) for c, facts in usable if c.shown]
+        picked = pick(key.need_for(need), [f for _, facts in shown for f in facts])
+        if picked.undecided:
+            return ResultItem(
+                need.key,
+                key,
+                "ambiguous",
+                candidates=tuple(c for c, _ in shown),
+                reason="several_reports",
+            )
+        if not picked.missing:
+            used = {row.material_id for row in picked.facts.values()}
+            return ResultItem(
+                need.key,
+                key,
+                "resolved",
+                chosen=tuple(c for c, _ in shown if c.material_id in used),
+                reason=key.disclosure,
+            )
+        hidden = [(c, facts) for c, facts in usable if not c.shown]
+        if hidden:
+            everything = pick(
+                key.need_for(need), [f for _, facts in usable for f in facts]
+            )
+            if not everything.missing and not everything.undecided:
+                return ResultItem(
+                    need.key, key, "not_shown", candidates=tuple(c for c, _ in hidden)
+                )
+        return ResultItem(need.key, key, "to_confirm", reason="facts_missing")
 
     async def _with_reading(self, c: Candidate, reading: str) -> Candidate | None:
         """要正文、按页文字、表格的：取那一版最新的就绪读法；没有就是 None。"""
@@ -504,7 +552,9 @@ class UserResolutionService:
         """入口分支（0043 第 3.3 节第 4 条）：他已经能用、读法也齐 → ready；他还没有、
         但公开原件层这一份与要的读法都齐 → 当场按这次确认记一条引用，立即完成（ready）；
         否则交 knowfeed（supply）。"""
-        key = DescriptionKey.from_dict(item["key"])  # type: ignore[arg-type]
+        key = key_from_dict(item["key"])  # type: ignore[arg-type]
+        if isinstance(key, FactKey):
+            return await self._facts_entry_branch(subject, app, confirmation, item, key)
         reading = str(item.get("reading") or "original")
         found = await self.repo.candidates(subject, app, key, public_access=True)
         for candidate in [c for c in found if c.usable and c.shown]:
@@ -530,6 +580,54 @@ class UserResolutionService:
                 )
             return "ready"
         return "supply"
+
+    async def _facts_entry_branch(
+        self,
+        subject: str,
+        app: str,
+        confirmation: Confirmation,
+        item: dict[str, object],
+        key: FactKey,
+    ) -> str:
+        """「要哪些数」的入口分支：他能用的、加上公开原件层的，这几个数都齐、
+        挑得出 → ready（用到的公开原件当场记引用）；否则交 knowfeed。"""
+        need = FactNeed(
+            key=str(item.get("need_key") or "facts"),
+            name="facts",
+            subject=key.subject,
+            start=key.period_end,
+            end=key.period_end,
+            codes=key.codes,
+            consolidation=key.consolidation,
+            duration=key.duration,
+            disclosure=key.disclosure,
+        )
+        found = [
+            (c, facts)
+            for c, facts in await self.repo.fact_candidates(
+                subject, app, key, public_access=True
+            )
+            if c.usable and c.shown
+        ]
+        picked = pick(need, [f for _, facts in found for f in facts])
+        if picked.missing or picked.undecided:
+            return "supply"
+        used = {row.material_id for row in picked.facts.values()}
+        for candidate, _ in found:
+            if candidate.material_id in used and candidate.basis == "public":
+                await self.library.add_holding(
+                    Holding(
+                        id=self.new_id(),
+                        subject=subject,
+                        material_id=candidate.material_id,
+                        basis="reference",
+                        license="via_expert",
+                        created_at=self.now(),
+                        version_no=candidate.version_no,
+                        ref=f"confirmation:{confirmation.id}:{item['item_id']}",
+                    )
+                )
+        return "ready"
 
     async def check_confirmation(
         self, caller: str, confirmation_id: str, subject: str
@@ -600,9 +698,7 @@ class UserResolutionService:
             raise refused("app_invalid", "resolution runs for knowbench or knowlab")
 
 
-def _checked_needs(
-    needs: list[NeedSpec], *, allow_empty: bool = False
-) -> list[NeedSpec]:
+def _checked_needs(needs: list[AnyNeed], *, allow_empty: bool = False) -> list[AnyNeed]:
     if not (0 if allow_empty else 1) <= len(needs) <= MAX_NEEDS:
         raise refused("needs_invalid", f"give 1 to {MAX_NEEDS} needs")
     checked = [n.checked() for n in needs]
@@ -610,7 +706,7 @@ def _checked_needs(
     # identity through revision/refresh, but never silently reuse a prior task's
     # "latest" response for a newly proposed query.
     for index, need in enumerate(checked):
-        if need.source_query:
+        if isinstance(need, NeedSpec) and need.source_query:
             query = json.loads(need.source_query)
             if not query.get("request_id"):
                 query["request_id"] = uuid.uuid4().hex
@@ -665,7 +761,7 @@ def _confirm_item(
         raw = given.get("key")
         if not isinstance(raw, dict):
             raise refused("item_invalid", "a description item has a key")
-        key = DescriptionKey.from_dict(raw).checked()
+        key = key_from_dict(raw).checked()
         need_key = given.get("need_key")
         reading = given.get("reading") or "original"
         if reading not in ("original", "text", "pages", "table"):

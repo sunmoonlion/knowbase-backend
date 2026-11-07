@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -24,9 +25,11 @@ from app.domain.user_facts import (
     Duration,
     FactRow,
 )
-from app.domain.user_resolution import NEED_KEY
 from app.domain.vocabulary import VocabularyError, subject_kind
 
+FACTS_KIND = "facts"  # 描述字典里 `kind` 的值；不带 `kind` 的仍是「要哪份资料」
+# 同 user_resolution.NEED_KEY（不 import，免得两个模块互相引用）
+NEED_KEY = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 Disclosure = Literal["first", "latest"]
 DISCLOSURES: tuple[Disclosure, ...] = ("first", "latest")
 # 数据需求的覆盖时长（时点数「instant」是资产负债表的期末数，按期末日要，也收）
@@ -85,6 +88,129 @@ class FactNeed:
             raise refused("period_invalid", f"at most {MAX_PERIODS} periods")
         return self
 
+    # 和「要哪份资料」的 NeedSpec 同名的几项，解析与确认按它们走
+    reading = "table"  # 数在表格读法的事实行里
+    source_query = None
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": FACTS_KIND,
+            "key": self.key,
+            "name": self.name,
+            "subject": self.subject,
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "codes": list(self.codes),
+            "consolidation": self.consolidation,
+            "duration": self.duration,
+            "disclosure": self.disclosure,
+            "required": self.required,
+            "description": self.description,
+        }
+
+
+def fact_need_from(data: dict[str, object]) -> FactNeed:
+    return FactNeed(
+        key=str(data["key"]),
+        name=str(data["name"]),
+        subject=str(data["subject"]),
+        start=date.fromisoformat(str(data["start"])),
+        end=date.fromisoformat(str(data["end"])),
+        codes=tuple(str(c) for c in data["codes"]),  # type: ignore[union-attr]
+        consolidation=data.get("consolidation") or "consolidated",  # type: ignore[arg-type]
+        duration=data.get("duration") or "year",  # type: ignore[arg-type]
+        disclosure=data.get("disclosure") or "first",  # type: ignore[arg-type]
+        required=bool(data.get("required", True)),
+        description=str(data.get("description") or ""),
+    )
+
+
+@dataclass(frozen=True)
+class FactKey:
+    """展开出的一条：这家公司这一期这几个科目、这个口径。交 knowfeed 的需求项照它写，
+    knowfeed 决定找哪个渠道、怎么取（需求不写取法）。"""
+
+    subject: str
+    period_end: date
+    codes: tuple[str, ...]
+    consolidation: Consolidation = "consolidated"
+    duration: Duration = "year"
+    disclosure: Disclosure = "first"
+
+    def checked(self) -> FactKey:
+        try:
+            subject_kind(self.subject)
+        except VocabularyError as exc:
+            raise refused("subject_invalid", str(exc)) from None
+        if (
+            not self.codes
+            or len(self.codes) > MAX_CODES
+            or len(set(self.codes)) != len(self.codes)
+            or any(c not in CHART for c in self.codes)
+        ):
+            raise refused("codes_invalid", "list known chart codes once each")
+        if (
+            self.consolidation not in CONSOLIDATIONS
+            or self.duration not in FACT_DURATIONS
+            or self.disclosure not in DISCLOSURES
+        ):
+            raise refused("basis_invalid", "consolidation, duration or disclosure")
+        return self
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "kind": FACTS_KIND,
+            "subject": self.subject,
+            "period_end": self.period_end.isoformat(),
+            "codes": list(self.codes),
+            "consolidation": self.consolidation,
+            "duration": self.duration,
+            "disclosure": self.disclosure,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, object]) -> FactKey:
+        if data.get("kind") != FACTS_KIND:
+            raise refused("key_invalid", "not a facts key")
+        return FactKey(
+            subject=str(data["subject"]),
+            period_end=date.fromisoformat(str(data["period_end"])),
+            codes=tuple(str(c) for c in data["codes"]),  # type: ignore[union-attr]
+            consolidation=data.get("consolidation") or "consolidated",  # type: ignore[arg-type]
+            duration=data.get("duration") or "year",  # type: ignore[arg-type]
+            disclosure=data.get("disclosure") or "first",  # type: ignore[arg-type]
+        )
+
+    def need_for(self, need: FactNeed) -> FactNeed:
+        """只看这一期的那份需求（挑数按它）。"""
+        return FactNeed(
+            key=need.key,
+            name=need.name,
+            subject=self.subject,
+            start=self.period_end,
+            end=self.period_end,
+            codes=self.codes,
+            consolidation=self.consolidation,
+            duration=self.duration,
+            disclosure=self.disclosure,
+            required=need.required,
+        )
+
+
+def fact_keys(need: FactNeed) -> list[FactSlot]:
+    """一项「要哪些数」展开成一期一条（新的期在前，同「要哪份资料」）。"""
+    return [
+        FactKey(
+            subject=need.subject,
+            period_end=end,
+            codes=need.codes,
+            consolidation=need.consolidation,
+            duration=need.duration,
+            disclosure=need.disclosure,
+        )
+        for end in reversed(period_ends(need))
+    ]
+
 
 def period_ends(need: FactNeed) -> tuple[date, ...]:
     """start..end 之间各期的期末日，按覆盖时长：全年 12-31、半年 6-30、
@@ -112,7 +238,7 @@ class DatedFact:
     disclosed_on: date | None
 
 
-FactKey = tuple[str, date]  # （科目编码，期末日）
+FactSlot = tuple[str, date]  # （科目编码，期末日）
 
 
 @dataclass(frozen=True)
@@ -120,9 +246,9 @@ class Picked:
     """按披露版本挑出来的数：每个（科目，期末日）一个；挑不出的列在 `undecided`，
     一个也没有的列在 `missing`。"""
 
-    facts: dict[FactKey, FactRow]
-    undecided: tuple[FactKey, ...]
-    missing: tuple[FactKey, ...]
+    facts: dict[FactSlot, FactRow]
+    undecided: tuple[FactSlot, ...]
+    missing: tuple[FactSlot, ...]
 
 
 def pick(need: FactNeed, found: list[DatedFact]) -> Picked:
@@ -134,7 +260,7 @@ def pick(need: FactNeed, found: list[DatedFact]) -> Picked:
     只看口径对得上的行（主体、报表范围、覆盖时长都相同）。
     """
     wanted = {(code, end) for code in need.codes for end in period_ends(need)}
-    groups: dict[FactKey, list[DatedFact]] = {}
+    groups: dict[FactSlot, list[DatedFact]] = {}
     for item in found:
         row = item.row
         if (
@@ -149,8 +275,8 @@ def pick(need: FactNeed, found: list[DatedFact]) -> Picked:
         key = (row.code, row.period_end)
         if key in wanted:
             groups.setdefault(key, []).append(item)
-    facts: dict[FactKey, FactRow] = {}
-    undecided: list[FactKey] = []
+    facts: dict[FactSlot, FactRow] = {}
+    undecided: list[FactSlot] = []
     for key, items in groups.items():
         materials = {i.row.material_id for i in items}
         if len(materials) == 1:

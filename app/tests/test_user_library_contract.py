@@ -85,7 +85,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     runs.PendingProcessingRead,
     runs.ProcessingGrantIn,
     resolution.PeriodRuleIn,
-    resolution.NeedSpecIn,
+    resolution.DataRequest,  # 要哪份资料
+    resolution.FactRequest,  # 要哪些数（SDD 0051）
     resolution.TaskParamsIn,
     resolution.ResolveIn,
     resolution.AddNeedsIn,

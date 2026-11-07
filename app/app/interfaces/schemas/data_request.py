@@ -178,3 +178,30 @@ class DataRequest(_Strict):
     topics: tuple[Topic, ...] = Field(default=(), max_length=12)
     industry: Industry | None = None
     source_query: SourceQuery | None = None
+
+
+class FactRequest(_Strict):
+    """要哪些数（SDD 0051 第 2.1 节，所有者 2026-11-07）：主体、期间、科目表编码、口径。
+
+    只说要什么，不写渠道、不写怎么取（「需求不能决定取法，到了供给端才分」）。科目编码
+    来自契约里的科目表（`chart-of-accounts.json`）；披露版本不写时取当期原始披露。
+    knowbase 先在标准化层里找，没有的交 knowfeed 按渠道先后去取。
+    """
+
+    kind: Literal["facts"]
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
+    name: str = Field(min_length=1, max_length=80)
+    subject: str = Field(min_length=1, max_length=64)
+    start: date
+    end: date
+    codes: tuple[Annotated[str, Field(pattern=r"^[A-Z]{2}\.[A-Z0-9_]{1,60}$")], ...] = (
+        Field(min_length=1, max_length=30)
+    )
+    consolidation: Literal["consolidated", "parent"] = "consolidated"
+    duration: Literal["year", "half", "quarter", "ytd", "instant"] = "year"
+    disclosure: Literal["first", "latest"] = "first"
+    required: bool = True
+    description: str = Field(default="", max_length=500)
+
+
+AnyDataRequest = DataRequest | FactRequest

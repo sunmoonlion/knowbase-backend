@@ -18,6 +18,13 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Literal
 
+from app.domain.fact_needs import (
+    FACTS_KIND,
+    FactKey,
+    FactNeed,
+    fact_keys,
+    fact_need_from,
+)
 from app.domain.user_data import UserDataError, refused
 from app.domain.vocabulary import (
     PERIODIC,
@@ -360,21 +367,35 @@ class DescriptionKey:
         )
 
 
+AnyKey = DescriptionKey | FactKey
+AnyNeed = NeedSpec | FactNeed
+
+
+def key_from_dict(data: dict[str, object]) -> AnyKey:
+    """描述字典读回来：带 `kind: facts` 的是「要哪些数」，其余是「要哪份资料」。"""
+    if data.get("kind") == FACTS_KIND:
+        return FactKey.from_dict(data)
+    return DescriptionKey.from_dict(data)
+
+
 @dataclass(frozen=True)
 class Wanted:
     """展开出的一条：哪一样、哪条描述；`tentative` 是还没到法定截止的最新一期，
     只有已经拿到、且在任务日期前披露的才用（「截至任务日期已披露」）。"""
 
     need_key: str
-    key: DescriptionKey
+    key: AnyKey
     tentative: bool = False
 
 
-def expand(need: NeedSpec, params: TaskParams) -> list[Wanted]:
+def expand(need: AnyNeed, params: TaskParams) -> list[Wanted]:
     """一样数据的描述 × 任务日期 → 一条条描述（新的期在前）。
 
-    定期报告一期一条；其余类型一条就是一个披露时间窗（或不限期间）。
+    定期报告一期一条；其余类型一条就是一个披露时间窗（或不限期间）；
+    「要哪些数」一期一条（SDD 0051）。
     """
+    if isinstance(need, FactNeed):
+        return [Wanted(need.key, key) for key in fact_keys(need)]
     rule = need.period
     subject = need.subject
 
@@ -478,7 +499,7 @@ class Candidate:
 @dataclass(frozen=True)
 class ResultItem:
     need_key: str
-    key: DescriptionKey
+    key: AnyKey
     status: Status
     chosen: tuple[Candidate, ...] = ()
     candidates: tuple[Candidate, ...] = ()
@@ -515,7 +536,7 @@ class Resolution:
     consumer: str
     contract_version: str
     vocab_version: int
-    needs: tuple[NeedSpec, ...]
+    needs: tuple[AnyNeed, ...]
     params: TaskParams
     items: tuple[ResultItem, ...]
     created_at: datetime
@@ -559,7 +580,7 @@ class Preference:
     updated_at: datetime
 
 
-def key_id(key: DescriptionKey) -> str:
+def key_id(key: AnyKey) -> str:
     """偏好按描述记：描述字典的摘要。"""
     body = json.dumps(key.as_dict(), sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
@@ -622,7 +643,7 @@ def item_dict(item: ResultItem) -> dict[str, object]:
 def item_from(data: dict[str, object]) -> ResultItem:
     return ResultItem(
         need_key=str(data["need_key"]),
-        key=DescriptionKey.from_dict(data["key"]),  # type: ignore[arg-type]
+        key=key_from_dict(data["key"]),  # type: ignore[arg-type]
         status=data["status"],  # type: ignore[arg-type]
         chosen=tuple(candidate_from(c) for c in data.get("chosen") or ()),  # type: ignore[union-attr]
         candidates=tuple(candidate_from(c) for c in data.get("candidates") or ()),  # type: ignore[union-attr]
@@ -630,7 +651,9 @@ def item_from(data: dict[str, object]) -> ResultItem:
     )
 
 
-def need_from(data: dict[str, object]) -> NeedSpec:
+def need_from(data: dict[str, object]) -> AnyNeed:
+    if data.get("kind") == FACTS_KIND:
+        return fact_need_from(data)
     period = data["period"]
     assert isinstance(period, dict)
     return NeedSpec(
