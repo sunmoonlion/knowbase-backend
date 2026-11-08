@@ -348,6 +348,22 @@ async def test_frozen_binding_of_bought_data_is_checked_against_its_binder(world
         403,
         "not_bound",
     )
+    # 作废没交成的冻结（void_frozen）也按作者核：别人已经凭它签过授权的不许作废；
+    # 只有作者自己请过的可以作废（agy 第 23 条回执的补强建议）
+    await refused(
+        world.runs.void_frozen("knowlab", BOB, "fb-1", "1"), 409, "frozen_in_use"
+    )
+    await world.lib.upsert_expert("fb-2", BOB, "只给自己的专家", None)
+    await world.lib.show(BOB, own_use.id, "expert:fb-2")
+    await world.lib.freeze_binding(BOB, "fb-2", "1")
+    await world.runs.grant_by_user(
+        BOB,
+        "knowbench",
+        "delegation",
+        "task-b6",
+        [item(o1, "frozen_binding", "expert:fb-2@1")],
+    )
+    assert await world.runs.void_frozen("knowlab", BOB, "fb-2", "1") == 1
 
 
 async def test_knowlab_test_grants_are_fixed_sets(world):
