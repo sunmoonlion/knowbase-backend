@@ -132,21 +132,27 @@ class SqlUserRunRepository:
                 )
             return await session.scalar(query.limit(1)) is not None
 
-    async def use_scope(
-        self, subject: str, material_id: str, use: str, version_no: int
-    ) -> dict[str, object] | None:
-        """这条有效依据记下的范围（冻结绑定记着交付那一刻的许可）；没有就是 None。"""
+    async def frozen_binding(
+        self, material_id: str, use: str, version_no: int
+    ) -> tuple[str, dict[str, object]] | None:
+        """这一版有没有冻结给这位专家这一版（`expert:<专家>@<版本>`）：回（冻结它的作者，
+        冻结时记下的范围）。冻结记在作者名下，作者可能是资料的所有者，也可能是买来的人；
+        专家编号只属于一位作者，有两位就是数据不对，当没有处理。"""
         async with self._sessions()() as session:
-            row = await session.scalar(
-                select(UserDataUse).where(
-                    UserDataUse.subject == subject,
-                    UserDataUse.item_id == uuid.UUID(material_id),
-                    UserDataUse.use == use,
-                    UserDataUse.version_no == version_no,
-                    UserDataUse.withdrawn_at.is_(None),
+            rows = (
+                await session.execute(
+                    select(UserDataUse.subject, UserDataUse.scope).where(
+                        UserDataUse.item_id == uuid.UUID(material_id),
+                        UserDataUse.use == use,
+                        UserDataUse.version_no == version_no,
+                        UserDataUse.withdrawn_at.is_(None),
+                    )
                 )
-            )
-            return dict(row.scope or {}) if row is not None else None
+            ).all()
+            if len({subject for subject, _ in rows}) != 1:
+                return None
+            subject, scope = rows[0]
+            return str(subject), dict(scope or {})
 
     async def live_processing_uses(self, limit: int) -> list[tuple[str, str, int]]:
         """还有效的加工依据（所有者、资料、版本），新的在前；knowfeed 来领。"""

@@ -288,6 +288,70 @@ async def test_frozen_binding_reads_the_authors_version_for_the_beneficiary(worl
     )
 
 
+async def test_frozen_binding_of_bought_data_is_checked_against_its_binder(world):
+    """作者把买来的资料绑给专家：冻结记在作者名下，签授权按作者核，不按原卖家
+    （账 opus-qwen 第 23 条：以前拿原所有者去查，永远查不到，报 not_bound）。"""
+    resale, r1 = await world.upload(
+        ALICE, "resale.csv", license_="sale", attest=True
+    )
+    own_use, o1 = await world.upload(
+        ALICE, "own-use.csv", CSV + b"5,5\n", license_="sale", attest=True
+    )
+    await world.lib.purchase(ALICE, resale.id, BOB, "tx-resale", resale_allowed=True)
+    await world.lib.purchase(ALICE, own_use.id, BOB, "tx-own")
+    await world.lib.upsert_expert("fb-1", BOB, "买来数据的专家", None)
+    await world.lib.show(BOB, resale.id, "expert:fb-1")
+    await world.lib.show(BOB, own_use.id, "expert:fb-1")
+    frozen = [u for u, _ in await world.lib.freeze_binding(BOB, "fb-1", "1")]
+    assert sorted((u.subject, u.material_id, u.scope["license"]) for u in frozen) == (
+        sorted([(BOB, resale.id, "sale"), (BOB, own_use.id, "self")])
+    )
+    # 可转卖买来的：别人请这位专家，读得到；内容仍归原卖家
+    grant = await world.runs.grant_by_user(
+        CAROL,
+        "knowbench",
+        "delegation",
+        "task-b1",
+        [item(r1, "frozen_binding", "expert:fb-1@1")],
+    )
+    assert (grant.beneficiary, grant.items[0].content_owner) == (CAROL, ALICE)
+    got = await world.runs.read("knowbench", "r", grant.id, resale.id, 1, "content")
+    assert got.content == CSV
+    # 只许本人用的买来资料：作者（买家）自己请得到，别人和原卖家都请不到
+    mine = await world.runs.grant_by_user(
+        BOB,
+        "knowbench",
+        "delegation",
+        "task-b2",
+        [item(o1, "frozen_binding", "expert:fb-1@1")],
+    )
+    assert mine.items[0].content_owner == ALICE
+    for other, task in ((CAROL, "task-b3"), (ALICE, "task-b4")):
+        await refused(
+            world.runs.grant_by_user(
+                other,
+                "knowbench",
+                "delegation",
+                task,
+                [item(o1, "frozen_binding", "expert:fb-1@1")],
+            ),
+            403,
+            "license_self_only",
+        )
+    # 没冻结给这位专家这一版的，照旧 not_bound
+    await refused(
+        world.runs.grant_by_user(
+            CAROL,
+            "knowbench",
+            "delegation",
+            "task-b5",
+            [item(r1, "frozen_binding", "expert:fb-1@2")],
+        ),
+        403,
+        "not_bound",
+    )
+
+
 async def test_knowlab_test_grants_are_fixed_sets(world):
     material, v1 = await world.upload(ALICE)
     await world.lib.show(ALICE, material.id, "app:knowlab")

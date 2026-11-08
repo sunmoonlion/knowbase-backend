@@ -1507,19 +1507,20 @@ class UserRunService:
                 raise denied("not_shown", f"not shown to {DISPLAY_APP_OF[process]}")
             await self._covers(beneficiary, material.id, pin.version_no)
         elif basis == "frozen_binding":
-            # 作者交付时冻结的绑定：内容归作者，受益人是请专家的人
+            # 作者交付时冻结的绑定：受益人是请专家的人
             if not _FROZEN.fullmatch(ref):
                 raise refused(
                     "basis_ref_invalid", "a frozen binding is expert:<id>@<v>"
                 )
-            scope = await self.runs.use_scope(
-                material.owner, material.id, ref, pin.version_no
-            )
-            if scope is None:
+            # 冻结记在作者名下：作者可能是资料的所有者，也可能是买来再绑的人，
+            # 所以按（资料、冻结用途、版本）找冻结它的作者，不拿资料的所有者去查
+            frozen = await self.runs.frozen_binding(material.id, ref, pin.version_no)
+            if frozen is None:
                 raise denied("not_bound", "this version is not bound to the expert")
+            binder, scope = frozen
             # 给作者以外的人用：交付那一刻要「可以经专家给别人用」以上
             frozen_license = str(scope.get("license") or "self")
-            if beneficiary != material.owner and license_rank(
+            if beneficiary != binder and license_rank(
                 frozen_license
             ) < license_rank("via_expert"):
                 raise denied("license_self_only", "this data serves its author only")
