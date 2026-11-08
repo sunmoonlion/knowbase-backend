@@ -16,6 +16,14 @@ class UserRunRepository(Protocol):
         self, subject: str, material_id: str, use: str, version_no: int | None = None
     ) -> bool: ...
 
+    async def items_read(
+        self,
+        beneficiary: str,
+        *,
+        ref: str | None,
+        session_window: tuple[datetime, datetime] | None,
+    ) -> list[tuple[str, int]]: ...
+
     async def frozen_binding(
         self, material_id: str, use: str, version_no: int
     ) -> tuple[str, dict[str, object]] | None: ...

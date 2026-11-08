@@ -19,7 +19,13 @@ from app.application.services.user_resolution_service import UserResolutionServi
 from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import Owner
 from app.domain.user_library import Rendition
-from app.domain.user_runs import GrantRequestItem, InputPin, InputSet, RunGrant
+from app.domain.user_runs import (
+    GrantRequestItem,
+    InputPin,
+    InputSet,
+    RunGrant,
+    output_basis,
+)
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.security.relation_auth import (
@@ -572,7 +578,7 @@ async def write_output(
         "task_started_at": task_started_at.isoformat() if task_started_at else None,
         "task_finished_at": task_finished_at.isoformat() if task_finished_at else None,
     }
-    res = await _call(
+    material, version = await _call(
         lambda: service.write_output(
             caller.caller,
             beneficiary,
@@ -581,20 +587,14 @@ async def write_output(
             name,
             content,
             evidence=evidence,
-            grant_ref=grant_ref,
-            incomplete=incomplete,
-            task_started_at=task_started_at,
-            task_finished_at=task_finished_at,
             provenance={k: v for k, v in provenance.items() if v is not None},
         )
     )
-    material, version = res
-    provenance_basis = getattr(res, "provenance_basis", {})
     return OutputWritten(
         material_id=material.id,
         version_no=version.version_no,
         sha256=version.sha256,
-        provenance_basis=provenance_basis,
+        provenance_basis=output_basis(material.provenance or {}),
     )
 
 

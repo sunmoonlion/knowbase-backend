@@ -11,7 +11,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import cast
 
-from sqlalchemy import delete, exists, func, or_, select, text, update
+from sqlalchemy import and_, delete, exists, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
@@ -131,6 +131,57 @@ class SqlUserRunRepository:
                     | (UserDataUse.version_no == version_no)
                 )
             return await session.scalar(query.limit(1)) is not None
+
+    async def items_read(
+        self,
+        beneficiary: str,
+        *,
+        ref: str | None,
+        session_window: tuple[datetime, datetime] | None,
+    ) -> list[tuple[str, int]]:
+        """受益人真读过的（资料, 版本）：`ref` 下签过的授权（不论执行方、不论交还与否）
+        里读过的；加上 `session_window` 之间 knowbench 会话授权签下或读过的（会话授权
+        首读时签，签了就算读过）。版本按授权里钉的那一版。"""
+        conditions = []
+        if ref is not None:
+            conditions.append(
+                and_(
+                    UserDataRunGrant.ref == ref,
+                    exists().where(
+                        UserDataRead.grant_id == UserDataRunGrant.id,
+                        UserDataRead.item_id == UserDataRunGrantItem.item_id,
+                    ),
+                )
+            )
+        if session_window is not None:
+            start, end = session_window
+            conditions.append(
+                and_(
+                    UserDataRunGrant.process == "session",
+                    UserDataRunGrant.executor_app == "knowbench",
+                    or_(
+                        UserDataRunGrant.issued_at.between(start, end),
+                        exists().where(
+                            UserDataRead.grant_id == UserDataRunGrant.id,
+                            UserDataRead.item_id == UserDataRunGrantItem.item_id,
+                            UserDataRead.at.between(start, end),
+                        ),
+                    ),
+                )
+            )
+        if not conditions:
+            return []
+        async with self._sessions()() as session:
+            rows = await session.execute(
+                select(UserDataRunGrantItem.item_id, UserDataRunGrantItem.version_no)
+                .join(
+                    UserDataRunGrant,
+                    UserDataRunGrant.id == UserDataRunGrantItem.grant_id,
+                )
+                .where(UserDataRunGrant.beneficiary == beneficiary, or_(*conditions))
+                .distinct()
+            )
+            return [(str(i), int(v)) for i, v in rows.all()]
 
     async def frozen_binding(
         self, material_id: str, use: str, version_no: int

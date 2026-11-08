@@ -280,3 +280,17 @@ class Session:
 
     def active(self, now: datetime) -> bool:
         return self.ended_at is None and now < self.expires_at
+
+
+def output_basis(provenance: dict[str, object]) -> dict[str, object]:
+    """写产出时回显给调用方的出处依据：存下来的 `grant_ref` 与委托起止
+    （`task_window: {started_at, finished_at}`）。调用方（knowbench）照它核 knowbase
+    认下了算许可上限的依据；按存下来的出处算，同名重放回的也是第一次那份。"""
+    basis: dict[str, object] = {}
+    if isinstance(provenance.get("grant_ref"), str):
+        basis["grant_ref"] = provenance["grant_ref"]
+    started = provenance.get("task_started_at")
+    finished = provenance.get("task_finished_at")
+    if isinstance(started, str) and isinstance(finished, str):
+        basis["task_window"] = {"started_at": started, "finished_at": finished}
+    return basis

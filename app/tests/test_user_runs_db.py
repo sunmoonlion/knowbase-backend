@@ -25,7 +25,7 @@ from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_run_service import UserRunService
 from app.domain.user_data import UserDataError
 from app.domain.user_readings import Page, TextReading, pages_digest, text_digest
-from app.domain.user_runs import GrantRequestItem, InputPin
+from app.domain.user_runs import GrantRequestItem, InputPin, output_basis
 from app.infrastructure.repositories.user_library import SqlUserLibraryRepository
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.infrastructure.storage.postgres import make_session_factory
@@ -291,9 +291,7 @@ async def test_frozen_binding_reads_the_authors_version_for_the_beneficiary(worl
 async def test_frozen_binding_of_bought_data_is_checked_against_its_binder(world):
     """作者把买来的资料绑给专家：冻结记在作者名下，签授权按作者核，不按原卖家
     （账 opus-qwen 第 23 条：以前拿原所有者去查，永远查不到，报 not_bound）。"""
-    resale, r1 = await world.upload(
-        ALICE, "resale.csv", license_="sale", attest=True
-    )
+    resale, r1 = await world.upload(ALICE, "resale.csv", license_="sale", attest=True)
     own_use, o1 = await world.upload(
         ALICE, "own-use.csv", CSV + b"5,5\n", license_="sale", attest=True
     )
@@ -730,6 +728,133 @@ async def test_outputs_are_idempotent_immutable_and_convert_into_data(world):
     entry = await world.lib.get(ALICE, converted.id)
     assert entry.category == "uploaded"
     assert await world.lib.uses(ALICE, converted.id) == []  # 产出转来的不默认展示
+
+
+async def test_output_license_cap_follows_what_was_read_under_its_basis(world):
+    """产出转为数据的许可上限（knowbench 与 knowbase 10-30 约定，见 knowbench
+    knowbase_data_v2.write_output）：grant_ref 下签过的授权里真读过的才算；ref 下一份
+    没读就不设上限；不带 grant_ref 只许本人用；委托起止之间经 knowbench 会话读过的也算。
+    （opus-qwen 第 1、2、21 条）"""
+    sale, s1 = await world.upload(ALICE, "sale.csv", license_="sale", attest=True)
+    own, o1 = await world.upload(ALICE, "own.csv", CSV + b"8,8\n")
+    for m in (sale, own):
+        await world.lib.show(ALICE, m.id, "app:knowbench")
+    both = [item(s1, "display", "app:knowbench"), item(o1, "display", "app:knowbench")]
+
+    async def output(run, **provenance):
+        material, _ = await world.runs.write_output(
+            "knowbench",
+            ALICE,
+            "task-c",
+            run,
+            f"{run}.md",
+            run.encode(),
+            provenance=provenance,
+        )
+        return material
+
+    async def cap_is(material, top):
+        better = {"self": "via_expert", "via_expert": "sale", "sale": None}[top]
+        if better:
+            await refused(
+                world.runs.convert(ALICE, material.id, license_=better, attest=True),
+                422,
+                "license_above_upstream",
+            )
+        converted, _ = await world.runs.convert(
+            ALICE, material.id, license_=top, attest=top != "self"
+        )
+        assert converted.license == top
+
+    # 签了两份、只读了可售的那份：上限按读过的算
+    grant = await world.runs.grant_by_user(
+        ALICE, "knowbench", "delegation", "task-c", both
+    )
+    await world.runs.read("knowbench", "r", grant.id, sale.id, None, "content")
+    await cap_is(await output("run-1", grant_ref="task-c"), "sale")
+    # 只许本人用的那份也读了：上限降到只许本人用（已交还的授权照样算）
+    await world.runs.read("knowbench", "r", grant.id, own.id, None, "content")
+    await world.runs.release_ref("knowbench", "task-c")
+    await cap_is(await output("run-2", grant_ref="task-c"), "self")
+    # ref 下签了但一份没读：不设上限
+    await world.runs.grant_by_user(ALICE, "knowbench", "delegation", "task-d", both)
+    await cap_is(await output("run-3", grant_ref="task-d"), "sale")
+    # 不带 grant_ref、也没有输入组合：只许本人用
+    await cap_is(await output("run-4"), "self")
+    # 委托起止之间经 knowbench 会话读了只许本人用的：也算进上限
+    session = await world.runs.register_session(ALICE, "knowbench")
+    started = world.clock.now
+    world.clock.now = started + timedelta(minutes=5)
+    talk, _, _ = await world.runs.session_read(ALICE, "knowbench", session.id, own.id)
+    await world.runs.read("knowbench", "m", talk.id, own.id, None, "content")
+    finished = world.clock.now + timedelta(minutes=5)
+    window = {
+        "task_started_at": started.isoformat(),
+        "task_finished_at": finished.isoformat(),
+    }
+    await cap_is(await output("run-5", grant_ref="task-d", **window), "self")
+    # 会话读在委托开始之前：不算
+    later = {
+        "task_started_at": (finished + timedelta(minutes=1)).isoformat(),
+        "task_finished_at": (finished + timedelta(minutes=9)).isoformat(),
+    }
+    await cap_is(await output("run-6", grant_ref="task-d", **later), "sale")
+
+
+async def test_output_basis_is_what_was_stored_and_knowlab_refs_are_found(world):
+    """回显的出处依据按存下来的出处算，重放也回原来那份；knowlab 写的产出凭 grant_ref
+    也查得到授权（授权的执行方是 knowbench，不按写产出的应用查）。"""
+    first, _ = await world.runs.write_output(
+        "knowbench",
+        ALICE,
+        "task-e",
+        "run-1",
+        "a.md",
+        b"a",
+        provenance={
+            "grant_ref": "task-e",
+            "task_started_at": "2026-10-23T12:00:00+00:00",
+            "task_finished_at": "2026-10-23T13:00:00+00:00",
+        },
+    )
+    again, _ = await world.runs.write_output(
+        "knowbench",
+        ALICE,
+        "task-e",
+        "run-1",
+        "a.md",
+        b"a",
+        provenance={"grant_ref": "other"},
+    )
+    assert again.id == first.id
+    assert output_basis(again.provenance or {}) == {
+        "grant_ref": "task-e",
+        "task_window": {
+            "started_at": "2026-10-23T12:00:00+00:00",
+            "finished_at": "2026-10-23T13:00:00+00:00",
+        },
+    }
+    assert output_basis({}) == {}
+    own, o1 = await world.upload(ALICE, "own.csv", CSV + b"6,6\n")
+    await world.lib.show(ALICE, own.id, "app:knowlab")
+    grant = await world.runs.grant_by_service(
+        "knowlab", "test", ALICE, "lab-1", [item(o1, "display", "app:knowlab")]
+    )
+    await world.runs.read(grant.executor_app, "r", grant.id, own.id, None, "content")
+    evidence, _ = await world.runs.write_output(
+        "knowlab",
+        ALICE,
+        "lab-1",
+        "run-1",
+        "e.md",
+        b"e",
+        provenance={"grant_ref": "lab-1"},
+    )
+    await refused(
+        world.runs.convert(ALICE, evidence.id, license_="via_expert", attest=True),
+        422,
+        "license_above_upstream",
+    )
 
 
 async def test_owner_delete_keeps_buyers_but_disable_stops_everyone(world):

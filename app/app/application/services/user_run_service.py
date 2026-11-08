@@ -117,7 +117,6 @@ _PROVENANCE_KEYS = (
     "incomplete",
     "task_started_at",
     "task_finished_at",
-    "no_inputs",
 )
 # 块 9（RAGFlow 删除同步）之前，真删要等的回执
 PURGE_PENDING = ["ragflow", "knowfeed"]
@@ -143,26 +142,6 @@ class Reading:
     text: TextReading | None = None
     pages: tuple[Page, ...] = ()
     total_pages: int = 0
-
-
-class OutputResult(tuple):
-    def __new__(
-        cls,
-        material: Material,
-        version: ContentVersion,
-        provenance_basis: dict[str, object] | None = None,
-    ):
-        return super().__new__(cls, (material, version))
-
-    def __init__(
-        self,
-        material: Material,
-        version: ContentVersion,
-        provenance_basis: dict[str, object] | None = None,
-    ):
-        self.material = material
-        self.version = version
-        self.provenance_basis = provenance_basis or {}
 
 
 class UserRunService:
@@ -1082,15 +1061,12 @@ class UserRunService:
         content: bytes,
         *,
         evidence: bool = False,
-        grant_ref: str | None = None,
-        incomplete: bool = False,
-        task_started_at: datetime | None = None,
-        task_finished_at: datetime | None = None,
         provenance: dict[str, object] | None = None,
-    ) -> OutputResult:
+    ) -> tuple[Material, ContentVersion]:
         """应用替用户写产出：只能写产出区，按（应用，任务，运行，名字）幂等，算用户空间。
 
-        同一次运行同名的再写一次：内容一样回原来那份，不一样 409（测试证据只增不改）。
+        同一次运行同名的再写一次：内容一样回原来那份（出处也是原来那份），不一样 409
+        （测试证据只增不改）。回显给调用方的出处依据按存下来的出处算（`output_basis`）。
         """
         if caller not in OUTPUT_CALLERS:
             raise denied("service_scope_denied", "this app does not write outputs")
@@ -1106,17 +1082,7 @@ class UserRunService:
                 raise conflict("output_exists", "this run already wrote another one")
             material = await self.library.get_material(version.material_id)
             assert material is not None
-            pb: dict[str, object] = {}
-            if grant_ref:
-                pb["grant_ref"] = grant_ref
-            if task_started_at and task_finished_at:
-                pb["task_window"] = {
-                    "started_at": task_started_at.isoformat(),
-                    "finished_at": task_finished_at.isoformat(),
-                }
-            if not pb:
-                pb = {"default": "self"}
-            return OutputResult(material, version, pb)
+            return material, version
         media_type = kind_of(filename, content)
         check_size(len(content), await self.library.bytes_used(beneficiary))
         origin = await self._provenance(provenance or {})
@@ -1189,17 +1155,7 @@ class UserRunService:
                 evidence=evidence,
                 provenance=provenance,
             )
-        pb = {}
-        if grant_ref:
-            pb["grant_ref"] = grant_ref
-        if task_started_at and task_finished_at:
-            pb["task_window"] = {
-                "started_at": task_started_at.isoformat(),
-                "finished_at": task_finished_at.isoformat(),
-            }
-        if not pb:
-            pb = {"default": "self"}
-        return OutputResult(saved, version, pb)
+        return saved, version
 
     async def lookup_output(
         self, caller: str, beneficiary: str, task_ref: str, run_ref: str, name: str
@@ -1520,9 +1476,9 @@ class UserRunService:
             binder, scope = frozen
             # 给作者以外的人用：交付那一刻要「可以经专家给别人用」以上
             frozen_license = str(scope.get("license") or "self")
-            if beneficiary != binder and license_rank(
-                frozen_license
-            ) < license_rank("via_expert"):
+            if beneficiary != binder and license_rank(frozen_license) < license_rank(
+                "via_expert"
+            ):
                 raise denied("license_self_only", "this data serves its author only")
         elif basis == "platform":
             if not await self.runs.has_use(
@@ -1679,41 +1635,47 @@ class UserRunService:
         return {k: v for k, v in given.items() if v is not None}
 
     async def _upstream_cap(self, subject: str, source: Material) -> License:
-        """上游的许可上限：输入里他自己有使用权的取他那条的档，没有的（作者绑定的）
-        只许本人用；没有输入记录且未声明无输入的默认「只许本人用」。"""
+        """上游的许可上限（knowbench 与 knowbase 10-30 约定，knowbench
+        `knowbase_data_v2.write_output`）。参与算上限的资料：
+
+        - 出处带输入组合（`input_set_id`）：组合里钉的每一份；
+        - 带 `grant_ref`：受益人在这个 ref 下签过的授权（含已交还、过期的）里真读过的；
+          不按写产出的应用查（knowlab 写的测试证据，授权的执行方是 knowbench）；
+        - 带委托起止：这段时间里受益人经 knowbench 会话授权读过的（委托里的模型可能
+          借别的对话读了数据，宁严勿松）。
+
+        每份取他那条使用权的档，没有使用权的（作者绑定、公开原件凭门读的）只许本人用；
+        几份里取最低。带了 `grant_ref` 却一份都没读：不设上限。既没有输入组合、也没有
+        `grant_ref` 的：说不清用了什么，只许本人用。
+        """
         prov = source.provenance or {}
         set_id = prov.get("input_set_id")
         grant_ref = prov.get("grant_ref")
-        if not set_id and not grant_ref and not prov.get("task_window"):
-            if prov.get("no_inputs"):
-                return "sale"
+        if not set_id and not grant_ref:
             return "self"
-        pins = []
+        pins: set[tuple[str, int]] = set()
         if set_id:
             input_set = await self.runs.input_set(str(set_id))
-            if input_set:
-                pins.extend(input_set.pins)
-        if grant_ref:
-            caller = prov.get("caller") or "knowbench"
-            if not isinstance(caller, str):
+            if input_set is None:
                 return "self"
-            gids = await self.runs.grant_ids(executor_app=caller, ref=str(grant_ref))
-            for gid in gids:
-                grant = await self.runs.get_grant(gid)
-                if grant and grant.input_set_id:
-                    iset = await self.runs.input_set(grant.input_set_id)
-                    if iset:
-                        pins.extend(iset.pins)
-        if not pins:
-            return "self"
-        cap = "sale"
-        for pin in pins:
-            holdings = await self.library.holdings_of(subject, pin.material_id)
-            held = [h for h in holdings if h.covers(pin.version_no)]
+            pins |= {(p.material_id, p.version_no) for p in input_set.pins}
+        window = _task_window(prov)
+        if grant_ref or window:
+            pins |= set(
+                await self.runs.items_read(
+                    subject,
+                    ref=str(grant_ref) if grant_ref else None,
+                    session_window=window,
+                )
+            )
+        cap: License = "sale"
+        for material_id, version_no in sorted(pins):
+            holdings = await self.library.holdings_of(subject, material_id)
+            held = [h for h in holdings if h.covers(version_no)]
             rank = max((license_rank(h.license) for h in held), default=0)
             if rank < license_rank(cap):
-                cap = ("self", "via_expert", "sale")[rank]
-        return cap  # type: ignore[return-value]
+                cap = ("self", "via_expert", "sale")[rank]  # type: ignore[assignment]
+        return cap
 
     async def _own_session(self, subject: str, app: str, session_id: str) -> Session:
         session = await self.runs.get_session(session_id)
@@ -1741,3 +1703,14 @@ def _platform_kind(use: str) -> str:
 def _check_reason(reason: str) -> None:
     if not reason or len(reason) > 80:
         raise refused("reason_invalid", "say why, in at most 80 characters")
+
+
+def _task_window(prov: dict[str, object]) -> tuple[datetime, datetime] | None:
+    """出处里记的委托起止；缺一头或写坏了就当没有。"""
+    started, finished = prov.get("task_started_at"), prov.get("task_finished_at")
+    if not isinstance(started, str) or not isinstance(finished, str):
+        return None
+    try:
+        return datetime.fromisoformat(started), datetime.fromisoformat(finished)
+    except ValueError:
+        return None
