@@ -197,7 +197,7 @@ class FactKey:
         )
 
 
-def fact_keys(need: FactNeed) -> list[FactSlot]:
+def fact_keys(need: FactNeed) -> list[FactKey]:
     """一项「要哪些数」展开成一期一条（新的期在前，同「要哪份资料」）。"""
     return [
         FactKey(

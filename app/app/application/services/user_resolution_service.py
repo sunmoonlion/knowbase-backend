@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -113,7 +113,7 @@ class UserResolutionService:
         app: str,
         consumer: str,
         contract_version: str,
-        needs: list[NeedSpec],
+        needs: Sequence[AnyNeed],
         params: TaskParams,
         task_ref: str | None = None,
     ) -> Resolution:
@@ -145,7 +145,7 @@ class UserResolutionService:
         )
 
     async def add_needs(
-        self, subject: str, app: str, resolution_id: str, needs: list[NeedSpec]
+        self, subject: str, app: str, resolution_id: str, needs: Sequence[AnyNeed]
     ) -> Resolution:
         """运行中冒出的新需求：清单出新修订，已有条目原样带过去（冻结部分不动）。"""
         current = await self._own_resolution(subject, app, resolution_id, None)
@@ -177,7 +177,7 @@ class UserResolutionService:
         )
 
     async def revise_needs(
-        self, subject: str, app: str, resolution_id: str, needs: list[NeedSpec]
+        self, subject: str, app: str, resolution_id: str, needs: Sequence[AnyNeed]
     ) -> Resolution:
         """用户确认前改了这张清单（换主体、改期间、去掉、自己加一样）：整份描述换成
         改过的，重新解析，出新修订；描述没变的那几样照样解析，换选按条目编号接着认。"""
@@ -205,7 +205,7 @@ class UserResolutionService:
         )
 
     async def add_needs_for_run(
-        self, caller: str, subject: str, resolution_id: str, needs: list[NeedSpec]
+        self, caller: str, subject: str, resolution_id: str, needs: Sequence[AnyNeed]
     ) -> Resolution:
         """运行中专家提的新需求（0048 第五节 `request_data`）：执行的应用以服务身份
         提，只出清单新修订、不签授权，待确认的仍要本人确认。"""
@@ -318,7 +318,7 @@ class UserResolutionService:
         subject: str,
         app: str,
         consumer: str,
-        needs: list[NeedSpec],
+        needs: Sequence[AnyNeed],
         params: TaskParams,
     ) -> list[ResultItem]:
         preferences = {
@@ -698,7 +698,9 @@ class UserResolutionService:
             raise refused("app_invalid", "resolution runs for knowbench or knowlab")
 
 
-def _checked_needs(needs: list[AnyNeed], *, allow_empty: bool = False) -> list[AnyNeed]:
+def _checked_needs(
+    needs: Sequence[AnyNeed], *, allow_empty: bool = False
+) -> list[AnyNeed]:
     if not (0 if allow_empty else 1) <= len(needs) <= MAX_NEEDS:
         raise refused("needs_invalid", f"give 1 to {MAX_NEEDS} needs")
     checked = [n.checked() for n in needs]
