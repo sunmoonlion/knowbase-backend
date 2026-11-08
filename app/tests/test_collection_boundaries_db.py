@@ -192,3 +192,80 @@ async def test_collected_receipt_lists_only_latest_ready_readings_of_each_copy(a
     ]
     assert b["material_id"] == bob["material_id"]
     assert b["readings"] == b["renditions"] == [] and not b["has_readings"]
+
+
+async def test_a_removed_copy_does_not_block_the_other_beneficiaries(api):
+    """同一份交给几位：其中一位把自己那份删了，重试这一批时只跳过他，其他人照常交
+    （以前整批 404，knowfeed 反复重试；opus-qwen 第 3 条）。被删的那位不重建，回包里
+    没有他，knowfeed 把他那一项单独收成失败。"""
+    client, state, services = api
+    state["service"] = "knowfeed"
+    bens = beneficiaries()
+    bens.append({**bens[0], "subject": "bob"})
+
+    async def send():
+        return await client.post(
+            f"{INTERNAL}/service/collected-originals",
+            params=params(),
+            files={"file": ("report.csv", CSV)},
+            data={"beneficiaries": json.dumps(bens)},
+        )
+
+    first = await send()
+    assert first.status_code == 201, first.text
+    alice, bob = first.json()
+    await services.library.remove("alice", alice["material_id"])
+    retry = await send()
+    assert retry.status_code == 201, retry.text
+    assert [(r["subject"], r["material_id"], r["created"]) for r in retry.json()] == [
+        ("bob", bob["material_id"], False)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("change", "code"),
+    [
+        ({"basis": {"anything": "goes"}}, "beneficiary_invalid"),
+        ({"basis": {"subscription_id": "s-1", "revision": "2"}}, "beneficiary_invalid"),
+        ({"prefill": {"doc_type": "no_such_type"}}, None),
+    ],
+)
+async def test_bad_basis_or_description_is_refused_before_storing(api, change, code):
+    """依据只认确认单或订阅两种形状；描述核不过的不留孤儿对象。
+
+    （opus-qwen 第 9 条）"""
+    client, state, services = api
+    state["service"] = "knowfeed"
+    response = await client.post(
+        f"{INTERNAL}/service/collected-originals",
+        params=params(),
+        files={"file": ("report.csv", CSV)},
+        data={"beneficiaries": json.dumps([{**beneficiaries()[0], **change}])},
+    )
+    assert response.status_code == 422, response.text
+    if code:
+        assert response.json()["code"] == code
+    assert services.library.objects.data == {}
+
+
+async def test_valid_bases_are_kept_in_the_provenance(api):
+    client, state, services = api
+    state["service"] = "knowfeed"
+    confirmation = {"confirmation_id": "c-1", "item_id": "i-1"}
+    subscription = {"subscription_id": "s-1", "revision": 2}
+    bens = [
+        {**beneficiaries()[0], "basis": confirmation},
+        {**beneficiaries()[0], "subject": "bob", "basis": subscription},
+    ]
+    response = await client.post(
+        f"{INTERNAL}/service/collected-originals",
+        params=params(),
+        files={"file": ("report.csv", CSV)},
+        data={"beneficiaries": json.dumps(bens)},
+    )
+    assert response.status_code == 201, response.text
+    kept = []
+    for row in response.json():
+        material = await services.library.repo.get_material(row["material_id"])
+        kept.append(material.provenance["basis"])
+    assert kept == [confirmation, subscription]

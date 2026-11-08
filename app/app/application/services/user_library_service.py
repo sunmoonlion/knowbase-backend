@@ -898,7 +898,10 @@ class UserLibraryService:
         license_: str = "self",
         source_url: str | None = None,
     ) -> list[dict[str, Any]]:
-        """knowfeed 为提了需求/订阅的用户交一份采集到的原件（SDD 0045/0043）。"""
+        """knowfeed 为提了需求/订阅的用户交一份采集到的原件（SDD 0045/0043）。
+
+        每位受益人各得一份自己名下的；同一需求项重试回原来那份。原来那份他删了或
+        被禁用了的，这一位跳过、不列在回包里，别人照常交。"""
         if caller not in ("knowfeed",):
             raise denied_scope()
         if not _CHANNEL.fullmatch(channel) or not _CHANNEL_DOC.fullmatch(
@@ -933,7 +936,9 @@ class UserLibraryService:
             if existing is not None:
                 mat, ver = existing
                 if not mat.live:
-                    raise not_found("material")
+                    # 他把这份删了或被禁用了：同一需求项的重试不给他重建，回包里不列他
+                    # （knowfeed 把这一项单独收成失败），也不挡同一批里别的受益人
+                    continue
                 ready = {}
                 for reading in await self.repo.renditions(ver.id):
                     if reading.status == "ready" and (
@@ -990,6 +995,9 @@ class UserLibraryService:
                 status="checked",
                 vocab_version=VOCAB_VERSION,
             )
+            # 先核描述与依据，再存内容：核不过就不留下没人引用的对象
+            description = desc.checked()
+            basis = _collected_basis(b.get("basis"))
             mat_id = self.new_id()
             ver = await self._store(sub, mat_id, 1, media_type, content, now)
             prov = {
@@ -997,7 +1005,7 @@ class UserLibraryService:
                 "channel_doc_id": channel_doc_id,
                 "source_url": source_url,
                 "item_ref": item_ref,
-                "basis": b.get("basis"),
+                "basis": basis,
                 **(
                     {
                         "source_query": json.dumps(
@@ -1018,7 +1026,7 @@ class UserLibraryService:
                     name=filename,
                     content_origin="collected",
                     license=target_license,
-                    description=desc.checked(),
+                    description=description,
                     current_version=1,
                     created_at=now,
                     provenance=prov,
@@ -1372,3 +1380,25 @@ class UserLibraryService:
         # 所有者的那条（不限版本）优先；没有就是买来的
         holding = next((h for h in holdings if h.version_no is None), holdings[0])
         return material, holding
+
+
+def _collected_basis(value: object) -> dict[str, object] | None:
+    """受益人的合规依据，只认 knowfeed 交来的两种：确认单（`confirmation_id` +
+    `item_id`）或订阅（`subscription_id` + `revision`）；不带就是没有。别的形状拒收，
+    不原样写进出处。"""
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        if set(value) == {"confirmation_id", "item_id"} and all(
+            isinstance(value[k], str) and 0 < len(value[k]) <= 255 for k in value
+        ):
+            return dict(value)
+        if (
+            set(value) == {"subscription_id", "revision"}
+            and isinstance(value["subscription_id"], str)
+            and 0 < len(value["subscription_id"]) <= 255
+            and type(value["revision"]) is int
+            and value["revision"] >= 1
+        ):
+            return dict(value)
+    raise refused("beneficiary_invalid", "basis is a confirmation or a subscription")
