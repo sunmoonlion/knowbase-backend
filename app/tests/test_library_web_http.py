@@ -597,6 +597,7 @@ async def test_knowlab_voids_a_freeze_and_raises_a_frozen_license_over_http(api)
     )
     assert raised.status_code == 200, raised.text
     assert raised.json()["license"] == "via_expert"
+    assert len(raised.json()["sha256"]) == 64  # 钉住那一版的摘要由服务给出
     voided = await client.post(
         f"{INTERNAL}/experts/r-2/versions/1/freeze/void", json={"author": "alice"}
     )

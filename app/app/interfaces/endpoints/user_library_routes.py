@@ -768,7 +768,7 @@ async def raise_frozen_license(
 ):
     """自用转公开时把冻结的那一份许可往高改（只许往高、要勾「我有权」、现在的许可
     够；留许可留痕）；knowlab 凭作者那次提交代办。"""
-    use = await _call(
+    raised = await _call(
         lambda: service.raise_frozen_license(
             caller.caller,
             payload.author,
@@ -779,12 +779,11 @@ async def raise_frozen_license(
             attest=payload.attest,
         )
     )
-    version_no = int(use.version_no or 0)
-    pinned = await _call(lambda: service.repo.version(material_id, version_no))
+    use, sha256 = raised
     return FrozenBindingRead(
         material_id=material_id,
-        version_no=version_no,
-        sha256=pinned.sha256 if pinned is not None else "",
+        version_no=int(use.version_no or 0),
+        sha256=sha256,
         basis_ref=use.use,
         license=str(use.scope.get("license")),  # type: ignore[arg-type]
     )

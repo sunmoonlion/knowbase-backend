@@ -163,3 +163,46 @@ def test_a_stuck_pdf_does_not_hold_the_upload_past_the_timeout(monkeypatch):
         assert time.monotonic() - started < 2
     finally:
         release.set()
+
+
+def test_stuck_pdfs_filling_the_pool_do_not_make_later_uploads_wait(monkeypatch):
+    """池子里两个线程都被卡死的 PDF 占着时，后来的上传当场跳过识别、不排队等时限；
+    卡住的跑完以后名额回来，识别照常（opus-qwen 第 8 条）。"""
+    import threading
+    import time
+
+    from app.infrastructure.external import first_page
+
+    release = threading.Event()
+    calls = []
+
+    def stuck(content):
+        calls.append(content)
+        if content != b"%PDF-ok":
+            release.wait(30)
+            return "late"
+        return "ok page"
+
+    monkeypatch.setattr(first_page, "_pdf_first_page", stuck)
+    monkeypatch.setattr(first_page, "PDF_TIMEOUT_SECONDS", 0.2)
+    try:
+        for n in range(2):
+            assert (
+                first_page.read_first_page(
+                    "application/pdf", b"%PDF-" + bytes([48 + n])
+                )
+                == ""
+            )
+        started = time.monotonic()
+        assert first_page.read_first_page("application/pdf", b"%PDF-ok") == ""
+        assert time.monotonic() - started < 0.1  # 没排队等时限
+        assert b"%PDF-ok" not in calls  # 也没交给池子
+    finally:
+        release.set()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if first_page.read_first_page("application/pdf", b"%PDF-ok") == "ok page":
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("slots never came back after the stuck parses finished")

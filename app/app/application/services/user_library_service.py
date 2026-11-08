@@ -846,10 +846,12 @@ class UserLibraryService:
         license_: str,
         *,
         attest: bool,
-    ) -> Use:
+    ) -> tuple[Use, str]:
         """自用转公开时作者把冻结的那一份许可往高改（决定 10-30）：只许往高、要本人勾
         「我有权」、作者现在对这一份的许可确实不低于目标档；留许可留痕。清单不变，不用
-        出新一版。knowlab 凭本人在场的那次提交代办。"""
+        出新一版。knowlab 凭本人在场的那次提交代办。
+
+        回（改好的那条，钉住那一版的摘要）。"""
         if caller != "knowlab":
             raise denied_scope()
         target = check_license(license_)
@@ -882,7 +884,10 @@ class UserLibraryService:
         )
         if raised is None:
             raise not_found("binding")
-        return raised
+        pinned = await self.repo.version(material.id, found.version_no)
+        if pinned is None:
+            raise not_found("version")
+        return raised, pinned.sha256
 
     # —— 公开原件：knowfeed 交来，只存一份（0047 第二节） ——
 

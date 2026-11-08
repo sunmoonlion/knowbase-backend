@@ -1132,10 +1132,11 @@ async def test_the_frozen_license_only_goes_up_with_an_attestation(world):
         "service_scope_denied",
     )
     await world.lib.set_license(ALICE, material.id, "via_expert", attest=True)
-    raised = await raise_(
+    raised, sha256 = await raise_(
         "knowlab", ALICE, "fa-1", "1", material.id, "via_expert", attest=True
     )
     assert (raised.version_no, raised.scope["license"]) == (1, "via_expert")
+    assert sha256 == (await world.lib.versions(ALICE, material.id))[0].sha256
     await refused(
         raise_("knowlab", ALICE, "fa-1", "1", material.id, "self", attest=True),
         422,
