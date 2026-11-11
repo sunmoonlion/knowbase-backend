@@ -417,3 +417,29 @@ async def test_end_session_falls_back_to_local_logout_when_provider_is_down(
     )
     assert await service.end_session(session_start.session_id) is None
     assert await service.get_browser_session(session_start.session_id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("surface", "provider_seconds", "expected_seconds"),
+    [("web", 172800, 86400), ("web", 1800, 1800), ("admin", 86400, 3600)],
+)
+async def test_browser_lifetime_keeps_web_for_a_day_but_never_outlives_provider(
+    surface: str,
+    provider_seconds: int,
+    expected_seconds: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = int(datetime.now(UTC).timestamp())
+    monkeypatch.setattr("app.application.services.auth_service.time.time", lambda: now)
+    service = build(StubAuthService, surface, settings())
+    principal = await service._principal_from_verified_claims(
+        {
+            "iss": "https://identity.example.test",
+            "sub": "user-123",
+            "owner": "built-in",
+            "iat": now,
+            "exp": now + provider_seconds,
+        }
+    )
+    assert int(principal.expires_at.timestamp()) == now + expected_seconds
