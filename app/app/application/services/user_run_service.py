@@ -27,6 +27,7 @@ from app.application.ports.user_data import UserObjects
 from app.application.ports.user_library import UserLibraryRepository
 from app.application.ports.user_runs import UserRunRepository
 from app.domain.chart_of_accounts import CHART_VERSION, METRICS
+from app.domain.method_reads import MethodParentRequest, MethodRead, MethodReadConsent
 from app.domain.public_access import PublicGate
 from app.domain.user_data import (
     FormatView,
@@ -197,6 +198,139 @@ class UserRunService:
             ttl_seconds=ttl_seconds,
             appendable=True,
         )
+
+    async def method_parent_grant(
+        self, subject: str, app: str, request: MethodParentRequest
+    ) -> RunGrant:
+        read = request.read
+        material = await self.library.get_material(str(read.material_id))
+        if app != "knowbench" or material is None or material.owner != subject:
+            raise not_found("material")
+        pin = InputPin(str(read.material_id), read.version_no, request.sha256)
+        try:
+            return await self._issue(
+                "delegation",
+                executor_app=app,
+                beneficiary=subject,
+                issued_by=subject,
+                ref=read.parent_ref,
+                items=[GrantRequestItem(pin, "display", "app:knowbench")],
+                reader_role="app",
+                ttl_seconds=None,
+                appendable=False,
+                method_only=True,
+                absolute_expiry=request.expires_at,
+            )
+        except UserDataError as exc:
+            if exc.code != "append_not_allowed":
+                raise
+        # A retry or a concurrent approval reuses only the same immutable parent.
+        grants = await self._run_grants(app, subject, read.parent_ref, method_only=True)
+        if (
+            len(grants) != 1
+            or grants[0].issued_by != subject
+            or grants[0].input_set_id != input_set_id((pin,))
+            or grants[0].expires_at < request.expires_at
+        ):
+            raise conflict(
+                "method_parent_changed",
+                "the original parent grant cannot cover this request",
+            )
+        return await self._method_read_grant(subject, grants[0].id, read)
+
+    async def _method_read_grant(
+        self, subject: str, grant_id: str, read: MethodRead
+    ) -> RunGrant:
+        grant = await self.runs.get_grant(grant_id)
+        if (
+            grant is None
+            or grant.executor_app != "knowbench"
+            or grant.process != "delegation"
+            or grant.beneficiary != subject
+            or grant.issued_by != subject
+            or grant.ref not in ("formal-task:" + str(read.task_id), read.parent_ref)
+        ):
+            raise not_found("grant")
+        if not grant.active(self.now()):
+            raise denied("grant_inactive", "the parent grant is revoked or expired")
+        item = grant.item(str(read.material_id), read.version_no)
+        if (
+            item is None
+            or item.basis != "display"
+            or item.content_owner != subject
+            or grant.scope != "content"
+            or not await self.runs.has_use(
+                subject, str(read.material_id), "app:knowbench"
+            )
+        ):
+            raise denied("method_read_denied", "this material has no owner delegation")
+        return grant
+
+    async def consent_method_read(
+        self, subject: str, app: str, grant_id: str, consent: MethodReadConsent
+    ) -> None:
+        if app != "knowbench":
+            raise denied(
+                "method_read_denied", "this executor cannot delegate a method read"
+            )
+        grant = await self._method_read_grant(subject, grant_id, consent.read)
+        if not self.now() < consent.expires_at <= grant.expires_at:
+            raise denied(
+                "method_read_expiry", "consent must fall within the parent grant"
+            )
+        await self.runs.store_method_read(subject, grant.id, consent)
+
+    async def revoke_method_read(
+        self, subject: str, app: str, grant_id: str, call_id: str
+    ) -> None:
+        grant = await self.runs.get_grant(grant_id)
+        if (
+            app != "knowbench"
+            or grant is None
+            or grant.executor_app != app
+            or grant.issued_by != subject
+        ):
+            raise not_found("grant")
+        await self.runs.revoke_method_read(grant.id, call_id, self.now())
+
+    async def read_for_method(
+        self, subject: str, read: MethodRead
+    ) -> tuple[ReadResult, str]:
+        call_id = str(read.path[-1].call_id)
+        record = await self.runs.method_read(subject, call_id)
+        if record is None:
+            raise denied("method_read_denied", "no consent for this invocation")
+        grant_id, consent = record
+        if consent.read != read or consent.expires_at <= self.now():
+            raise denied(
+                "method_read_denied", "method read is outside the approved scope"
+            )
+        grant = await self._method_read_grant(subject, grant_id, read)
+        version = await self.library.version(str(read.material_id), read.version_no)
+        if (
+            version is None
+            or not version.media_type.startswith("text/")
+            or version.size_bytes > 16000
+        ):
+            raise refused(
+                "method_read_format", "select a text original up to 16000 bytes"
+            )
+        result = await self._read_granted(
+            grant,
+            "method:" + call_id,
+            str(read.material_id),
+            read.version_no,
+            "content",
+        )
+
+        # Object retrieval may outlive a revocation. Check again before releasing bytes.
+        if (
+            await self.runs.method_read(subject, call_id) != record
+            or consent.expires_at <= self.now()
+        ):
+            raise denied("method_read_denied", "the method read consent ended")
+        await self._method_read_grant(subject, grant_id, read)
+        return result, grant_id
 
     async def grant_by_confirmation(
         self,
@@ -519,8 +653,18 @@ class UserRunService:
         if what not in ("content", "format", "rendition"):
             raise refused("what_invalid", "read content, format or rendition")
         grant = await self.runs.get_grant(grant_id)
-        if grant is None or grant.executor_app != executor_app:
+        if grant is None or grant.executor_app != executor_app or grant.method_only:
             raise not_found("grant")
+        return await self._read_granted(grant, reader, material_id, version_no, what)
+
+    async def _read_granted(
+        self,
+        grant: RunGrant,
+        reader: str,
+        material_id: str,
+        version_no: int | None,
+        what: str,
+    ) -> ReadResult:
         if not grant.active(self.now()):
             raise denied("grant_inactive", "the grant is revoked or expired")
         item = grant.item(material_id, version_no)
@@ -592,7 +736,7 @@ class UserRunService:
         if kind not in ("text", "pages"):
             raise refused("kind_invalid", "read text or pages")
         grant = await self.runs.get_grant(grant_id)
-        if grant is None or grant.executor_app != executor_app:
+        if grant is None or grant.executor_app != executor_app or grant.method_only:
             raise not_found("grant")
         if not grant.active(self.now()):
             raise denied("grant_inactive", "the grant is revoked or expired")
@@ -626,7 +770,11 @@ class UserRunService:
         now = self.now()
         found: dict[str, tuple[RunGrant, Reading]] = {}
         for grant, item in targets:
-            if grant.executor_app != executor_app or not grant.active(now):
+            if (
+                grant.executor_app != executor_app
+                or grant.method_only
+                or not grant.active(now)
+            ):
                 continue
             try:
                 version, rendition = await self._reading_of(grant, item, "pages")
@@ -1391,6 +1539,8 @@ class UserRunService:
         appendable: bool,
         platform_use: str | None = None,
         platform_kind: str | None = None,
+        absolute_expiry: datetime | None = None,
+        method_only: bool = False,
     ) -> RunGrant:
         """逐项核：版本与摘要、读法与摘要、权利依据、内容所有者；全过才签。"""
         check_ref(ref)
@@ -1409,6 +1559,13 @@ class UserRunService:
                 raise refused("basis_conflict", "one version, one basis")
             granted[key] = item
         now = self.now()
+        expiry = grant_expiry(process, now, ttl_seconds, platform_kind)
+        if absolute_expiry is not None:
+            if not now < absolute_expiry <= expiry:
+                raise denied(
+                    "method_read_expiry", "expiry exceeds the parent grant limit"
+                )
+            expiry = absolute_expiry
         input_set = await self.runs.save_input_set(
             InputSet(id=input_set_id(pins), pins=pins, created_at=now)
         )
@@ -1423,10 +1580,11 @@ class UserRunService:
                 revision=0,
                 reader_role=reader_role,  # type: ignore[arg-type]
                 scope=SCOPE_OF[process],
+                method_only=method_only,
                 input_set_id=input_set.id,
                 items=tuple(granted.values()),
                 issued_at=now,
-                expires_at=grant_expiry(process, now, ttl_seconds, platform_kind),
+                expires_at=expiry,
                 platform_use=platform_use,
             ),
             appendable=appendable,
@@ -1550,7 +1708,12 @@ class UserRunService:
         return version, max(ready, key=lambda r: r.rendition_no)
 
     async def _run_grants(
-        self, executor_app: str, beneficiary: str, run_ref: str
+        self,
+        executor_app: str,
+        beneficiary: str,
+        run_ref: str,
+        *,
+        method_only: bool = False,
     ) -> list[RunGrant]:
         """这件事（执行应用 + ref）下他还有效的授权，含运行中追加的修订。"""
         check_ref(run_ref)
@@ -1559,7 +1722,11 @@ class UserRunService:
             executor_app=executor_app, ref=run_ref, active_at=self.now()
         ):
             grant = await self.runs.get_grant(grant_id)
-            if grant is not None and grant.beneficiary == beneficiary:
+            if (
+                grant is not None
+                and grant.beneficiary == beneficiary
+                and grant.method_only == method_only
+            ):
                 out.append(grant)
         return out
 

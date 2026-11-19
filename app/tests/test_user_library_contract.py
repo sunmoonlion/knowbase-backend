@@ -16,6 +16,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.domain.method_reads import MethodParentRequest, MethodReadConsent
 from app.interfaces.schemas import user_facts as facts
 from app.interfaces.schemas import user_library as models
 from app.interfaces.schemas import user_resolution as resolution
@@ -66,6 +67,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.BindingChecksIn,
     models.BindingStateRead,
     models.BindingChecksRead,
+    MethodReadConsent,
+    MethodParentRequest,
     runs.GrantItemIn,
     runs.RunGrantIn,
     runs.ServiceRunGrantIn,

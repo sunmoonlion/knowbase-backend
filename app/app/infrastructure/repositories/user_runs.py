@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.domain.chart_of_accounts import CHART, CHART_VERSION
+from app.domain.method_reads import MethodReadConsent
 from app.domain.user_data import conflict, not_found
 from app.domain.user_facts import FactQuery, FactRow, RawFact, StandardFact
 from app.domain.user_library import (
@@ -43,6 +44,7 @@ from app.infrastructure.models.user_data import (
     UserDataHolding,
     UserDataInputSet,
     UserDataItem,
+    UserDataMethodRead,
     UserDataOutput,
     UserDataPage,
     UserDataRead,
@@ -90,6 +92,7 @@ def _grant(row: UserDataRunGrant, items: list[UserDataRunGrantItem]) -> RunGrant
         platform_use=row.platform_use,
         revoked_at=row.revoked_at,
         revoke_reason=row.revoke_reason,
+        method_only=row.method_only,
     )
 
 
@@ -614,6 +617,7 @@ class SqlUserRunRepository:
                 scope=grant.scope,
                 input_set_id=grant.input_set_id,
                 platform_use=grant.platform_use,
+                method_only=grant.method_only,
                 issued_at=grant.issued_at,
                 expires_at=grant.expires_at,
             )
@@ -649,6 +653,63 @@ class SqlUserRunRepository:
                 select(UserDataRunGrantItem).where(UserDataRunGrantItem.grant_id == key)
             )
             return _grant(row, list(items.scalars()))
+
+    async def revoke_method_read(
+        self, grant_id: str, call_id: str, now: datetime
+    ) -> None:
+        async with self._sessions()() as session, session.begin():
+            await session.execute(
+                update(UserDataMethodRead)
+                .where(
+                    UserDataMethodRead.grant_id == uuid.UUID(grant_id),
+                    UserDataMethodRead.call_id == uuid.UUID(call_id),
+                    UserDataMethodRead.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+
+    async def store_method_read(
+        self, subject: str, grant_id: str, consent: MethodReadConsent
+    ) -> None:
+        from sqlalchemy.dialects.postgresql import insert
+
+        call_id = consent.read.path[-1].call_id
+        values = consent.read.model_dump(mode="json")
+        async with self._sessions()() as session, session.begin():
+            await session.execute(
+                insert(UserDataMethodRead)
+                .values(
+                    beneficiary=subject,
+                    call_id=call_id,
+                    grant_id=uuid.UUID(grant_id),
+                    binding=values,
+                    expires_at=consent.expires_at,
+                )
+                .on_conflict_do_nothing(index_elements=["beneficiary", "call_id"])
+            )
+            stored = await session.get(UserDataMethodRead, (subject, call_id))
+            if (
+                stored is None
+                or stored.revoked_at is not None
+                or str(stored.grant_id) != grant_id
+                or stored.binding != values
+                or stored.expires_at != consent.expires_at
+            ):
+                raise conflict(
+                    "method_read_conflict",
+                    "this invocation already has a different consent",
+                )
+
+    async def method_read(
+        self, subject: str, call_id: str
+    ) -> tuple[str, MethodReadConsent] | None:
+        async with self._sessions()() as session:
+            row = await session.get(UserDataMethodRead, (subject, uuid.UUID(call_id)))
+            if row is None or row.revoked_at is not None:
+                return None
+            return str(row.grant_id), MethodReadConsent.model_validate(
+                {"read": row.binding, "expires_at": row.expires_at}
+            )
 
     async def grant_ids(
         self,

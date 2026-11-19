@@ -63,7 +63,8 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261028_0018_drop_legacy_data.py",
         "20261029_0019_readings_in_postgres.py",
         "20261029_0020_recognized_log.py",
-            "20261101_0021_ragflow_and_released_refs.py",
+        "20261101_0021_ragflow_and_released_refs.py",
+        "20261119_0022_method_read_consent.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert (
@@ -92,6 +93,8 @@ def test_one_linear_canonical_migration_chain() -> None:
     assert 'down_revision = "20261028_0017"' in contents[17]
     assert 'down_revision = "20261028_0018"' in contents[18]
     assert 'down_revision = "20261029_0019"' in contents[19]
+    assert 'down_revision = "20261029_0020"' in contents[20]
+    assert 'down_revision = "20261101_0021"' in contents[21]
 
 
 def test_uuid_mixin_has_client_and_database_defaults() -> None:

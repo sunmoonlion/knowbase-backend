@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 
@@ -17,6 +18,7 @@ from app.application.errors.exceptions import AppException
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
+from app.domain.method_reads import MethodParentRequest, MethodReadConsent
 from app.domain.user_data import Owner
 from app.domain.user_library import Rendition
 from app.domain.user_runs import (
@@ -438,6 +440,46 @@ async def grant_by_confirmation(
         )
     )
     return _grant(grant)
+
+
+@router.post("/method-parent-grants", response_model=RunGrantRead)
+async def create_method_parent(
+    request: MethodParentRequest,
+    owner: Owner = Depends(require_user_owner),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    grant = await _call(
+        lambda: service.method_parent_grant(owner.subject, owner.app, request)
+    )
+    return _grant(grant)
+
+
+@router.post("/run-grants/{grant_id}/method-read-consents", status_code=204)
+async def consent_method_read(
+    grant_id: str,
+    consent: MethodReadConsent,
+    owner: Owner = Depends(require_user_owner),
+    service: UserRunService = Depends(get_user_run_service),
+) -> Response:
+    await _call(
+        lambda: service.consent_method_read(owner.subject, owner.app, grant_id, consent)
+    )
+    return Response(status_code=204)
+
+
+@router.delete("/run-grants/{grant_id}/method-read-consents/{call_id}", status_code=204)
+async def revoke_method_read(
+    grant_id: UUID,
+    call_id: UUID,
+    owner: Owner = Depends(require_user_owner),
+    service: UserRunService = Depends(get_user_run_service),
+) -> Response:
+    await _call(
+        lambda: service.revoke_method_read(
+            owner.subject, owner.app, str(grant_id), str(call_id)
+        )
+    )
+    return Response(status_code=204)
 
 
 @router.get("/run-grants/{grant_id}", response_model=RunGrantView)

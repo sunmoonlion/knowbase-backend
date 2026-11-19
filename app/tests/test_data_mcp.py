@@ -396,3 +396,210 @@ async def test_search_evidence_narrows_by_description_dimensions(world):
     assert "industry_invalid" in bad["error"]
     items = await world.call("describe_items")
     assert items["vocabulary"]["doc_classes"]["research"]["name"] == "研报"
+
+
+async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation(
+    world, db
+):
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from app.domain.method_reads import MethodReadConsent
+    from app.domain.user_data import UserDataError
+
+    material, version = await world.lib.upload(
+        "alice", "example.txt", b"one pinned text"
+    )
+    await world.lib.show("alice", material.id, "app:knowbench")
+    task_id = str(uuid4())
+    parent = await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "formal-task:" + task_id,
+        [
+            GrantRequestItem(
+                InputPin(material.id, version.version_no, version.sha256),
+                "display",
+                "app:knowbench",
+            )
+        ],
+    )
+    args = {
+        "material_id": material.id,
+        "version_no": version.version_no,
+    }
+    scope = {
+        "task_id": task_id,
+        "material_id": material.id,
+        "version_no": version.version_no,
+        "purpose": "Read the pinned report for this comparison",
+        "path": [
+            {
+                "method_id": str(uuid4()),
+                "call_id": str(uuid4()),
+                "definition_digest": "sha256:" + str(i) * 64,
+                "version": i or None,
+            }
+            for i in range(3)
+        ],
+    }
+    consent = MethodReadConsent.model_validate(
+        {"read": scope, "expires_at": parent.expires_at}
+    )
+
+    def bearer(binding):
+        claims = dict(jwt.decode(token(), KEY).claims)
+        claims.update(tools=["read_method_input"], method_read=binding)
+        return jwt.encode({"alg": "ES256"}, claims, KEY)
+
+    async def read(binding, params=None):
+        return await world.call(
+            "read_method_input", auth=bearer(binding), **(params or args)
+        )
+
+    assert "error" in await read(scope)
+    # An otherwise valid parent grant from a different task cannot be rebound.
+    other_grant = await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "other-task",
+        [
+            GrantRequestItem(
+                InputPin(material.id, version.version_no, version.sha256),
+                "display",
+                "app:knowbench",
+            )
+        ],
+    )
+    with pytest.raises(UserDataError):
+        await world.runs.consent_method_read(
+            "alice", "knowbench", other_grant.id, consent
+        )
+    assert "error" in await world.call("read_method_input", **args)
+    with pytest.raises(UserDataError):
+        await world.runs.consent_method_read("bob", "knowbench", parent.id, consent)
+    with pytest.raises(UserDataError):
+        await world.runs.consent_method_read(
+            "alice",
+            "knowbench",
+            parent.id,
+            consent.model_copy(
+                update={"expires_at": parent.expires_at + timedelta(seconds=1)}
+            ),
+        )
+    await world.runs.consent_method_read("alice", "knowbench", parent.id, consent)
+    await world.runs.consent_method_read("alice", "knowbench", parent.id, consent)
+    # Rebuild services, retaining only PostgreSQL and stored objects.
+    restarted = World(db)
+    restarted.runs.objects = world.runs.objects
+    world = restarted
+    assert (await read(scope))["text"] == "one pinned text"
+    for changed in ({"material_id": str(uuid4())}, {"version_no": 2}):
+        assert "error" in await read(scope, {**args, **changed})
+    for changed in (
+        {"purpose": "another use"},
+        {"task_id": str(uuid4())},
+        {"path": scope["path"][1:]},
+    ):
+        assert "error" in await read({**scope, **changed})
+    leaf = scope["path"][-1]["call_id"]
+    with pytest.raises(UserDataError):
+        await world.runs.revoke_method_read("bob", "knowbench", parent.id, leaf)
+    await world.runs.revoke_method_read("alice", "knowbench", parent.id, leaf)
+    assert "error" in await read(scope)
+    with pytest.raises(UserDataError):
+        await world.runs.consent_method_read("alice", "knowbench", parent.id, consent)
+    new_path = [*scope["path"][:-1], {**scope["path"][-1], "call_id": str(uuid4())}]
+    second = {**scope, "path": new_path}
+    await world.runs.consent_method_read(
+        "alice",
+        "knowbench",
+        parent.id,
+        MethodReadConsent.model_validate(
+            {"read": second, "expires_at": parent.expires_at}
+        ),
+    )
+    assert (await read(second))["text"] == "one pinned text"
+    early = {
+        **scope,
+        "path": [*new_path[:-1], {**new_path[-1], "call_id": str(uuid4())}],
+    }
+    expires = world.runs.now() + timedelta(seconds=1)
+    await world.runs.consent_method_read(
+        "alice",
+        "knowbench",
+        parent.id,
+        MethodReadConsent.model_validate({"read": early, "expires_at": expires}),
+    )
+    assert (await read(early))["text"] == "one pinned text"
+    world.runs.now = lambda: expires
+    assert "error" in await read(early)
+    assert (await read(second))["text"] == "one pinned text"
+    await world.runs.runs.revoke([parent.id], world.runs.now(), "test")
+    assert "error" in await read(second)
+
+
+async def test_exact_method_parent_is_idempotent_and_stays_revoked(world):
+    import asyncio
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from app.domain.method_reads import MethodParentRequest
+    from app.domain.user_data import UserDataError
+
+    material, version = await world.lib.upload("alice", "report.txt", b"approved")
+    await world.lib.show("alice", material.id, "app:knowbench")
+    request = MethodParentRequest.model_validate(
+        {
+            "read": {
+                "task_id": str(uuid4()),
+                "path": [
+                    {
+                        "call_id": str(uuid4()),
+                        "method_id": str(uuid4()),
+                        "definition_digest": "sha256:" + "a" * 64,
+                    }
+                ],
+                "material_id": material.id,
+                "version_no": 1,
+                "purpose": "read for this task",
+            },
+            "expires_at": world.runs.now() + timedelta(minutes=5),
+            "sha256": version.sha256,
+        }
+    )
+    with pytest.raises(UserDataError):
+        await world.runs.method_parent_grant("bob", "knowbench", request)
+    with pytest.raises(UserDataError):
+        await world.runs.method_parent_grant(
+            "alice", "knowbench", request.model_copy(update={"sha256": "0" * 64})
+        )
+    first, again = await asyncio.gather(
+        *[
+            world.runs.method_parent_grant("alice", "knowbench", request)
+            for _ in range(2)
+        ]
+    )
+    assert first.id == again.id and first.expires_at == request.expires_at
+    assert first.method_only
+    assert not await world.runs.run_grants("knowbench", "alice", first.ref)
+    with pytest.raises(UserDataError):
+        await world.runs.read(
+            "knowbench", "regular-run", first.id, material.id, 1, "content"
+        )
+    assert "error" in await world.call(
+        "read_input",
+        run=first.ref,
+        material_id=material.id,
+        version_no=1,
+        what="original",
+    )
+    await world.runs.consent_method_read("alice", "knowbench", first.id, request)
+    assert (await world.runs.read_for_method("alice", request.read))[
+        0
+    ].content == b"approved"
+    await world.runs.runs.revoke([first.id], world.runs.now(), "test")
+    with pytest.raises(UserDataError):
+        await world.runs.method_parent_grant("alice", "knowbench", request)

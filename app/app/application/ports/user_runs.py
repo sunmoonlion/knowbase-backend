@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.method_reads import MethodReadConsent
 from app.domain.user_facts import FactQuery, FactRow, RawFact, StandardFact
 from app.domain.user_library import ContentVersion, Holding, Material, Rendition
 from app.domain.user_readings import Page, TextReading
@@ -81,6 +82,18 @@ class UserRunRepository(Protocol):
         ...
 
     async def get_grant(self, grant_id: str) -> RunGrant | None: ...
+
+    async def revoke_method_read(
+        self, grant_id: str, call_id: str, now: datetime
+    ) -> None: ...
+
+    async def store_method_read(
+        self, subject: str, grant_id: str, consent: MethodReadConsent
+    ) -> None: ...
+
+    async def method_read(
+        self, subject: str, call_id: str
+    ) -> tuple[str, MethodReadConsent] | None: ...
 
     async def grant_ids(
         self,

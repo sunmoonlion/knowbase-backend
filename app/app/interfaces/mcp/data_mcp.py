@@ -35,6 +35,7 @@ from app.application.services.user_resolution_service import UserResolutionServi
 from app.application.services.user_run_service import UserRunService
 from app.domain.chart_of_accounts import METRICS
 from app.domain.chart_of_accounts import snapshot as chart_snapshot
+from app.domain.method_reads import MethodRead
 from app.domain.user_data import UserDataError
 from app.domain.user_facts import FactQuery, FactRow, MetricRow, split_refs
 from app.domain.user_library import PUBLIC_OWNER, DescriptionFilter
@@ -86,6 +87,18 @@ _DIMENSIONS = {
 }
 
 TOOLS: dict[str, dict[str, Any]] = {
+    "read_method_input": {
+        "description": "Read the pinned UTF-8 text approved for this invocation.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "material_id": {"type": "string", "format": "uuid"},
+                "version_no": {"type": "integer", "minimum": 1},
+            },
+            "required": ["material_id", "version_no"],
+            "additionalProperties": False,
+        },
+    },
     "list_inputs": {
         "description": (
             "List what this run may read: each material, its description, the pinned "
@@ -246,6 +259,7 @@ class DataToken:
     executor: str
     sandbox: str
     tools: frozenset[str]
+    method_read: MethodRead | None = None
 
 
 class ToolError(Exception):
@@ -279,11 +293,22 @@ def verify(
     ):
         return None
     allowed = frozenset(tools) & frozenset(TOOLS) if tools else frozenset(TOOLS)
+    if not tools or "read_method_input" not in tools or claims["azp"] != "knowbench":
+        allowed = allowed - {"read_method_input"}
+    method_read = None
+    if "method_read" in claims:
+        if allowed != {"read_method_input"} or tools != ["read_method_input"]:
+            return None
+        try:
+            method_read = MethodRead.model_validate(claims["method_read"])
+        except ValueError:
+            return None
     return DataToken(
         user=str(claims["sub"]),
         executor=str(claims["azp"]),
         sandbox=str(claims["sandbox"]),
         tools=allowed,
+        method_read=method_read,
     )
 
 
@@ -380,6 +405,29 @@ class DataMcp:
         )
 
     # —— 工具 ——
+
+    async def _read_method_input(self, token: DataToken, args: dict[str, Any]) -> Any:
+        read = token.method_read
+        if (
+            token.executor != "knowbench"
+            or read is None
+            or set(args) != {"material_id", "version_no"}
+            or args["material_id"] != str(read.material_id)
+            or type(args["version_no"]) is not int
+            or args["version_no"] != read.version_no
+        ):
+            raise ToolError("method read differs from its signed invocation")
+        got, grant_id = await self.runs().read_for_method(token.user, read)
+        return {
+            "source": {
+                "material_id": got.item.material_id,
+                "version_no": got.version.version_no,
+                "sha256": got.version.sha256,
+                "grant_id": grant_id,
+                "method_call_id": str(read.path[-1].call_id),
+            },
+            "text": (got.content or b"").decode("utf-8"),
+        }
 
     async def _list_inputs(self, token: DataToken, args: dict[str, Any]) -> Any:
         run = _text(args, "run")

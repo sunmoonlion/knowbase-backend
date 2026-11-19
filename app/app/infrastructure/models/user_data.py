@@ -524,6 +524,10 @@ class UserDataRunGrant(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoke_reason: Mapped[str | None] = mapped_column(String(40))
 
+    method_only: Mapped[bool] = mapped_column(
+        Boolean, server_default=text("false"), nullable=False
+    )
+
     __table_args__ = (
         UniqueConstraint(
             "executor_app", "ref", "revision", name="uq_user_data_run_grant_revision"
@@ -548,6 +552,23 @@ class UserDataRunGrant(Base):
             "platform_use",
             postgresql_where=text("platform_use IS NOT NULL AND revoked_at IS NULL"),
         ),
+    )
+
+
+class UserDataMethodRead(Base):
+    __tablename__ = "user_data_method_read"
+
+    beneficiary: Mapped[str] = mapped_column(String(255), primary_key=True)
+    call_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    grant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("user_data_run_grant.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    binding: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
 
 
