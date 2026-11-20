@@ -399,7 +399,7 @@ async def test_search_evidence_narrows_by_description_dimensions(world):
 
 
 async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation(
-    world, db
+    world, db, monkeypatch
 ):
     from datetime import timedelta
     from uuid import uuid4
@@ -495,6 +495,19 @@ async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation
     restarted = World(db)
     restarted.runs.objects = world.runs.objects
     world = restarted
+    # Upload enforces UTF-8. Simulate an older storage adapter returning
+    # authorized bytes in a different encoding through the real MCP route.
+    from dataclasses import replace
+
+    get_read = world.runs.read_for_method
+
+    async def legacy_read(*args):
+        result, grant_id = await get_read(*args)
+        return replace(result, content="中文".encode("gbk")), grant_id
+
+    with monkeypatch.context() as patch:
+        patch.setattr(world.runs, "read_for_method", legacy_read)
+        assert "method_input_encoding" in (await read(scope))["error"]
     assert (await read(scope))["text"] == "one pinned text"
     for changed in ({"material_id": str(uuid4())}, {"version_no": 2}):
         assert "error" in await read(scope, {**args, **changed})

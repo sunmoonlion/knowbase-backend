@@ -418,6 +418,12 @@ class DataMcp:
         ):
             raise ToolError("method read differs from its signed invocation")
         got, grant_id = await self.runs().read_for_method(token.user, read)
+        try:
+            content = (got.content or b"").decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ToolError(
+                "method_input_encoding: pinned material requires UTF-8 text"
+            ) from exc
         return {
             "source": {
                 "material_id": got.item.material_id,
@@ -426,7 +432,7 @@ class DataMcp:
                 "grant_id": grant_id,
                 "method_call_id": str(read.path[-1].call_id),
             },
-            "text": (got.content or b"").decode("utf-8"),
+            "text": content,
         }
 
     async def _list_inputs(self, token: DataToken, args: dict[str, Any]) -> Any:
