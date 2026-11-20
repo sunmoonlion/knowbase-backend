@@ -583,6 +583,32 @@ async def test_exact_method_parent_is_idempotent_and_stays_revoked(world):
         ]
     )
     assert first.id == again.id and first.expires_at == request.expires_at
+    from uuid import uuid4
+
+    later_leaf = request.read.path[-1].model_copy(
+        update={"call_id": uuid4(), "version": 1}
+    )
+    second_read = request.read.model_copy(
+        update={"path": (*request.read.path, later_leaf)}
+    )
+    later_request = request.model_copy(
+        update={
+            "read": second_read,
+            "expires_at": request.expires_at + timedelta(minutes=1),
+        }
+    )
+    parent = await world.runs.method_parent_grant("alice", "knowbench", later_request)
+    assert (parent.id, parent.expires_at) == (first.id, first.expires_at)
+    with pytest.raises(UserDataError):
+        await world.runs.consent_method_read(
+            "alice", "knowbench", parent.id, later_request
+        )
+    await world.runs.consent_method_read(
+        "alice",
+        "knowbench",
+        parent.id,
+        later_request.model_copy(update={"expires_at": parent.expires_at}),
+    )
     assert first.method_only
     assert not await world.runs.run_grants("knowbench", "alice", first.ref)
     with pytest.raises(UserDataError):

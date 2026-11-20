@@ -230,7 +230,6 @@ class UserRunService:
             len(grants) != 1
             or grants[0].issued_by != subject
             or grants[0].input_set_id != input_set_id((pin,))
-            or grants[0].expires_at < request.expires_at
         ):
             raise conflict(
                 "method_parent_changed",
