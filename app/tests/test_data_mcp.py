@@ -654,7 +654,7 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     from jsonschema import Draft202012Validator
 
     from app.application.services.data_functions import DataFunctionError
-    from app.bootstrap.publish_functions import query_facts_contract
+    from app.application.services.query_facts_revision import query_facts_contract
 
     material, version = await world.publish()
     await world.runs.grant_by_user(

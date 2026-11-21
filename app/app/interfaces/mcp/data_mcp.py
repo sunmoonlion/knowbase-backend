@@ -175,6 +175,23 @@ def _tool_error(mid: Any, message: str) -> dict[str, Any]:
     return _ok(mid, {"content": [{"type": "text", "text": message}], "isError": True})
 
 
+def build_data_functions(s: Settings):
+    from app.interfaces.endpoints.user_library_routes import (
+        get_user_library_service,
+    )
+    from app.interfaces.endpoints.user_resolution_routes import (
+        get_user_resolution_service,
+    )
+    from app.interfaces.endpoints.user_run_routes import get_user_run_service
+
+    return DataFunctions(
+        lambda: get_user_run_service(s),
+        get_user_resolution_service,
+        lambda: get_user_library_service(s),
+        rate_per_minute=s.knowbase_mcp_rate_per_minute,
+    )
+
+
 def build_router(
     settings: Settings | None = None, server: DataMcp | None = None
 ) -> APIRouter:
@@ -185,22 +202,7 @@ def build_router(
         else None
     )
     if server is None:
-        from app.interfaces.endpoints.user_library_routes import (
-            get_user_library_service,
-        )
-        from app.interfaces.endpoints.user_resolution_routes import (
-            get_user_resolution_service,
-        )
-        from app.interfaces.endpoints.user_run_routes import get_user_run_service
-
-        server = DataMcp(
-            DataFunctions(
-                lambda: get_user_run_service(s),
-                get_user_resolution_service,
-                lambda: get_user_library_service(s),
-                rate_per_minute=s.knowbase_mcp_rate_per_minute,
-            )
-        )
+        server = DataMcp(build_data_functions(s))
     router = APIRouter(prefix="/mcp/data", tags=["Data MCP"])
 
     @router.post("")

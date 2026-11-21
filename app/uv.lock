@@ -631,6 +631,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "joserfc" },
+    { name = "jsonschema" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pypdf" },
@@ -643,7 +644,6 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "import-linter" },
-    { name = "jsonschema" },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -658,6 +658,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.116.0" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "joserfc", specifier = ">=1.7.3,<2.0.0" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "pydantic", specifier = ">=2.11.0" },
     { name = "pydantic-settings", specifier = ">=2.10.0" },
     { name = "pypdf", specifier = ">=5,<7" },
@@ -670,7 +671,6 @@ requires-dist = [
 dev = [
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "import-linter", specifier = ">=2.3" },
-    { name = "jsonschema", specifier = ">=4.26.0" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-asyncio", specifier = ">=0.24.0" },

@@ -236,6 +236,13 @@ class DataToken:
     sandbox: str
     tools: frozenset[str]
     method_read: MethodRead | None = None
+    function_call_id: str | None = None
+
+    @property
+    def reader(self) -> str:
+        if self.function_call_id:
+            return f"function:{self.function_call_id}"
+        return f"mcp:{self.sandbox}"
 
 
 class DataFunctionError(Exception):
@@ -316,7 +323,7 @@ class DataFunctions:
         version_no = _int(args, "version_no")
         what = _text(args, "what")
         grant = await self._grant_for(runs, token, args, material_id)
-        reader = f"mcp:{token.sandbox}"
+        reader = token.reader
         if what == "pages":
             first = max(_int(args, "page_from") or 1, 1)
             last = min(
@@ -388,7 +395,7 @@ class DataFunctions:
         else:
             rows = await runs.query_facts(
                 token.executor,
-                f"mcp:{token.sandbox}",
+                token.reader,
                 token.user,
                 await _run_or_session(runs, token, args),
                 query,
@@ -415,7 +422,7 @@ class DataFunctions:
                 rows += await runs.query_market(token.user, query)
             else:
                 rows += await runs.query_facts(
-                    token.executor, f"mcp:{token.sandbox}", token.user, ref, query
+                    token.executor, token.reader, token.user, ref, query
                 )
         found = {r.ref: r for r in rows}
         return {
@@ -434,7 +441,7 @@ class DataFunctions:
                 metric,
                 query,
                 executor_app=token.executor,
-                reader=f"mcp:{token.sandbox}",
+                reader=token.reader,
                 beneficiary=token.user,
                 run_ref=await _run_or_session(runs, token, args),
             )
@@ -483,7 +490,7 @@ class DataFunctions:
                         continue
                 targets.append((grant, item))
         found, searched = await runs.search_pages(
-            token.executor, f"mcp:{token.sandbox}", targets, terms
+            token.executor, token.reader, targets, terms
         )
         hits: list[tuple[int, dict[str, Any]]] = []
         for reading, page in found:
