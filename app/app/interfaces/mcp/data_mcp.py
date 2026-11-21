@@ -31,6 +31,8 @@ from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
 
+MCP_TOOLS = {name: spec for name, spec in TOOLS.items() if name != "query_facts"}
+
 AUDIENCE = "knowbase-data"
 EXECUTORS = ("knowbench", "knowlab")
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26")
@@ -62,7 +64,7 @@ def verify(
         isinstance(tools, list) and all(isinstance(t, str) for t in tools)
     ):
         return None
-    allowed = frozenset(tools or ()) & frozenset(TOOLS)
+    allowed = frozenset(tools or ()) & frozenset(MCP_TOOLS)
     if not tools or "read_method_input" not in tools or claims["azp"] != "knowbench":
         allowed = allowed - {"read_method_input"}
     method_read = None
@@ -117,7 +119,7 @@ class DataMcp:
                 {
                     "tools": [
                         {"name": name, **spec}
-                        for name, spec in TOOLS.items()
+                        for name, spec in MCP_TOOLS.items()
                         if name in token.tools
                     ]
                 },
@@ -131,7 +133,7 @@ class DataMcp:
     async def _call(self, token: DataToken, mid: Any, params: dict[str, Any]) -> Any:
         name = str(params.get("name") or "")
         args = params.get("arguments") or {}
-        if name not in TOOLS:
+        if name not in MCP_TOOLS:
             return _err(mid, -32602, f"unknown tool: {name}")
         try:
             result = await self.functions.invoke(token, name, args)

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -17,6 +19,7 @@ from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.call_rate import RateLimiter
 from app.application.services.data_functions import TOOLS, DataFunctions, DataToken
+from app.application.services.query_facts_revision import query_facts_revision
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
@@ -30,6 +33,7 @@ from app.infrastructure.repositories.user_resolution import (
     SqlUserResolutionRepository,
 )
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
+from app.interfaces.http.internal.function_calls import build_function_router
 from app.interfaces.mcp import data_mcp
 from core.config import Settings
 
@@ -82,8 +86,9 @@ class World:
         app.include_router(
             data_mcp.build_router(settings, data_mcp.DataMcp(self.functions))
         )
+        app.include_router(build_function_router(settings, self.functions))
         self.client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         )
 
     async def call(self, name: str, auth: str | None = None, **arguments):
@@ -102,6 +107,31 @@ class World:
         if result["isError"]:
             return {"error": result["content"][0]["text"]}
         return result["structuredContent"]
+
+    async def facts(self, *, sub="alice", **arguments):
+        arguments.setdefault("scope", "run")
+        call_id = str(uuid4())
+        digest = query_facts_revision()["digest"]
+        claims = dict(jwt.decode(token(sub=sub, aud="knowbase-function"), KEY).claims)
+        claims.update(
+            call_id=call_id,
+            function_digest=digest,
+            arguments_digest=hashlib.sha256(
+                json.dumps(
+                    arguments, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+                ).encode()
+            ).hexdigest(),
+        )
+        response = await self.client.post(
+            "/internal/v1/functions/query_facts/1",
+            json={"call_id": call_id, "digest": digest, "arguments": arguments},
+            headers={
+                "Authorization": "Bearer " + jwt.encode({"alg": "ES256"}, claims, KEY)
+            },
+        )
+        if response.status_code != 200:
+            return {"error": response.json()["detail"]}
+        return response.json()["output"]
 
     async def publish(self):
         material, version, _ = await self.lib.deliver_public(
@@ -183,7 +213,19 @@ async def test_tokens_must_be_issued_for_the_data_mcp(world):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     )
     names = {t["name"] for t in listed.json()["result"]["tools"]}
-    assert {"list_inputs", "read_input", "query_facts", "search_evidence"} <= names
+    assert {"list_inputs", "read_input", "search_evidence"} <= names
+    assert "query_facts" not in names
+    obsolete = await world.client.post(
+        "/mcp/data",
+        headers={"Authorization": f"Bearer {token()}"},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "query_facts", "arguments": {"scope": "market"}},
+        },
+    )
+    assert obsolete.json()["error"]["code"] == -32602
 
 
 async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
@@ -208,7 +250,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     )
     assert [p["page"] for p in pages["pages"]] == [88]
     assert pages["source"]["reading"] == "pages/1"
-    facts = await world.call("query_facts", run="task-1", codes=["IS.REVENUE"])
+    facts = await world.facts(run="task-1", codes=["IS.REVENUE"])
     assert facts["facts"][0]["value"] == "15000000.000000"
     assert facts["facts"][0]["source"]["page"] == 88
     margin = await world.call("query_metric", metric="gross_margin", run="task-1")
@@ -230,9 +272,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
 
 async def test_market_lookup_and_sessions(world):
     material, _ = await world.publish()
-    ranked = await world.call(
-        "query_facts", scope="market", codes=["IS.REVENUE"], order="value_desc"
-    )
+    ranked = await world.facts(scope="market", codes=["IS.REVENUE"], order="value_desc")
     assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
     seen = await world.call(
         "lookup",
@@ -270,12 +310,10 @@ async def test_facts_carry_refs_that_read_back_within_the_same_scope(world):
             )
         ],
     )
-    facts = (await world.call("query_facts", run="task-2", codes=["IS.REVENUE"]))[
-        "facts"
-    ]
+    facts = (await world.facts(run="task-2", codes=["IS.REVENUE"]))["facts"]
     ref = facts[0]["ref"]
     assert ref.startswith("fact:")
-    raw = (await world.call("query_facts", run="task-2", layer="raw"))["facts"]
+    raw = (await world.facts(run="task-2", layer="raw"))["facts"]
     assert all(r["ref"].startswith("raw:") for r in raw)
     back = await world.call("read_facts", run="task-2", refs=[ref, raw[0]["ref"]])
     assert [f["ref"] for f in back["facts"]] == [ref, raw[0]["ref"]]
@@ -295,18 +333,16 @@ async def test_facts_carry_refs_that_read_back_within_the_same_scope(world):
 async def test_a_session_queries_facts_of_what_it_has_read(world):
     material, _ = await world.publish()
     session = await world.runs.register_session("alice", "knowbench")
-    before = await world.call("query_facts", session=session.id, codes=["IS.REVENUE"])
+    before = await world.facts(session=session.id, codes=["IS.REVENUE"])
     assert before == {"facts": []}
     await world.call(
         "read_input", session=session.id, material_id=material.id, what="pages"
     )
-    after = await world.call("query_facts", session=session.id, codes=["IS.REVENUE"])
+    after = await world.facts(session=session.id, codes=["IS.REVENUE"])
     assert [f["subject"] for f in after["facts"]] == ["600519.SH"]
     margin = await world.call("query_metric", metric="gross_margin", session=session.id)
     assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
-    stranger = await world.call(
-        "query_facts", auth=token(sub="bob"), session=session.id, codes=["IS.REVENUE"]
-    )
+    stranger = await world.facts(sub="bob", session=session.id, codes=["IS.REVENUE"])
     assert "error" in stranger
 
 
@@ -349,10 +385,10 @@ async def test_market_scope_goes_through_the_one_gate(db):
         db, PublicGate(qualification="listed", qualified=frozenset({"alice"}))
     )
     await world.publish()
-    ranked = await world.call("query_facts", scope="market", codes=["IS.REVENUE"])
+    ranked = await world.facts(scope="market", codes=["IS.REVENUE"])
     assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
+    assert "error" in await world.facts(sub="bob", scope="market")
     for name, args in (
-        ("query_facts", {"codes": ["IS.REVENUE"]}),
         ("query_metric", {"metric": "gross_margin"}),
         ("read_facts", {"refs": [ranked["facts"][0]["ref"]]}),
     ):
@@ -671,7 +707,7 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     args = {"scope": "run", "run": "direct-test", "codes": ["IS.REVENUE"]}
     allowed = DataToken("alice", "knowbench", "sb-1", frozenset({"query_facts"}))
     direct = await world.functions.invoke(allowed, "query_facts", args)
-    reply = await world.call("query_facts", **args)
+    reply = await world.facts(**args)
     published = query_facts_contract()
     Draft202012Validator(published["input_schema"]).validate(args)
     Draft202012Validator(published["output_schema"]).validate(reply)
