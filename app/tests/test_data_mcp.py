@@ -16,6 +16,7 @@ from test_durable_delivery_db import db as db
 from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.call_rate import RateLimiter
+from app.application.services.data_functions import TOOLS, DataFunctions, DataToken
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
@@ -42,6 +43,7 @@ PAGES = [
 def token(sub="alice", aud="knowbase-data", azp="knowbench", exp=None) -> str:
     claims = {
         "sub": sub,
+        "tools": sorted(set(TOOLS) - {"read_method_input"}),
         "aud": aud,
         "azp": azp,
         "sandbox": "sb-1",
@@ -69,7 +71,7 @@ class World:
             limiter=RateLimiter(1000),
             gate=gate,
         )
-        server = data_mcp.DataMcp(
+        self.functions = DataFunctions(
             lambda: self.runs, lambda: self.resolver, lambda: self.lib
         )
         settings = Settings(
@@ -77,7 +79,9 @@ class World:
             knowbase_mcp_jwt_issuer="knowbench",
         )
         app = FastAPI()
-        app.include_router(data_mcp.build_router(settings, server))
+        app.include_router(
+            data_mcp.build_router(settings, data_mcp.DataMcp(self.functions))
+        )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://knowbase"
         )
@@ -642,3 +646,40 @@ async def test_exact_method_parent_is_idempotent_and_stays_revoked(world):
     await world.runs.runs.revoke([first.id], world.runs.now(), "test")
     with pytest.raises(UserDataError):
         await world.runs.method_parent_grant("alice", "knowbench", request)
+
+
+async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
+    world,
+):
+    from app.application.services.data_functions import DataFunctionError
+
+    material, version = await world.publish()
+    await world.runs.grant_by_user(
+        "alice",
+        "knowbench",
+        "delegation",
+        "direct-test",
+        [
+            GrantRequestItem(
+                InputPin(material.id, 1, version.sha256), "public", PUBLIC_OWNER
+            )
+        ],
+    )
+    args = {"scope": "run", "run": "direct-test", "codes": ["IS.REVENUE"]}
+    allowed = DataToken("alice", "knowbench", "sb-1", frozenset({"query_facts"}))
+    direct = await world.functions.invoke(allowed, "query_facts", args)
+    reply = await world.call("query_facts", **args)
+    assert direct["facts"] and [item["ref"] for item in direct["facts"]] == [
+        item["ref"] for item in reply["facts"]
+    ]
+
+    for tools in ([], None):
+        claims = dict(jwt.decode(token(), KEY).claims)
+        claims.pop("tools")
+        if tools is not None:
+            claims["tools"] = tools
+        encoded = jwt.encode({"alg": "ES256"}, claims, KEY)
+        empty = data_mcp.verify("Bearer " + encoded, KEY, "knowbench")
+        assert empty is not None and not empty.tools
+        with pytest.raises(DataFunctionError, match="not allowed"):
+            await world.functions.invoke(empty, "query_facts", args)
