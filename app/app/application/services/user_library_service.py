@@ -367,7 +367,13 @@ class UserLibraryService:
         await self.repo.remove(material.id, subject, self.now())
 
     async def read_format(
-        self, subject: str, actor: str, material_id: str, version_no: int
+        self,
+        subject: str,
+        actor: str,
+        material_id: str,
+        version_no: int,
+        *,
+        header_sheet: str | None = None,
     ) -> tuple[ContentVersion, tuple[TableFormat, ...]]:
         """本人挑给应用的资料格式；精确到版本，展示与使用权每次重查。"""
         use = COLUMN_USES.get(actor)
@@ -386,7 +392,14 @@ class UserLibraryService:
             raise UserDataError(
                 503, "storage_mismatch", "stored content does not match"
             )
-        tables = await asyncio.to_thread(table_formats, version.media_type, content)
+        try:
+            tables = await asyncio.to_thread(
+                table_formats, version.media_type, content, header_sheet
+            )
+        except UserDataError as exc:
+            if header_sheet is None or exc.code != "format_unreadable":
+                raise
+            tables = ()
         await self.repo.record_read(
             owner=material.owner,
             material_id=material.id,

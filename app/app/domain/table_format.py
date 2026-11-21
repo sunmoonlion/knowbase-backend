@@ -15,6 +15,7 @@ import posixpath
 import zipfile
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from typing import Literal
 from xml.etree import ElementTree as ET
 
 from app.domain.user_data import refused
@@ -30,6 +31,19 @@ class TableFormat:
     name: str
     columns: tuple[str, ...] = ()
     rows: tuple[str, ...] = ()
+    complete_header: bool = False
+
+
+def column_status(
+    tables: tuple[TableFormat, ...], sheet: str, column: str
+) -> Literal["present", "missing", "unknown"]:
+    matches = [table for table in tables if table.name == sheet]
+    if len(matches) != 1:
+        return "unknown"
+    table = matches[0]
+    if column in table.columns and (len(column) < 200 or table.complete_header):
+        return "present"
+    return "missing" if table.complete_header else "unknown"
 
 
 def _label(value: str) -> str:
@@ -56,25 +70,36 @@ def _csv_text(content: bytes) -> str:
         return content.decode("gb18030")
 
 
-def table_formats(media_type: str, content: bytes) -> tuple[TableFormat, ...]:
+def table_formats(
+    media_type: str, content: bytes, header_sheet: str | None = None
+) -> tuple[TableFormat, ...]:
     try:
         if media_type.split(";", 1)[0] == "text/csv":
+            if header_sheet not in (None, ""):
+                return ()
             records = csv.reader(io.StringIO(_csv_text(content)), strict=True)
             header = next(records, [])
             rows: list[str] = []
-            for number, row in enumerate(records):
+            for number, row in enumerate(() if header_sheet is not None else records):
                 if number >= 500:
                     break
                 if row and (label := _row_label(row[0])):
                     rows.append(label)
             return (
-                TableFormat("", tuple(_label(v) for v in header[:200]), tuple(rows)),
+                TableFormat(
+                    "",
+                    tuple(_label(v) for v in header[:200]),
+                    tuple(rows),
+                    bool(header)
+                    and len(header) <= 200
+                    and all(0 < len(v.strip()) <= 200 for v in header),
+                ),
             )
         if (
             media_type
             == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
-            return _xlsx(content)
+            return _xlsx(content, header_sheet)
     except (
         ValueError,
         KeyError,
@@ -91,7 +116,7 @@ def table_formats(media_type: str, content: bytes) -> tuple[TableFormat, ...]:
     return ()
 
 
-def _xlsx(content: bytes) -> tuple[TableFormat, ...]:
+def _xlsx(content: bytes, header_sheet: str | None) -> tuple[TableFormat, ...]:
     with zipfile.ZipFile(io.BytesIO(content)) as book:
         consumed = 0
 
@@ -136,6 +161,8 @@ def _xlsx(content: bytes) -> tuple[TableFormat, ...]:
 
         tables: list[TableFormat] = []
         for sheet in list(workbook.iter(f"{MAIN}sheet"))[:50]:
+            if header_sheet is not None and sheet.get("name") != header_sheet:
+                continue
             target = targets.get(sheet.get(f"{REL}id"))
             if not target:
                 raise ValueError("missing sheet relationship")
@@ -147,9 +174,14 @@ def _xlsx(content: bytes) -> tuple[TableFormat, ...]:
             document = xml(path)
             columns: list[str] = []
             rows: list[str] = []
+            complete = True
             for index, row in enumerate(document.iter(f"{MAIN}row")):
-                if index > 500:
+                if (header_sheet is not None and index > 0) or index > 500:
                     break
+                if index == 0 and row.get("r", "1") != "1":
+                    complete = False
+                    if header_sheet is not None:
+                        break
                 column = 0
                 for cell in row.findall(f"{MAIN}c"):
                     ref = cell.get("r")
@@ -162,14 +194,23 @@ def _xlsx(content: bytes) -> tuple[TableFormat, ...]:
                         column = 0
                         for letter in letters:
                             column = column * 26 + ord(letter) - ord("A") + 1
+                    if index == 0 and column > 200:
+                        complete = False
                     if index == 0 and column <= 200:
+                        value = cell_value(cell).strip()
+                        complete = complete and 0 < len(value) <= 200
                         columns.extend([""] * max(0, column - len(columns)))
-                        columns[column - 1] = _label(cell_value(cell))
+                        columns[column - 1] = _label(value)
                     elif index > 0 and column == 1:
                         label = _row_label(cell_value(cell))
                         if label:
                             rows.append(label)
             tables.append(
-                TableFormat(sheet.get("name", "")[:255], tuple(columns), tuple(rows))
+                TableFormat(
+                    sheet.get("name", "")[:255],
+                    tuple(columns),
+                    tuple(rows),
+                    complete and bool(columns) and all(columns),
+                )
             )
         return tuple(tables)

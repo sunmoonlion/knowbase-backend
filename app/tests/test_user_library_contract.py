@@ -30,6 +30,8 @@ MODELS: tuple[type[BaseModel], ...] = (
     models.DescriptionRead,
     models.VersionRead,
     models.MaterialFormatRead,
+    models.ColumnCheckIn,
+    models.ColumnCheckRead,
     models.MaterialRead,
     models.HoldingRead,
     models.ShelfEntryRead,

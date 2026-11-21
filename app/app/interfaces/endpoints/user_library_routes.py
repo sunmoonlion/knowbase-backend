@@ -19,6 +19,7 @@ from app.application.services.user_library_service import (
     MAX_PUBLIC_BYTES,
     UserLibraryService,
 )
+from app.domain.table_format import column_status
 from app.domain.user_data import MAX_ITEM_BYTES, Owner
 from app.domain.user_library import (
     Account,
@@ -55,6 +56,8 @@ from app.interfaces.schemas.user_library import (
     BulkUseIn,
     BulkUseRead,
     CollectedOriginalRead,
+    ColumnCheckIn,
+    ColumnCheckRead,
     DescriptionIn,
     DescriptionRead,
     ExpertIn,
@@ -208,6 +211,34 @@ async def material_format(
             TableFormatRead(name=t.name, columns=list(t.columns), rows=list(t.rows))
             for t in tables
         ],
+    )
+
+
+@router.post(
+    "/materials/{material_id}/versions/{version_no}/column-check",
+    response_model=ColumnCheckRead,
+)
+async def check_column(
+    material_id: str,
+    version_no: int,
+    body: ColumnCheckIn,
+    response: Response,
+    owner: Owner = Depends(require_user_owner),
+    service: UserLibraryService = Depends(get_user_library_service),
+):
+    version, tables = await _call(
+        lambda: service.read_format(
+            owner.subject, owner.app, material_id, version_no, header_sheet=body.sheet
+        )
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return ColumnCheckRead(
+        material_id=material_id,
+        version_no=version.version_no,
+        sha256=version.sha256,
+        sheet=body.sheet,
+        column=body.column,
+        status=column_status(tables, body.sheet, body.column),
     )
 
 

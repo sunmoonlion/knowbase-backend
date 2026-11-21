@@ -68,6 +68,39 @@ async def test_format_requires_display_holding_and_exact_version_and_logs(api):
     assert (await client.get(path)).status_code == 404
 
 
+async def test_column_probe_pins_the_version_and_rechecks_sharing(api):
+    client, state = api
+    state["owner"] = Owner("alice", "knowlab")
+    content = b"metric,reference\nprivate,123\n"
+    uploaded = await client.post(
+        BASE + "/materials", params={"name": "metrics.csv"}, content=content
+    )
+    mid = uploaded.json()["material"]["material_id"]
+    use = f"{BASE}/materials/{mid}/uses"
+    path = f"{BASE}/materials/{mid}/versions/1/column-check"
+    body = {"sheet": "", "column": "reference"}
+    assert (await client.post(path, json=body)).status_code == 404
+    await client.post(use, json={"use": "app:knowlab"})
+    await client.post(f"{BASE}/materials/{mid}/versions", content=b"other\nlater")
+    found = await client.post(path, json=body)
+    assert found.headers["cache-control"] == "no-store"
+    assert found.json() == {
+        **body,
+        "material_id": mid,
+        "version_no": 1,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "status": "present",
+    }
+    assert (await client.post(path.replace("/1/", "/2/"), json=body)).json()[
+        "status"
+    ] == "missing"
+    state["owner"] = Owner("bob", "knowlab")
+    assert (await client.post(path, json=body)).status_code == 404
+    state["owner"] = Owner("alice", "knowlab")
+    await client.delete(use, params={"use": "app:knowlab"})
+    assert (await client.post(path, json=body)).status_code == 404
+
+
 @pytest.fixture
 def api(db):
     objects, clock = MemoryObjects(), Clock()

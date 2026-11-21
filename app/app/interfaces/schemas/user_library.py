@@ -64,6 +64,18 @@ class TableFormatRead(BaseModel):
     rows: list[Annotated[str, Field(max_length=200)]] = Field(max_length=500)
 
 
+class ColumnCheckIn(BaseModel):
+    sheet: str = Field(max_length=255)
+    column: str = Field(min_length=1, max_length=200, pattern=r"\S")
+
+
+class ColumnCheckRead(ColumnCheckIn):
+    material_id: str
+    version_no: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["present", "missing", "unknown"]
+
+
 class MaterialFormatRead(BaseModel):
     material_id: str
     version_no: int = Field(ge=1)

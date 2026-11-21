@@ -5,7 +5,7 @@ import zipfile
 
 import pytest
 
-from app.domain.table_format import MAIN, MAX_XML, table_formats
+from app.domain.table_format import MAIN, MAX_XML, column_status, table_formats
 from app.domain.user_data import UserDataError
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -128,3 +128,30 @@ def test_xlsx_with_an_invalid_reference_is_still_refused():
     )
     with pytest.raises(UserDataError, match="format"):
         table_formats(XLSX, workbook(sheet=sheet))
+
+
+@pytest.mark.parametrize(
+    ("header", "column", "status"),
+    [
+        ("amount,reference", "reference", "present"),
+        ("amount,reference", "id", "missing"),
+        ("", "id", "unknown"),
+        ("amount,,reference", "id", "unknown"),
+        (",".join(["amount"] * 200 + ["id"]), "id", "unknown"),
+        ("a" * 201, "a" * 200, "unknown"),
+    ],
+)
+def test_column_probe_requires_complete_evidence_for_absence(header, column, status):
+    tables = table_formats(
+        "text/csv", (header + "\nprivate,100").encode(), header_sheet=""
+    )
+    assert column_status(tables, "", column) == status
+    assert tables[0].rows == ()
+    assert column_status(tables, "different", column) == "unknown"
+
+
+def test_column_probe_never_treats_a_sparse_header_as_complete():
+    tables = table_formats(XLSX, workbook(), header_sheet="A & B")
+    assert column_status(tables, "A & B", "科目") == "present"
+    assert column_status(tables, "A & B", "reference") == "unknown"
+    assert tables[0].rows == ()
