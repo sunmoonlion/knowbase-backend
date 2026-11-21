@@ -24,13 +24,14 @@ from app.interfaces.http.admin.diagnostics import router as admin_diagnostics_ro
 from app.interfaces.http.internal.delivery_metrics import (
     router as delivery_metrics_router,
 )
-from app.interfaces.http.internal.function_calls import build_function_router
+from app.interfaces.http.internal.function_calls import (
+    build_data_functions,
+    build_function_router,
+)
 from app.interfaces.http.middleware.auth import require_knowbase_admin
 from app.interfaces.http.web.auth import router as web_auth_router
 from app.interfaces.http.web.cross_app import router as web_cross_app_router
 from app.interfaces.http.web.interactions import router as web_interactions_router
-from app.interfaces.mcp.data_mcp import DataMcp, build_data_functions
-from app.interfaces.mcp.data_mcp import build_router as build_data_mcp_router
 from core.config import get_settings
 
 router = APIRouter()
@@ -55,7 +56,5 @@ router.include_router(library_web_router)
 # 管理端：用户资料的用量、词表、禁用资料的处理（0044 第四节）
 router.include_router(user_data_admin_router)
 router.include_router(public_materials_admin_router)
-# 数据 MCP 第二版（/api/mcp/data）
 data_functions = build_data_functions(get_settings())
-router.include_router(build_data_mcp_router(server=DataMcp(data_functions)))
 router.include_router(build_function_router(get_settings(), data_functions))

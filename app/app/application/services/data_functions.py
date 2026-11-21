@@ -205,6 +205,7 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "run": _RUN,
                 "session": _SESSION,
+                "scope": {"enum": ["run"]},
                 "query": {"type": "string"},
                 "top_k": {"type": "integer"},
                 **_DIMENSIONS,
@@ -252,14 +253,12 @@ class DataToken:
     executor: str
     sandbox: str
     tools: frozenset[str]
+    function_call_id: str
     method_read: MethodRead | None = None
-    function_call_id: str | None = None
 
     @property
     def reader(self) -> str:
-        if self.function_call_id:
-            return f"function:{self.function_call_id}"
-        return f"mcp:{self.sandbox}"
+        return f"function:{self.function_call_id}"
 
 
 class DataFunctionError(Exception):
@@ -518,6 +517,12 @@ class DataFunctions:
             )
         targets = []
         for grant in grants:
+            if (
+                (grant.process == "session") != bool(args.get("session"))
+                or grant.method_only
+                or grant.beneficiary != token.user
+            ):
+                continue
             for item in grant.items:
                 if not narrow.empty:
                     material = await runs.library.get_material(item.material_id)
@@ -608,7 +613,9 @@ class DataFunctions:
                 version_no=_int(args, "version_no"),
             )
             if hint:
-                log.info("data_mcp_session_hint user=%s total=%s", token.user, total)
+                log.info(
+                    "data_function_session_hint user=%s total=%s", token.user, total
+                )
             return grant
         for grant in await runs.run_grants(
             token.executor, token.user, _text(args, "run")

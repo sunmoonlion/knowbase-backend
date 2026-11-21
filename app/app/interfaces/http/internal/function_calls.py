@@ -24,6 +24,7 @@ from app.application.services.data_query_revisions import (
     REGISTERED_QUERIES,
     function_revision,
 )
+from app.domain.method_reads import MethodRead
 from app.domain.user_data import UserDataError
 from app.interfaces.http.internal.host_guard import internal_host_only
 from core.config import Settings
@@ -107,18 +108,32 @@ def build_function_router(settings: Settings, functions: DataFunctions):
             raise HTTPException(409, "Function revision changed")
         scope_count = int("run" in args) + int("session" in args)
         if (
-            args.get("scope") not in ("market", "run")
-            or scope_count != (0 if args.get("scope") == "market" else 1)
+            (
+                "scope" in revision["contract"]["input_schema"]["properties"]
+                and (
+                    args.get("scope") not in ("market", "run")
+                    or scope_count != (0 if args.get("scope") == "market" else 1)
+                )
+            )
             or not input_check.is_valid(args)
             or args.keys() - revision["contract"]["input_schema"]["properties"].keys()
         ):
             raise HTTPException(422, "Invalid query scope or arguments")
+        binding = None
+        if name == "read_method_input":
+            try:
+                binding = MethodRead.model_validate(claims.get("method_read"))
+            except ValueError as exc:
+                raise HTTPException(403, "Signed method invocation required") from exc
+        elif "method_read" in claims:
+            raise HTTPException(403, "Method ticket does not cover this operation")
         try:
             token = DataToken(
                 claims["sub"],
                 "knowbench",
                 claims["sandbox"],
                 frozenset({name}),
+                method_read=binding,
                 function_call_id=str(body.call_id),
             )
             output = jsonable_encoder(
@@ -141,3 +156,20 @@ def build_function_router(settings: Settings, functions: DataFunctions):
         return {"call_id": body.call_id, "digest": body.digest, "output": output}
 
     return router
+
+
+def build_data_functions(s: Settings):
+    from app.interfaces.endpoints.user_library_routes import (
+        get_user_library_service,
+    )
+    from app.interfaces.endpoints.user_resolution_routes import (
+        get_user_resolution_service,
+    )
+    from app.interfaces.endpoints.user_run_routes import get_user_run_service
+
+    return DataFunctions(
+        lambda: get_user_run_service(s),
+        get_user_resolution_service,
+        lambda: get_user_library_service(s),
+        rate_per_minute=s.knowbase_mcp_rate_per_minute,
+    )

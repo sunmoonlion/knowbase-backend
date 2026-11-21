@@ -7,8 +7,8 @@ from uuid import uuid4
 import httpx
 from fastapi import FastAPI
 from joserfc import jwt
-from test_data_mcp import KEY, World, token
 from test_durable_delivery_db import db as db
+from test_registered_data_functions import KEY, World, token
 
 from app.application.services.data_query_revisions import function_revision
 from app.domain.public_access import PublicGate

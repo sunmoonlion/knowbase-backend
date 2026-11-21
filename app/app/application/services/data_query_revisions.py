@@ -15,13 +15,102 @@ def object_schema(properties):
     }
 
 
-REGISTERED_QUERIES = (
-    "query_facts",
-    "query_metric",
-    "read_facts",
-    "list_inputs",
-    "read_input",
-)
+REGISTERED_QUERIES = tuple(TOOLS)
+
+
+def auxiliary_output_schema(name):
+    string = {"type": "string"}
+    nullable = {"type": ["string", "null"]}
+    integer = {"type": "integer"}
+
+    def array(item):
+        return {"type": "array", "items": item}
+
+    if name == "lookup":
+        return object_schema(
+            {
+                "status": {"enum": ["shown", "held", "unusable", "absent"]},
+                "zone": {"enum": ["own", "public", None]},
+            }
+        )
+    if name == "list_library":
+        item = object_schema(
+            {
+                "material_id": string,
+                "name": string,
+                "version_no": integer,
+                "subject": nullable,
+                "doc_type": nullable,
+                "period_end": nullable,
+                "category": string,
+            }
+        )
+        return object_schema({"materials": array(item)})
+    if name == "describe_items":
+        return object_schema(
+            {
+                "version": integer,
+                "cas_taxonomy": string,
+                "company_types": array(string),
+                "items": array(
+                    object_schema(
+                        {
+                            "code": string,
+                            "name": string,
+                            "statement": string,
+                            "company_types": array(string),
+                            "aliases": array(string),
+                            "cas_element": nullable,
+                            "cas_note": nullable,
+                        }
+                    )
+                ),
+                "metrics": array(
+                    object_schema(
+                        dict.fromkeys(("key", "name", "kind", "formula"), string)
+                    )
+                ),
+                "vocabulary": {
+                    "type": "object",
+                    "required": [
+                        "version",
+                        "doc_classes",
+                        "doc_types",
+                        "editions",
+                        "topics",
+                        "industries",
+                        "languages",
+                        "research",
+                    ],
+                },
+            }
+        )
+    source = {"material_id": string, "version_no": integer, "sha256": string}
+    if name == "read_method_input":
+        return object_schema(
+            {
+                "source": object_schema(
+                    source | {"grant_id": string, "method_call_id": string}
+                ),
+                "text": string,
+            }
+        )
+    if name != "search_evidence":
+        raise ValueError("Unknown data operation")
+    hit = object_schema(
+        {
+            "source": object_schema(source | {"reading": string, "page": integer}),
+            "snippet": string,
+            "score": integer,
+        }
+    )
+    return object_schema(
+        {
+            "method": {"const": "keyword"},
+            "materials_searched": integer,
+            "passages": array(hit),
+        }
+    )
 
 
 def fact_row_schema():
@@ -146,19 +235,31 @@ def function_revision(name):
         output_schema = material_read_schema()
     elif name == "list_inputs":
         output_schema = input_list_schema()
-    else:
+    elif name in ("query_facts", "query_metric", "read_facts"):
         output_schema = fact_output_schema(name)
+    else:
+        output_schema = auxiliary_output_schema(name)
     operation = TOOLS[name]
     contract = {
         "description": operation["description"],
         "operation": name,
-        "scenes": ["native", "step"]
-        if name == "read_input"
-        else ["incubation", "native", "planning", "step"],
+        "scenes": {
+            "list_library": ["native"],
+            "read_method_input": ["incubation", "step"],
+            "read_input": ["native", "step"],
+            "describe_items": ["native", "step"],
+            "lookup": ["native", "step"],
+        }.get(name, ["incubation", "native", "planning", "step"]),
         "required_permissions": [
-            {"list_inputs": "inputs.list", "read_input": "inputs.read"}.get(
-                name, "facts.read"
-            )
+            {
+                "list_inputs": "inputs.list",
+                "read_input": "inputs.read",
+                "describe_items": "vocabulary.read",
+                "lookup": "materials.lookup",
+                "search_evidence": "evidence.search",
+                "list_library": "library.list",
+                "read_method_input": "method.inputs.read",
+            }.get(name, "facts.read")
         ],
         "input_schema": operation["inputSchema"],
         "output_schema": output_schema,

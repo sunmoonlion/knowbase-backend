@@ -1,4 +1,4 @@
-"""数据 MCP（SDD 0048，第 2 步 2d）：令牌、按运行与会话读、查事实、找证据、出处。"""
+"""已登记的资料函数：调用票据、任务与会话授权、事实、证据及出处。"""
 
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from app.infrastructure.repositories.user_resolution import (
 )
 from app.infrastructure.repositories.user_runs import SqlUserRunRepository
 from app.interfaces.http.internal.function_calls import build_function_router
-from app.interfaces.mcp import data_mcp
 from core.config import Settings
 
 KEY = ECKey.generate_key("P-256")
@@ -44,10 +43,9 @@ PAGES = [
 ]
 
 
-def token(sub="alice", aud="knowbase-data", azp="knowbench", exp=None) -> str:
+def token(sub="alice", aud="knowbase-function", azp="knowbench", exp=None) -> str:
     claims = {
         "sub": sub,
-        "tools": sorted(set(TOOLS) - {"read_method_input"}),
         "aud": aud,
         "azp": azp,
         "sandbox": "sb-1",
@@ -83,36 +81,21 @@ class World:
             knowbase_mcp_jwt_issuer="knowbench",
         )
         app = FastAPI()
-        app.include_router(
-            data_mcp.build_router(settings, data_mcp.DataMcp(self.functions))
-        )
         app.include_router(build_function_router(settings, self.functions))
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://localhost"
         )
 
-    async def call(self, name: str, auth: str | None = None, **arguments):
-        reply = await self.client.post(
-            "/mcp/data",
-            headers={"Authorization": f"Bearer {auth or token()}"},
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": arguments},
-            },
-        )
-        assert reply.status_code == 200, reply.text
-        result = reply.json()["result"]
-        if result["isError"]:
-            return {"error": result["content"][0]["text"]}
-        return result["structuredContent"]
-
-    async def facts(self, *, name="query_facts", sub="alice", **arguments):
-        arguments.setdefault("scope", "run")
+    async def facts(
+        self, *, name="query_facts", sub="alice", method_read=None, **arguments
+    ):
+        if "scope" in TOOLS[name]["inputSchema"]["properties"]:
+            arguments.setdefault("scope", "run")
         call_id = str(uuid4())
         digest = function_revision(name)["digest"]
         claims = dict(jwt.decode(token(sub=sub, aud="knowbase-function"), KEY).claims)
+        if method_read is not None:
+            claims["method_read"] = method_read
         claims.update(
             call_id=call_id,
             function_digest=digest,
@@ -199,42 +182,20 @@ def world(db) -> World:
     return World(db)
 
 
-async def test_tokens_must_be_issued_for_the_data_mcp(world):
-    for bad in (token(aud="knowbase"), token(azp="knowmart"), token(exp=1)):
-        reply = await world.client.post(
-            "/mcp/data",
-            headers={"Authorization": f"Bearer {bad}"},
-            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-        )
-        assert reply.status_code == 401
-    listed = await world.client.post(
-        "/mcp/data",
-        headers={"Authorization": f"Bearer {token()}"},
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-    )
-    names = {t["name"] for t in listed.json()["result"]["tools"]}
-    assert "search_evidence" in names
-    assert names.isdisjoint(
-        {"query_metric", "query_facts", "read_facts", "list_inputs", "read_input"}
-    )
-    for name in (
-        "query_facts",
-        "query_metric",
-        "read_facts",
-        "list_inputs",
-        "read_input",
-    ):
-        obsolete = await world.client.post(
-            "/mcp/data",
-            headers={"Authorization": f"Bearer {token()}"},
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": {"scope": "market"}},
-            },
-        )
-        assert obsolete.json()["error"]["code"] == -32602
+async def test_retired_data_mcp_has_no_route():
+    from app.interfaces.http.routes import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://localhost"
+    ) as http:
+        assert (
+            await http.post("/api/mcp/data", json={"method": "tools/list"})
+        ).status_code == 404
+        assert (
+            await http.post("/api/internal/v1/functions/lookup/1", json={})
+        ).status_code == 422
 
 
 async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
@@ -268,7 +229,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     assert facts["facts"][0]["source"]["page"] == 88
     margin = await world.facts(name="query_metric", metric="gross_margin", run="task-1")
     assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
-    found = await world.call("search_evidence", run="task-1", query="渠道库存")
+    found = await world.facts(name="search_evidence", run="task-1", query="渠道库存")
     assert found["passages"][0]["source"]["page"] == 88
     # 别人的令牌拿同一个 run：读不到
     other = await world.facts(name="list_inputs", sub="bob", run="task-1")
@@ -287,8 +248,8 @@ async def test_market_lookup_and_sessions(world):
     material, _ = await world.publish()
     ranked = await world.facts(scope="market", codes=["IS.REVENUE"], order="value_desc")
     assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
-    seen = await world.call(
-        "lookup",
+    seen = await world.facts(
+        name="lookup",
         subject="600519.SH",
         doc_type="annual_report",
         period_start="2025-01-01",
@@ -300,11 +261,22 @@ async def test_market_lookup_and_sessions(world):
         name="read_input", session=session.id, material_id=material.id, what="pages"
     )
     assert read["total_pages"] == 2
-    evidence = await world.call("search_evidence", session=session.id, query="营业收入")
+    evidence = await world.facts(
+        name="search_evidence", session=session.id, query="营业收入"
+    )
     assert evidence["passages"][0]["source"]["material_id"] == material.id
-    library = await world.call("list_library", session=session.id)
+    library = await world.facts(name="list_library", session=session.id)
     assert library == {"materials": []}  # 公开原件不在他名下，经 lookup 与读找
-    items = await world.call("describe_items")
+    assert "error" in await world.facts(
+        name="list_library", sub="bob", session=session.id
+    )
+    assert "error" in await world.facts(
+        name="search_evidence", sub="bob", session=session.id, query="营业收入"
+    )
+    assert (
+        await world.facts(name="search_evidence", run=session.id, query="营业收入")
+    )["passages"] == []
+    items = await world.facts(name="describe_items")
     assert items["version"] == chart_of_accounts.CHART_VERSION and any(
         m["key"] == "gross_margin" for m in items["metrics"]
     )
@@ -483,15 +455,17 @@ async def test_search_evidence_narrows_by_description_dimensions(world):
             )
         ],
     )
-    everything = await world.call("search_evidence", run="task-3", query="渠道库存")
+    everything = await world.facts(
+        name="search_evidence", run="task-3", query="渠道库存"
+    )
     assert everything["materials_searched"] == 1 and everything["passages"]
     for kept in (
         {"doc_type": "annual_report"},
         {"doc_type": "disclosure"},
         {"subjects": ["600519.SH"], "period_from": "2025-12-31"},
     ):
-        found = await world.call(
-            "search_evidence", run="task-3", query="渠道库存", **kept
+        found = await world.facts(
+            name="search_evidence", run="task-3", query="渠道库存", **kept
         )
         assert found["materials_searched"] == 1, kept
     for dropped in (
@@ -500,13 +474,15 @@ async def test_search_evidence_narrows_by_description_dimensions(world):
         {"edition": "summary"},
         {"topics": ["dividend"]},
     ):
-        found = await world.call(
-            "search_evidence", run="task-3", query="渠道库存", **dropped
+        found = await world.facts(
+            name="search_evidence", run="task-3", query="渠道库存", **dropped
         )
         assert (found["materials_searched"], found["passages"]) == (0, []), dropped
-    bad = await world.call("search_evidence", run="task-3", query="x", industry="白酒")
-    assert "industry_invalid" in bad["error"]
-    items = await world.call("describe_items")
+    bad = await world.facts(
+        name="search_evidence", run="task-3", query="x", industry="白酒"
+    )
+    assert "industry is not in the vocabulary" in bad["error"]
+    items = await world.facts(name="describe_items")
     assert items["vocabulary"]["doc_classes"]["research"]["name"] == "研报"
 
 
@@ -560,16 +536,12 @@ async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation
         {"read": scope, "expires_at": parent.expires_at}
     )
 
-    def bearer(binding):
-        claims = dict(jwt.decode(token(), KEY).claims)
-        claims.update(tools=["read_method_input"], method_read=binding)
-        return jwt.encode({"alg": "ES256"}, claims, KEY)
-
     async def read(binding, params=None):
-        return await world.call(
-            "read_method_input", auth=bearer(binding), **(params or args)
+        return await world.facts(
+            name="read_method_input", method_read=binding, **(params or args)
         )
 
+    assert "error" in await world.facts(name="describe_items", method_read=scope)
     assert "error" in await read(scope)
     # An otherwise valid parent grant from a different task cannot be rebound.
     other_grant = await world.runs.grant_by_user(
@@ -589,7 +561,7 @@ async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation
         await world.runs.consent_method_read(
             "alice", "knowbench", other_grant.id, consent
         )
-    assert "error" in await world.call("read_method_input", **args)
+    assert "error" in await world.facts(name="read_method_input", **args)
     with pytest.raises(UserDataError):
         await world.runs.consent_method_read("bob", "knowbench", parent.id, consent)
     with pytest.raises(UserDataError):
@@ -608,7 +580,7 @@ async def test_owner_pinned_method_read_survives_restart_and_rechecks_revocation
     restarted.runs.objects = world.runs.objects
     world = restarted
     # Upload enforces UTF-8. Simulate an older storage adapter returning
-    # authorized bytes in a different encoding through the real MCP route.
+    # authorized bytes in a different encoding through the registered function route.
     from dataclasses import replace
 
     get_read = world.runs.read_for_method
@@ -777,7 +749,9 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
         ],
     )
     args = {"scope": "run", "run": "direct-test", "codes": ["IS.REVENUE"]}
-    allowed = DataToken("alice", "knowbench", "sb-1", frozenset({"query_facts"}))
+    allowed = DataToken(
+        "alice", "knowbench", "sb-1", frozenset({"query_facts"}), str(uuid4())
+    )
     direct = await world.functions.invoke(allowed, "query_facts", args)
     reply = await world.facts(**args)
     published = function_revision("query_facts")["contract"]
@@ -787,16 +761,12 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
         item["ref"] for item in reply["facts"]
     ]
 
-    for tools in ([], None):
-        claims = dict(jwt.decode(token(), KEY).claims)
-        claims.pop("tools")
-        if tools is not None:
-            claims["tools"] = tools
-        encoded = jwt.encode({"alg": "ES256"}, claims, KEY)
-        empty = data_mcp.verify("Bearer " + encoded, KEY, "knowbench")
-        assert empty is not None and not empty.tools
-        with pytest.raises(DataFunctionError, match="not allowed"):
-            await world.functions.invoke(empty, "query_facts", args)
+    with pytest.raises(DataFunctionError, match="not allowed"):
+        await world.functions.invoke(
+            DataToken("alice", "knowbench", "sb-1", frozenset(), str(uuid4())),
+            "query_facts",
+            args,
+        )
 
 
 async def test_material_read_requires_live_scoped_grant_for_approved_reread(world):

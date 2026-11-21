@@ -195,8 +195,7 @@ class Settings(BaseSettings):
     retrieval_auth_required_scope: str = "knowbase:retrieve"
 
     # Knowledge providers and upstream artifact policy.
-    # 数据 MCP 第二版（/api/mcp/data）：工作台签发的 ES256 JWT（aud=knowbase）用这把公钥
-    # 就地验；每个令牌每分钟调用数封顶
+    # 服务函数验工作台签发的 ES256 调用票据，aud=knowbase-function。
     knowbase_mcp_jwt_public_key: str | None = None
     knowbase_mcp_jwt_issuer: str | None = None
     knowbase_mcp_rate_per_minute: int = 120
