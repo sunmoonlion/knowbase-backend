@@ -816,10 +816,12 @@ class UserRunService:
                 out.append(grant)
         return out
 
-    async def renditions_of(self, material_id: str, version_no: int) -> list[Rendition]:
+    async def renditions_of(
+        self, material_id: str, version_no: int
+    ) -> list[Rendition] | None:
         """这一版有哪些读法（列输入时告诉模型能读什么）；调用方已核过授权。"""
         version = await self.library.version(material_id, version_no)
-        return [] if version is None else await self.runs.renditions(version.id)
+        return None if version is None else await self.runs.renditions(version.id)
 
     async def grant_view(
         self, executor_app: str, grant_id: str

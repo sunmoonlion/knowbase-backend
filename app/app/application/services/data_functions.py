@@ -26,7 +26,7 @@ from app.domain.user_facts import (
 )
 from app.domain.user_library import PUBLIC_OWNER, DescriptionFilter
 from app.domain.user_resolution import DescriptionKey
-from app.domain.user_runs import RunGrant
+from app.domain.user_runs import GrantItem, RunGrant
 from app.domain.vocabulary import snapshot as vocabulary_snapshot
 
 log = logging.getLogger(__name__)
@@ -83,13 +83,17 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_inputs": {
         "description": (
-            "List what this run may read: each material, its description, the pinned "
-            "version, which readings (text, pages, table) are ready, and whose it is."
+            "List inputs authorized for this task or already granted to this session: "
+            "the version, which readings (text, pages, table) are ready, "
+            "and whose it is."
         ),
         "inputSchema": {
             "type": "object",
-            "properties": {"run": _RUN},
-            "required": ["run"],
+            "properties": {
+                "run": _RUN,
+                "session": _SESSION,
+                "scope": {"enum": ["run"]},
+            },
         },
     },
     "read_input": {
@@ -317,16 +321,34 @@ class DataFunctions:
         }
 
     async def _list_inputs(self, token: DataToken, args: dict[str, Any]) -> Any:
-        run = _text(args, "run")
         runs = self.runs()
-        grants = await runs.run_grants(token.executor, token.user, run)
+        if "session" in args:
+            grants = await runs.session_grants(
+                token.user, token.executor, _text(args, "session")
+            )
+            grants = [
+                g
+                for g in grants
+                if g.process == "session"
+                and g.beneficiary == token.user
+                and not g.method_only
+            ]
+            scope = {}
+        else:
+            run = _text(args, "run")
+            grants = [
+                g
+                for g in await runs.run_grants(token.executor, token.user, run)
+                if g.process != "session"
+            ]
+            scope = {"run": run}
         inputs = []
         for grant in grants:
             for item in grant.items:
-                inputs.append(
-                    await self._describe(runs, grant, item.material_id, item.version_no)
-                )
-        return {"run": run, "inputs": inputs}
+                details = await self._describe(runs, grant, item)
+                if details is not None:
+                    inputs.append(details)
+        return {**scope, "inputs": inputs}
 
     async def _read_input(self, token: DataToken, args: dict[str, Any]) -> Any:
         runs = self.runs()
@@ -589,12 +611,16 @@ class DataFunctions:
         raise DataFunctionError("this material is not an input of this run")
 
     async def _describe(
-        self, runs: UserRunService, grant: RunGrant, material_id: str, version_no: int
-    ) -> dict[str, Any]:
+        self, runs: UserRunService, grant: RunGrant, item: GrantItem
+    ) -> dict[str, Any] | None:
+        material_id, version_no = item.material_id, item.version_no
         material = await runs.library.get_material(material_id)
-        item = next(i for i in grant.items if i.material_id == material_id)
+        if material is None or not material.readable:
+            return None
         renditions = await runs.renditions_of(material_id, version_no)
-        d = material.description if material else None
+        if renditions is None:
+            return None
+        d = material.description
         owner = (
             "public"
             if item.content_owner == PUBLIC_OWNER
@@ -602,7 +628,7 @@ class DataFunctions:
         )
         return {
             "material_id": material_id,
-            "name": material.name if material else None,
+            "name": material.name,
             "version_no": version_no,
             "subject": d.subject if d else None,
             "doc_type": d.doc_type if d else None,

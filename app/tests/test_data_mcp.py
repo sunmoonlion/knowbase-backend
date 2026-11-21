@@ -19,7 +19,7 @@ from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.call_rate import RateLimiter
 from app.application.services.data_functions import TOOLS, DataFunctions, DataToken
-from app.application.services.fact_query_revisions import function_revision
+from app.application.services.data_query_revisions import function_revision
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
@@ -213,9 +213,11 @@ async def test_tokens_must_be_issued_for_the_data_mcp(world):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     )
     names = {t["name"] for t in listed.json()["result"]["tools"]}
-    assert {"list_inputs", "read_input", "search_evidence"} <= names
-    assert names.isdisjoint({"query_metric", "query_facts", "read_facts"})
-    for name in ("query_facts", "query_metric", "read_facts"):
+    assert {"read_input", "search_evidence"} <= names
+    assert names.isdisjoint(
+        {"query_metric", "query_facts", "read_facts", "list_inputs"}
+    )
+    for name in ("query_facts", "query_metric", "read_facts", "list_inputs"):
         obsolete = await world.client.post(
             "/mcp/data",
             headers={"Authorization": f"Bearer {token()}"},
@@ -242,7 +244,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
             )
         ],
     )
-    inputs = (await world.call("list_inputs", run="task-1"))["inputs"]
+    inputs = (await world.facts(name="list_inputs", run="task-1"))["inputs"]
     assert [(i["material_id"], i["owner"], i["readings"]) for i in inputs] == [
         (material.id, "public", ["pages", "table"])
     ]
@@ -259,7 +261,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     found = await world.call("search_evidence", run="task-1", query="渠道库存")
     assert found["passages"][0]["source"]["page"] == 88
     # 别人的令牌拿同一个 run：读不到
-    other = await world.call("list_inputs", auth=token(sub="bob"), run="task-1")
+    other = await world.facts(name="list_inputs", sub="bob", run="task-1")
     assert other["inputs"] == []
     stranger = await world.call(
         "read_input",
@@ -327,6 +329,61 @@ async def test_facts_carry_refs_that_read_back_within_the_same_scope(world):
     assert "fact ref" in bad["error"]
     market = await world.facts(name="read_facts", scope="market", refs=[ref])
     assert [f["ref"] for f in market["facts"]] == [ref]
+
+
+async def test_registered_input_list_is_scoped_to_each_task_or_session(world):
+    async def grant_input(filename, task):
+        material, version = await world.lib.upload("alice", filename, filename.encode())
+        await world.lib.show("alice", material.id, "app:knowbench")
+        grant = await world.runs.grant_by_user(
+            "alice",
+            "knowbench",
+            "delegation",
+            task,
+            [
+                GrantRequestItem(
+                    InputPin(material.id, version.version_no, version.sha256),
+                    "display",
+                    "app:knowbench",
+                )
+            ],
+        )
+        return material, grant
+
+    first, grant = await grant_input("first.txt", "first-task")
+    second, _ = await grant_input("second.txt", "second-task")
+    chat = await world.runs.register_session("alice", "knowbench")
+    other_chat = await world.runs.register_session("alice", "knowbench")
+
+    async def listing(**scope):
+        return await world.facts(name="list_inputs", **scope)
+
+    assert (await listing(session=chat.id)) == {"inputs": []}
+    result = await listing(run="first-task")
+    assert result["run"] == "first-task"
+    assert [
+        (r["material_id"], r["version_no"], r["owner"]) for r in result["inputs"]
+    ] == [(first.id, 1, "yours")]
+    assert [r["material_id"] for r in (await listing(run="second-task"))["inputs"]] == [
+        second.id
+    ]
+    assert (await listing(run="first-task", sub="bob"))["inputs"] == []
+    assert "error" in await listing(session=chat.id, sub="bob")
+    assert "error" in await listing(session=chat.id, run="first-task")
+    assert "error" in await listing(scope="market")
+    assert await world.runs.session_grants("alice", "knowbench", chat.id) == []
+
+    await world.runs.session_read("alice", "knowbench", chat.id, second.id)
+    assert [r["material_id"] for r in (await listing(session=chat.id))["inputs"]] == [
+        second.id
+    ]
+    assert (await listing(session=other_chat.id)) == {"inputs": []}
+    assert (await listing(run=chat.id))["inputs"] == []
+    await world.runs.revoke_by_user("alice", grant.id)
+    assert (await listing(run="first-task"))["inputs"] == []
+    await world.runs.disable("operator", second.id, "synthetic listing test")
+    assert (await listing(run="second-task"))["inputs"] == []
+    assert (await listing(session=chat.id))["inputs"] == []
 
 
 async def test_a_session_queries_facts_of_what_it_has_read(world):
@@ -695,7 +752,7 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     from jsonschema import Draft202012Validator
 
     from app.application.services.data_functions import DataFunctionError
-    from app.application.services.fact_query_revisions import function_revision
+    from app.application.services.data_query_revisions import function_revision
 
     material, version = await world.publish()
     await world.runs.grant_by_user(

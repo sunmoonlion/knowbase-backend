@@ -3,7 +3,7 @@
 import asyncio
 
 from app.application.errors.exceptions import ServiceUnavailableError
-from app.application.services.fact_query_revisions import (
+from app.application.services.data_query_revisions import (
     REGISTERED_QUERIES,
     function_revision,
 )

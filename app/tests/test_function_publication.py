@@ -9,7 +9,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from app.application.errors.exceptions import BadRequestError, ServiceUnavailableError
-from app.application.services.fact_query_revisions import function_revision
+from app.application.services.data_query_revisions import function_revision
 from app.bootstrap.publish_functions import publish_query
 
 PARENT = Path(__file__).resolve().parents[3]

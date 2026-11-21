@@ -10,7 +10,7 @@ from joserfc import jwt
 from test_data_mcp import KEY, World, token
 from test_durable_delivery_db import db as db
 
-from app.application.services.fact_query_revisions import function_revision
+from app.application.services.data_query_revisions import function_revision
 from app.domain.public_access import PublicGate
 from app.domain.user_library import PUBLIC_OWNER
 from app.domain.user_runs import GrantRequestItem, InputPin

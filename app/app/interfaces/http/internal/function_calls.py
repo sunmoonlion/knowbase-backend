@@ -20,7 +20,7 @@ from app.application.services.data_functions import (
     DataFunctions,
     DataToken,
 )
-from app.application.services.fact_query_revisions import (
+from app.application.services.data_query_revisions import (
     REGISTERED_QUERIES,
     function_revision,
 )
@@ -130,7 +130,7 @@ def build_function_router(settings: Settings, functions: DataFunctions):
         except DataFunctionError as exc:
             raise HTTPException(422, str(exc)) from exc
         except (ValueError, TypeError) as exc:
-            raise HTTPException(422, "Invalid fact query") from exc
+            raise HTTPException(422, "Invalid data query") from exc
         if not output_check.is_valid(output):
             raise HTTPException(502, "Function output differs from its contract")
         response.headers["Cache-Control"] = "no-store"

@@ -25,7 +25,7 @@ from app.application.services.data_functions import (
     DataFunctions,
     DataToken,
 )
-from app.application.services.fact_query_revisions import REGISTERED_QUERIES
+from app.application.services.data_query_revisions import REGISTERED_QUERIES
 from app.domain.method_reads import MethodRead
 from app.domain.user_data import UserDataError
 from core.config import Settings, get_settings

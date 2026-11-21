@@ -1,4 +1,4 @@
-"""Versioned KnowBase queries backed by the live fact grants."""
+"""Versioned KnowBase queries backed by live data grants."""
 
 import hashlib
 import json
@@ -15,7 +15,7 @@ def object_schema(properties):
     }
 
 
-REGISTERED_QUERIES = ("query_facts", "query_metric", "read_facts")
+REGISTERED_QUERIES = ("query_facts", "query_metric", "read_facts", "list_inputs")
 
 
 def fact_row_schema():
@@ -46,9 +46,31 @@ def fact_row_schema():
     )
 
 
-def function_revision(name):
-    if name not in REGISTERED_QUERIES:
-        raise ValueError("Unknown KnowBase query")
+def input_list_schema():
+    text = {"type": "string"}
+    nullable = {"type": ["string", "null"]}
+    integer = {"type": "integer"}
+    item = object_schema(
+        {
+            "material_id": text,
+            "name": nullable,
+            "version_no": integer,
+            "subject": nullable,
+            "doc_type": nullable,
+            "period_start": nullable,
+            "period_end": nullable,
+            "readings": {"type": "array", "items": text},
+            "owner": {"enum": ["public", "yours", "author"]},
+            "basis": text,
+            "grant_revision": integer,
+        }
+    )
+    output_schema = object_schema({"inputs": {"type": "array", "items": item}})
+    output_schema["properties"]["run"] = text
+    return output_schema
+
+
+def fact_output_schema(name):
     facts = {"type": "array", "items": fact_row_schema()}
     output = {"facts": facts}
     if name == "read_facts":
@@ -72,14 +94,25 @@ def function_revision(name):
             "formula": text,
             "values": {"type": "array", "items": value},
         }
+    return object_schema(output)
+
+
+def function_revision(name):
+    if name not in REGISTERED_QUERIES:
+        raise ValueError("Unknown KnowBase query")
+    output_schema = (
+        input_list_schema() if name == "list_inputs" else fact_output_schema(name)
+    )
     operation = TOOLS[name]
     contract = {
         "description": operation["description"],
         "operation": name,
         "scenes": ["incubation", "native", "planning", "step"],
-        "required_permissions": ["facts.read"],
+        "required_permissions": [
+            "inputs.list" if name == "list_inputs" else "facts.read"
+        ],
         "input_schema": operation["inputSchema"],
-        "output_schema": object_schema(output),
+        "output_schema": output_schema,
     }
     expected = {
         "provider": "knowbase",
