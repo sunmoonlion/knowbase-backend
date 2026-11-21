@@ -15,7 +15,13 @@ def object_schema(properties):
     }
 
 
-REGISTERED_QUERIES = ("query_facts", "query_metric", "read_facts", "list_inputs")
+REGISTERED_QUERIES = (
+    "query_facts",
+    "query_metric",
+    "read_facts",
+    "list_inputs",
+    "read_input",
+)
 
 
 def fact_row_schema():
@@ -70,6 +76,42 @@ def input_list_schema():
     return output_schema
 
 
+def material_read_schema():
+    text = {"type": "string"}
+    nullable = {"type": ["string", "null"]}
+    integer = {"type": "integer"}
+    flag = {"type": "boolean"}
+    source = object_schema(
+        {
+            "material_id": text,
+            "version_no": integer,
+            "sha256": text,
+            "reading": nullable,
+        }
+    )
+    page = object_schema({"page": integer, "text": text})
+    variants = [
+        {"pages": {"type": "array", "items": page}, "total_pages": integer},
+        {
+            "title": nullable,
+            "published_on": nullable,
+            "text": text,
+            "offset": integer,
+            "more": flag,
+        },
+        {
+            "media_type": text,
+            "sheets": {"type": "array", "items": text},
+            "header": nullable,
+        },
+        {"text": text, "more": flag},
+    ]
+    return {
+        "type": "object",
+        "oneOf": [object_schema({"source": source, **variant}) for variant in variants],
+    }
+
+
 def fact_output_schema(name):
     facts = {"type": "array", "items": fact_row_schema()}
     output = {"facts": facts}
@@ -100,16 +142,23 @@ def fact_output_schema(name):
 def function_revision(name):
     if name not in REGISTERED_QUERIES:
         raise ValueError("Unknown KnowBase query")
-    output_schema = (
-        input_list_schema() if name == "list_inputs" else fact_output_schema(name)
-    )
+    if name == "read_input":
+        output_schema = material_read_schema()
+    elif name == "list_inputs":
+        output_schema = input_list_schema()
+    else:
+        output_schema = fact_output_schema(name)
     operation = TOOLS[name]
     contract = {
         "description": operation["description"],
         "operation": name,
-        "scenes": ["incubation", "native", "planning", "step"],
+        "scenes": ["native", "step"]
+        if name == "read_input"
+        else ["incubation", "native", "planning", "step"],
         "required_permissions": [
-            "inputs.list" if name == "list_inputs" else "facts.read"
+            {"list_inputs": "inputs.list", "read_input": "inputs.read"}.get(
+                name, "facts.read"
+            )
         ],
         "input_schema": operation["inputSchema"],
         "output_schema": output_schema,

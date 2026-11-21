@@ -126,9 +126,13 @@ def build_function_router(settings: Settings, functions: DataFunctions):
                 custom_encoder={Decimal: str},
             )
         except UserDataError as exc:
-            raise HTTPException(exc.status, exc.message) from exc
+            raise HTTPException(
+                exc.status, exc.message, headers={"X-KnowBase-Refusal": "resource"}
+            ) from exc
         except DataFunctionError as exc:
-            raise HTTPException(422, str(exc)) from exc
+            raise HTTPException(
+                422, str(exc), headers={"X-KnowBase-Refusal": "resource"}
+            ) from exc
         except (ValueError, TypeError) as exc:
             raise HTTPException(422, "Invalid data query") from exc
         if not output_check.is_valid(output):

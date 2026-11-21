@@ -213,11 +213,17 @@ async def test_tokens_must_be_issued_for_the_data_mcp(world):
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     )
     names = {t["name"] for t in listed.json()["result"]["tools"]}
-    assert {"read_input", "search_evidence"} <= names
+    assert "search_evidence" in names
     assert names.isdisjoint(
-        {"query_metric", "query_facts", "read_facts", "list_inputs"}
+        {"query_metric", "query_facts", "read_facts", "list_inputs", "read_input"}
     )
-    for name in ("query_facts", "query_metric", "read_facts", "list_inputs"):
+    for name in (
+        "query_facts",
+        "query_metric",
+        "read_facts",
+        "list_inputs",
+        "read_input",
+    ):
         obsolete = await world.client.post(
             "/mcp/data",
             headers={"Authorization": f"Bearer {token()}"},
@@ -248,8 +254,12 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     assert [(i["material_id"], i["owner"], i["readings"]) for i in inputs] == [
         (material.id, "public", ["pages", "table"])
     ]
-    pages = await world.call(
-        "read_input", run="task-1", material_id=material.id, what="pages", page_from=88
+    pages = await world.facts(
+        name="read_input",
+        run="task-1",
+        material_id=material.id,
+        what="pages",
+        page_from=88,
     )
     assert [p["page"] for p in pages["pages"]] == [88]
     assert pages["source"]["reading"] == "pages/1"
@@ -263,9 +273,9 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     # 别人的令牌拿同一个 run：读不到
     other = await world.facts(name="list_inputs", sub="bob", run="task-1")
     assert other["inputs"] == []
-    stranger = await world.call(
-        "read_input",
-        auth=token(sub="bob"),
+    stranger = await world.facts(
+        name="read_input",
+        sub="bob",
         run="task-1",
         material_id=material.id,
         what="pages",
@@ -286,8 +296,8 @@ async def test_market_lookup_and_sessions(world):
     )
     assert seen == {"status": "shown", "zone": "public"}
     session = await world.runs.register_session("alice", "knowbench")
-    read = await world.call(
-        "read_input", session=session.id, material_id=material.id, what="pages"
+    read = await world.facts(
+        name="read_input", session=session.id, material_id=material.id, what="pages"
     )
     assert read["total_pages"] == 2
     evidence = await world.call("search_evidence", session=session.id, query="营业收入")
@@ -391,8 +401,8 @@ async def test_a_session_queries_facts_of_what_it_has_read(world):
     session = await world.runs.register_session("alice", "knowbench")
     before = await world.facts(session=session.id, codes=["IS.REVENUE"])
     assert before == {"facts": []}
-    await world.call(
-        "read_input", session=session.id, material_id=material.id, what="pages"
+    await world.facts(
+        name="read_input", session=session.id, material_id=material.id, what="pages"
     )
     after = await world.facts(session=session.id, codes=["IS.REVENUE"])
     assert [f["subject"] for f in after["facts"]] == ["600519.SH"]
@@ -428,8 +438,8 @@ async def test_text_reading_carries_title_and_date(world):
             )
         ],
     )
-    text = await world.call(
-        "read_input", run="task-t", material_id=material.id, what="text", offset=4
+    text = await world.facts(
+        name="read_input", run="task-t", material_id=material.id, what="text", offset=4
     )
     assert text["title"] == "贵州茅台 2025 年年度报告"
     assert text["published_on"] == "2026-03-28"
@@ -730,8 +740,8 @@ async def test_exact_method_parent_is_idempotent_and_stays_revoked(world):
         await world.runs.read(
             "knowbench", "regular-run", first.id, material.id, 1, "content"
         )
-    assert "error" in await world.call(
-        "read_input",
+    assert "error" in await world.facts(
+        name="read_input",
         run=first.ref,
         material_id=material.id,
         version_no=1,
@@ -787,3 +797,40 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
         assert empty is not None and not empty.tools
         with pytest.raises(DataFunctionError, match="not allowed"):
             await world.functions.invoke(empty, "query_facts", args)
+
+
+async def test_material_read_requires_live_scoped_grant_for_approved_reread(world):
+    material, _ = await world.publish()
+    session = await world.runs.register_session("alice", "knowbench")
+
+    async def read(**extra):
+        return await world.facts(
+            name="read_input",
+            **(
+                {
+                    "session": session.id,
+                    "material_id": material.id,
+                    "what": "original",
+                    "version_no": 1,
+                }
+                | extra
+            ),
+        )
+
+    assert "error" in await read(existing_only=True)
+    assert "error" in await read(version_no=2)
+    assert await world.runs.session_grants("alice", "knowbench", session.id) == []
+    assert (await read())["text"] == CSV.decode()
+    assert (await read(what="format", existing_only=True))[
+        "header"
+    ] == CSV.decode().splitlines()[0]
+    assert "error" in await read(version_no=2, existing_only=True)
+    assert "error" in await read(scope="market")
+    assert "error" in await read(sub="bob")
+    assert "error" in await world.facts(
+        name="read_input", run=session.id, material_id=material.id, what="original"
+    )
+    [grant] = await world.runs.session_grants("alice", "knowbench", session.id)
+    await world.runs.revoke_by_user("alice", grant.id)
+    assert "error" in await read(existing_only=True)
+    assert await world.runs.session_grants("alice", "knowbench", session.id) == []

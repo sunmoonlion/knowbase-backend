@@ -107,6 +107,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "run": _RUN,
                 "session": _SESSION,
+                "scope": {"enum": ["run"]},
+                "existing_only": {"type": "boolean"},
                 "material_id": {"type": "string"},
                 "version_no": {"type": "integer"},
                 "what": {"enum": ["text", "pages", "format", "original"]},
@@ -598,7 +600,12 @@ class DataFunctions:
     ) -> RunGrant:
         if args.get("session"):
             grant, total, hint = await runs.session_read(
-                token.user, token.executor, _text(args, "session"), material_id
+                token.user,
+                token.executor,
+                _text(args, "session"),
+                material_id,
+                existing_only=args.get("existing_only", False),
+                version_no=_int(args, "version_no"),
             )
             if hint:
                 log.info("data_mcp_session_hint user=%s total=%s", token.user, total)
@@ -606,7 +613,10 @@ class DataFunctions:
         for grant in await runs.run_grants(
             token.executor, token.user, _text(args, "run")
         ):
-            if any(i.material_id == material_id for i in grant.items):
+            if (
+                grant.process != "session"
+                and grant.item(material_id, _int(args, "version_no")) is not None
+            ):
                 return grant
         raise DataFunctionError("this material is not an input of this run")
 

@@ -420,7 +420,14 @@ class UserRunService:
         return await self.runs.revoke(ids, now, "session-ended")
 
     async def session_read(
-        self, subject: str, app: str, session_id: str, material_id: str
+        self,
+        subject: str,
+        app: str,
+        session_id: str,
+        material_id: str,
+        *,
+        version_no: int | None = None,
+        existing_only: bool = False,
     ) -> tuple[RunGrant, int, bool]:
         """模型在会话里读一份：读过的回原来那条；第一次读时核在范围里，当场签一条
         小授权（钉住他能用的那一版）。返回授权、这段会话累计读了几份、要不要提示
@@ -428,13 +435,25 @@ class UserRunService:
         session = await self._own_session(subject, app, session_id)
         now = self.now()
         existing = await self.runs.grant_ids(
-            executor_app=app, ref=session.id, material_id=material_id, active_at=now
+            executor_app=app,
+            beneficiary=subject,
+            ref=session.id,
+            material_id=material_id,
+            active_at=now,
         )
-        if existing:
-            grant = await self.runs.get_grant(existing[0])
-            assert grant is not None
+        for grant_id in existing:
+            grant = await self.runs.get_grant(grant_id)
+            if grant is None or grant.process != "session" or grant.method_only:
+                continue
+            if not grant.active(now) or grant.item(material_id, version_no) is None:
+                raise not_found("granted version")
             total = len(await self.runs.grant_ids(executor_app=app, ref=session.id))
             return grant, total, False
+        if existing_only:
+            raise denied(
+                "grant_required",
+                "The approved session material is no longer authorized",
+            )
         material = await self.library.get_material(material_id)
         if material is None or not material.readable:
             raise not_found()
@@ -458,6 +477,8 @@ class UserRunService:
             if not await self.runs.has_use(subject, material.id, session.scope_use):
                 raise denied("not_shown", f"not shown to {app}")
             basis, basis_ref = "display", session.scope_use
+        if version_no is not None and number != version_no:
+            raise not_found("granted version")
         version = await self.library.version(material.id, number)
         if version is None:
             raise not_found("version")
