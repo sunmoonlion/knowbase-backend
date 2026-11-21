@@ -651,7 +651,10 @@ async def test_exact_method_parent_is_idempotent_and_stays_revoked(world):
 async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     world,
 ):
+    from jsonschema import Draft202012Validator
+
     from app.application.services.data_functions import DataFunctionError
+    from app.bootstrap.publish_functions import query_facts_contract
 
     material, version = await world.publish()
     await world.runs.grant_by_user(
@@ -669,6 +672,9 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     allowed = DataToken("alice", "knowbench", "sb-1", frozenset({"query_facts"}))
     direct = await world.functions.invoke(allowed, "query_facts", args)
     reply = await world.call("query_facts", **args)
+    published = query_facts_contract()
+    Draft202012Validator(published["input_schema"]).validate(args)
+    Draft202012Validator(published["output_schema"]).validate(reply)
     assert direct["facts"] and [item["ref"] for item in direct["facts"]] == [
         item["ref"] for item in reply["facts"]
     ]
