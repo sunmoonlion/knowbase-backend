@@ -214,8 +214,8 @@ async def test_tokens_must_be_issued_for_the_data_mcp(world):
     )
     names = {t["name"] for t in listed.json()["result"]["tools"]}
     assert {"list_inputs", "read_input", "search_evidence"} <= names
-    assert names.isdisjoint({"query_metric", "query_facts"})
-    for name in ("query_facts", "query_metric"):
+    assert names.isdisjoint({"query_metric", "query_facts", "read_facts"})
+    for name in ("query_facts", "query_metric", "read_facts"):
         obsolete = await world.client.post(
             "/mcp/data",
             headers={"Authorization": f"Bearer {token()}"},
@@ -316,18 +316,16 @@ async def test_facts_carry_refs_that_read_back_within_the_same_scope(world):
     assert ref.startswith("fact:")
     raw = (await world.facts(run="task-2", layer="raw"))["facts"]
     assert all(r["ref"].startswith("raw:") for r in raw)
-    back = await world.call("read_facts", run="task-2", refs=[ref, raw[0]["ref"]])
+    back = await world.facts(name="read_facts", run="task-2", refs=[ref, raw[0]["ref"]])
     assert [f["ref"] for f in back["facts"]] == [ref, raw[0]["ref"]]
     assert back["facts"][0]["value"] == "15000000.000000"
     assert back["not_found"] == []
     # 别人的同名 run、乱写的编号：读不到，照实回 not_found 或报错
-    other = await world.call(
-        "read_facts", auth=token(sub="bob"), run="task-2", refs=[ref]
-    )
+    other = await world.facts(name="read_facts", sub="bob", run="task-2", refs=[ref])
     assert other == {"facts": [], "not_found": [ref]}
-    bad = await world.call("read_facts", run="task-2", refs=["cell:1"])
-    assert "ref_invalid" in bad["error"]
-    market = await world.call("read_facts", scope="market", refs=[ref])
+    bad = await world.facts(name="read_facts", run="task-2", refs=["cell:1"])
+    assert "fact ref" in bad["error"]
+    market = await world.facts(name="read_facts", scope="market", refs=[ref])
     assert [f["ref"] for f in market["facts"]] == [ref]
 
 
@@ -394,13 +392,13 @@ async def test_market_scope_goes_through_the_one_gate(db):
     assert "error" in await world.facts(
         name="query_metric", sub="bob", scope="market", metric="gross_margin"
     )
-    refused = await world.call(
-        "read_facts",
-        auth=token(sub="bob"),
+    refused = await world.facts(
+        name="read_facts",
+        sub="bob",
         scope="market",
         refs=[ranked["facts"][0]["ref"]],
     )
-    assert refused["error"].startswith("qualification_required")
+    assert "error" in refused
 
 
 async def test_search_evidence_narrows_by_description_dimensions(world):

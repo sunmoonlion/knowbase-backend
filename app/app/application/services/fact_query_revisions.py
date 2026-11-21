@@ -15,7 +15,7 @@ def object_schema(properties):
     }
 
 
-REGISTERED_QUERIES = ("query_facts", "query_metric")
+REGISTERED_QUERIES = ("query_facts", "query_metric", "read_facts")
 
 
 def fact_row_schema():
@@ -51,7 +51,9 @@ def function_revision(name):
         raise ValueError("Unknown KnowBase query")
     facts = {"type": "array", "items": fact_row_schema()}
     output = {"facts": facts}
-    if name == "query_metric":
+    if name == "read_facts":
+        output["not_found"] = {"type": "array", "items": {"type": "string"}}
+    elif name == "query_metric":
         text = {"type": "string"}
         nullable = {"type": ["string", "null"]}
         value = object_schema(

@@ -17,7 +17,13 @@ from app.application.services.user_run_service import UserRunService
 from app.domain.chart_of_accounts import METRICS
 from app.domain.chart_of_accounts import snapshot as chart_snapshot
 from app.domain.method_reads import MethodRead
-from app.domain.user_facts import FactQuery, FactRow, MetricRow, split_refs
+from app.domain.user_facts import (
+    MAX_FACT_REFS,
+    FactQuery,
+    FactRow,
+    MetricRow,
+    split_refs,
+)
 from app.domain.user_library import PUBLIC_OWNER, DescriptionFilter
 from app.domain.user_resolution import DescriptionKey
 from app.domain.user_runs import RunGrant
@@ -163,7 +169,12 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "run": _RUN,
                 "session": _SESSION,
                 "scope": {"enum": ["run", "market"]},
-                "refs": {"type": "array", "items": {"type": "string"}},
+                "refs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_FACT_REFS,
+                    "items": {"type": "string"},
+                },
             },
             "required": ["refs"],
         },
