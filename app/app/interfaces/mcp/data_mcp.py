@@ -25,13 +25,16 @@ from app.application.services.data_functions import (
     DataFunctions,
     DataToken,
 )
+from app.application.services.fact_query_revisions import REGISTERED_QUERIES
 from app.domain.method_reads import MethodRead
 from app.domain.user_data import UserDataError
 from core.config import Settings, get_settings
 
 log = logging.getLogger(__name__)
 
-MCP_TOOLS = {name: spec for name, spec in TOOLS.items() if name != "query_facts"}
+MCP_TOOLS = {
+    name: spec for name, spec in TOOLS.items() if name not in REGISTERED_QUERIES
+}
 
 AUDIENCE = "knowbase-data"
 EXECUTORS = ("knowbench", "knowlab")

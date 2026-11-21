@@ -20,7 +20,10 @@ from app.application.services.data_functions import (
     DataFunctions,
     DataToken,
 )
-from app.application.services.query_facts_revision import query_facts_revision
+from app.application.services.fact_query_revisions import (
+    REGISTERED_QUERIES,
+    function_revision,
+)
 from app.domain.user_data import UserDataError
 from app.interfaces.http.internal.host_guard import internal_host_only
 from core.config import Settings
@@ -37,17 +40,24 @@ def build_function_router(settings: Settings, functions: DataFunctions):
     router = APIRouter(
         prefix="/internal/v1/functions", dependencies=[Depends(internal_host_only)]
     )
-    revision = query_facts_revision()
+    queries = {}
+    for name in REGISTERED_QUERIES:
+        revision = function_revision(name)
+        contract = revision["contract"]
+        queries[name] = (
+            revision,
+            Draft202012Validator(contract["input_schema"]),
+            Draft202012Validator(contract["output_schema"]),
+        )
     key = (
         ECKey.import_key(settings.knowbase_mcp_jwt_public_key)
         if settings.knowbase_mcp_jwt_public_key
         else None
     )
-    input_check = Draft202012Validator(revision["contract"]["input_schema"])
-    output_check = Draft202012Validator(revision["contract"]["output_schema"])
 
-    @router.post("/query_facts/1")
+    @router.post("/{name}/1")
     async def invoke(
+        name: str,
         body: Invocation,
         response: Response,
         authorization: Annotated[str | None, Header()] = None,
@@ -73,6 +83,9 @@ def build_function_router(settings: Settings, functions: DataFunctions):
             or not claims["sandbox"]
         ):
             raise HTTPException(401, "Invalid function ticket")
+        if name not in queries:
+            raise HTTPException(404, "Unknown function revision")
+        revision, input_check, output_check = queries[name]
         args = body.arguments
         try:
             payload = json.dumps(
@@ -105,11 +118,11 @@ def build_function_router(settings: Settings, functions: DataFunctions):
                 claims["sub"],
                 "knowbench",
                 claims["sandbox"],
-                frozenset({"query_facts"}),
+                frozenset({name}),
                 function_call_id=str(body.call_id),
             )
             output = jsonable_encoder(
-                await functions.invoke(token, "query_facts", args),
+                await functions.invoke(token, name, args),
                 custom_encoder={Decimal: str},
             )
         except UserDataError as exc:

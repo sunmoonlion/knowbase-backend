@@ -1,4 +1,4 @@
-"""The exact provider contract served by query_facts version one."""
+"""Versioned KnowBase queries backed by the live fact grants."""
 
 import hashlib
 import json
@@ -15,7 +15,10 @@ def object_schema(properties):
     }
 
 
-def query_facts_contract():
+REGISTERED_QUERIES = ("query_facts", "query_metric")
+
+
+def fact_row_schema():
     nullable_text = {"type": ["string", "null"]}
     source = object_schema(
         {
@@ -26,7 +29,7 @@ def query_facts_contract():
             "page": {"type": ["integer", "null"]},
         }
     )
-    row = object_schema(
+    return object_schema(
         {
             "ref": {"type": "string"},
             "subject": nullable_text,
@@ -41,22 +44,44 @@ def query_facts_contract():
             "source": source,
         }
     )
-    operation = TOOLS["query_facts"]
-    return {
+
+
+def function_revision(name):
+    if name not in REGISTERED_QUERIES:
+        raise ValueError("Unknown KnowBase query")
+    facts = {"type": "array", "items": fact_row_schema()}
+    output = {"facts": facts}
+    if name == "query_metric":
+        text = {"type": "string"}
+        nullable = {"type": ["string", "null"]}
+        value = object_schema(
+            {
+                "subject": nullable,
+                "period_end": text,
+                "duration": text,
+                "consolidation": text,
+                "value": nullable,
+                "inputs": facts,
+            }
+        )
+        output = {
+            "metric": text,
+            "name": text,
+            "formula": text,
+            "values": {"type": "array", "items": value},
+        }
+    operation = TOOLS[name]
+    contract = {
         "description": operation["description"],
-        "operation": "query_facts",
+        "operation": name,
         "scenes": ["incubation", "native", "planning", "step"],
         "required_permissions": ["facts.read"],
         "input_schema": operation["inputSchema"],
-        "output_schema": object_schema({"facts": {"type": "array", "items": row}}),
+        "output_schema": object_schema(output),
     }
-
-
-def query_facts_revision():
-    contract = query_facts_contract()
     expected = {
         "provider": "knowbase",
-        "name": "query_facts",
+        "name": name,
         "version": 1,
         "contract": contract,
     }

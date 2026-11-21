@@ -19,7 +19,7 @@ from test_user_data import CSV, Clock, MemoryObjects
 
 from app.application.services.call_rate import RateLimiter
 from app.application.services.data_functions import TOOLS, DataFunctions, DataToken
-from app.application.services.query_facts_revision import query_facts_revision
+from app.application.services.fact_query_revisions import function_revision
 from app.application.services.user_library_service import UserLibraryService
 from app.application.services.user_resolution_service import UserResolutionService
 from app.application.services.user_run_service import UserRunService
@@ -108,10 +108,10 @@ class World:
             return {"error": result["content"][0]["text"]}
         return result["structuredContent"]
 
-    async def facts(self, *, sub="alice", **arguments):
+    async def facts(self, *, name="query_facts", sub="alice", **arguments):
         arguments.setdefault("scope", "run")
         call_id = str(uuid4())
-        digest = query_facts_revision()["digest"]
+        digest = function_revision(name)["digest"]
         claims = dict(jwt.decode(token(sub=sub, aud="knowbase-function"), KEY).claims)
         claims.update(
             call_id=call_id,
@@ -123,7 +123,7 @@ class World:
             ).hexdigest(),
         )
         response = await self.client.post(
-            "/internal/v1/functions/query_facts/1",
+            f"/internal/v1/functions/{name}/1",
             json={"call_id": call_id, "digest": digest, "arguments": arguments},
             headers={
                 "Authorization": "Bearer " + jwt.encode({"alg": "ES256"}, claims, KEY)
@@ -214,18 +214,19 @@ async def test_tokens_must_be_issued_for_the_data_mcp(world):
     )
     names = {t["name"] for t in listed.json()["result"]["tools"]}
     assert {"list_inputs", "read_input", "search_evidence"} <= names
-    assert "query_facts" not in names
-    obsolete = await world.client.post(
-        "/mcp/data",
-        headers={"Authorization": f"Bearer {token()}"},
-        json={
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {"name": "query_facts", "arguments": {"scope": "market"}},
-        },
-    )
-    assert obsolete.json()["error"]["code"] == -32602
+    assert names.isdisjoint({"query_metric", "query_facts"})
+    for name in ("query_facts", "query_metric"):
+        obsolete = await world.client.post(
+            "/mcp/data",
+            headers={"Authorization": f"Bearer {token()}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": {"scope": "market"}},
+            },
+        )
+        assert obsolete.json()["error"]["code"] == -32602
 
 
 async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
@@ -253,7 +254,7 @@ async def test_a_run_reads_pinned_inputs_facts_and_evidence_with_sources(world):
     facts = await world.facts(run="task-1", codes=["IS.REVENUE"])
     assert facts["facts"][0]["value"] == "15000000.000000"
     assert facts["facts"][0]["source"]["page"] == 88
-    margin = await world.call("query_metric", metric="gross_margin", run="task-1")
+    margin = await world.facts(name="query_metric", metric="gross_margin", run="task-1")
     assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
     found = await world.call("search_evidence", run="task-1", query="渠道库存")
     assert found["passages"][0]["source"]["page"] == 88
@@ -340,7 +341,9 @@ async def test_a_session_queries_facts_of_what_it_has_read(world):
     )
     after = await world.facts(session=session.id, codes=["IS.REVENUE"])
     assert [f["subject"] for f in after["facts"]] == ["600519.SH"]
-    margin = await world.call("query_metric", metric="gross_margin", session=session.id)
+    margin = await world.facts(
+        name="query_metric", metric="gross_margin", session=session.id
+    )
     assert Decimal(margin["values"][0]["value"]) == Decimal("0.8")
     stranger = await world.facts(sub="bob", session=session.id, codes=["IS.REVENUE"])
     assert "error" in stranger
@@ -388,12 +391,16 @@ async def test_market_scope_goes_through_the_one_gate(db):
     ranked = await world.facts(scope="market", codes=["IS.REVENUE"])
     assert [f["subject"] for f in ranked["facts"]] == ["600519.SH"]
     assert "error" in await world.facts(sub="bob", scope="market")
-    for name, args in (
-        ("query_metric", {"metric": "gross_margin"}),
-        ("read_facts", {"refs": [ranked["facts"][0]["ref"]]}),
-    ):
-        refused = await world.call(name, auth=token(sub="bob"), scope="market", **args)
-        assert refused["error"].startswith("qualification_required"), name
+    assert "error" in await world.facts(
+        name="query_metric", sub="bob", scope="market", metric="gross_margin"
+    )
+    refused = await world.call(
+        "read_facts",
+        auth=token(sub="bob"),
+        scope="market",
+        refs=[ranked["facts"][0]["ref"]],
+    )
+    assert refused["error"].startswith("qualification_required")
 
 
 async def test_search_evidence_narrows_by_description_dimensions(world):
@@ -690,7 +697,7 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     from jsonschema import Draft202012Validator
 
     from app.application.services.data_functions import DataFunctionError
-    from app.application.services.query_facts_revision import query_facts_contract
+    from app.application.services.fact_query_revisions import function_revision
 
     material, version = await world.publish()
     await world.runs.grant_by_user(
@@ -708,7 +715,7 @@ async def test_direct_facts_match_granted_rows_and_empty_scope_denies(
     allowed = DataToken("alice", "knowbench", "sb-1", frozenset({"query_facts"}))
     direct = await world.functions.invoke(allowed, "query_facts", args)
     reply = await world.facts(**args)
-    published = query_facts_contract()
+    published = function_revision("query_facts")["contract"]
     Draft202012Validator(published["input_schema"]).validate(args)
     Draft202012Validator(published["output_schema"]).validate(reply)
     assert direct["facts"] and [item["ref"] for item in direct["facts"]] == [

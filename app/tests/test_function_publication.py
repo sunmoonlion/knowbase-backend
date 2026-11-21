@@ -9,8 +9,8 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from app.application.errors.exceptions import BadRequestError, ServiceUnavailableError
-from app.application.services.query_facts_revision import query_facts_contract
-from app.bootstrap.publish_functions import publish_query_facts
+from app.application.services.fact_query_revisions import function_revision
+from app.bootstrap.publish_functions import publish_query
 
 PARENT = Path(__file__).resolve().parents[3]
 
@@ -31,7 +31,7 @@ async def test_lost_response_retries_exact_request_and_checks_revision():
                 "contract": json_body,
             }
 
-    fingerprint = await publish_query_facts(Center())
+    fingerprint = await publish_query(Center(), "query_facts")
     assert requests[0] == requests[1]
     assert requests[0][:3] == (
         "PUT",
@@ -54,7 +54,7 @@ async def test_lost_response_retries_exact_request_and_checks_revision():
     for filename, expected in lock.items():
         path = contracts / filename
         assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
-        value = query_facts_contract()
+        value = function_revision("query_facts")["contract"]
         if filename == "service-function-revision-v1.json":
             value = {
                 "provider": "knowbase",
@@ -79,5 +79,5 @@ async def test_publication_conflict_or_wrong_receipt_does_not_retry(conflict):
 
     center = Center()
     with pytest.raises(BadRequestError if conflict else ValueError):
-        await publish_query_facts(center)
+        await publish_query(center, "query_facts")
     assert center.calls == 1

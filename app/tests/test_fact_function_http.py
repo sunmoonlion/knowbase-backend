@@ -10,7 +10,7 @@ from joserfc import jwt
 from test_data_mcp import KEY, World, token
 from test_durable_delivery_db import db as db
 
-from app.application.services.query_facts_revision import query_facts_revision
+from app.application.services.fact_query_revisions import function_revision
 from app.domain.public_access import PublicGate
 from app.domain.user_library import PUBLIC_OWNER
 from app.domain.user_runs import GrantRequestItem, InputPin
@@ -42,14 +42,21 @@ async def test_query_facts_ticket_and_live_grant(db):
     app.include_router(build_function_router(settings, world.functions), prefix="/api")
     request = {
         "call_id": str(uuid4()),
-        "digest": query_facts_revision()["digest"],
+        "digest": function_revision("query_facts")["digest"],
         "arguments": {"scope": "run", "run": "trial", "codes": ["IS.REVENUE"]},
     }
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app), base_url="https://127.0.0.1"
     ) as http:
 
-        async def send(body, *, signed=None, sub="alice", audience="knowbase-function"):
+        async def send(
+            body,
+            *,
+            name="query_facts",
+            signed=None,
+            sub="alice",
+            audience="knowbase-function",
+        ):
             bound = signed or body
             args = json.dumps(
                 bound["arguments"],
@@ -64,7 +71,7 @@ async def test_query_facts_ticket_and_live_grant(db):
                 arguments_digest=hashlib.sha256(args).hexdigest(),
             )
             return await http.post(
-                "/api/internal/v1/functions/query_facts/1",
+                f"/api/internal/v1/functions/{name}/1",
                 json=body,
                 headers={
                     "Authorization": "Bearer "
@@ -72,6 +79,8 @@ async def test_query_facts_ticket_and_live_grant(db):
                 },
             )
 
+        assert (await send(request, name="query_metric")).status_code == 409
+        assert (await send(request, name="other")).status_code == 404
         reply = await send(request)
         assert reply.status_code == 200, reply.text
         assert (
