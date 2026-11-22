@@ -746,6 +746,26 @@ async def test_outputs_are_idempotent_immutable_and_convert_into_data(world):
     assert await world.lib.uses(ALICE, converted.id) == []  # 产出转来的不默认展示
 
 
+async def test_reuse_requires_a_live_output_and_the_original_beneficiary(world):
+    args = ("knowbench", ALICE, "task-1", "run-1", "report.md")
+    material, version = await world.runs.write_output(*args, b"# approved")
+    assert (await world.runs.lookup_output(*args, require_available=True))[
+        "sha256"
+    ] == version.sha256
+    await refused(
+        world.runs.lookup_output(
+            "knowbench", "other", *args[2:], require_available=True
+        ),
+        404,
+        "output_not_found",
+    )
+    await world.runs.disable("admin", material.id, "withdrawn")
+    await refused(
+        world.runs.lookup_output(*args, require_available=True), 404, "output_not_found"
+    )
+    assert (await world.runs.lookup_output(*args))["material_id"] == material.id
+
+
 async def test_output_license_cap_follows_what_was_read_under_its_basis(world):
     """产出转为数据的许可上限（knowbench 与 knowbase 10-30 约定，见 knowbench
     knowbase_data_v2.write_output）：grant_ref 下签过的授权里真读过的才算；ref 下一份

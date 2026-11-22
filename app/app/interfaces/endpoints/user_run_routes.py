@@ -658,6 +658,24 @@ async def lookup_output(
     return OutputLookupRead(**found)
 
 
+@router.get("/outputs/available", response_model=OutputLookupRead)
+async def available_output(
+    beneficiary: str = Query(min_length=1, max_length=255),
+    task_ref: str = Query(min_length=1, max_length=255),
+    run_ref: str = Query(min_length=1, max_length=255),
+    name: str = Query(min_length=1, max_length=200),
+    caller: ServiceCaller = Depends(require_output_service),
+    service: UserRunService = Depends(get_user_run_service),
+):
+    """核对上期成稿仍可供该受益人使用。"""
+    found = await _call(
+        lambda: service.lookup_output(
+            caller.caller, beneficiary, task_ref, run_ref, name, require_available=True
+        )
+    )
+    return OutputLookupRead(**found)
+
+
 # —— 加工：knowfeed ——
 
 

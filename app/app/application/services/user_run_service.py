@@ -1328,7 +1328,14 @@ class UserRunService:
         return saved, version
 
     async def lookup_output(
-        self, caller: str, beneficiary: str, task_ref: str, run_ref: str, name: str
+        self,
+        caller: str,
+        beneficiary: str,
+        task_ref: str,
+        run_ref: str,
+        name: str,
+        *,
+        require_available: bool = False,
     ) -> dict[str, object]:
         """查询同一次运行写下的产出：返回真实 material_id, version_no, sha256。"""
         if caller not in OUTPUT_CALLERS:
@@ -1341,7 +1348,13 @@ class UserRunService:
         )
         if found is None:
             raise not_found("output")
-        material_id, version = found
+        _, version = found
+        material_id = version.material_id
+        if require_available:
+            material = await self.library.get_material(material_id)
+            if material is None or not material.live or not material.readable:
+                raise not_found("output")
+            await self._covers(beneficiary, material_id, version.version_no)
         return {
             "material_id": material_id,
             "version_no": version.version_no,
